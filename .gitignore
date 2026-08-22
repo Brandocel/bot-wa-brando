@@ -1,0 +1,23 @@
+node_modules/
+dist/
+*.tsbuildinfo
+# Secretos — NUNCA commitear
+.env
+.env.local
+.env.*.local
+# Sesión de WhatsApp: contiene credenciales de tu cuenta.
+# Si esto se filtra, alguien entra a tu WhatsApp.
+data/
+session/
+*_IGNORE_*/
+*.data.json
+qr*.png
+# Logs
+*.log
+npm-debug.log*
+
+# managed
+**.data.json
+**.node-persist**
+**_IGNORE_**
+# end managed

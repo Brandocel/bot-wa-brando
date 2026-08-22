@@ -1,0 +1,79 @@
+# Blueprint de Render — bot-wa-brando
+# Dashboard → Blueprints → New Blueprint Instance → apunta a este repo.
+
+databases:
+  - name: bot-wa-db
+    plan: basic-256mb        # $6/mo. Subir a basic-1gb cuando crezca el historial.
+    region: oregon
+    databaseName: botwa
+    user: botwa
+
+services:
+  # ─────────────────────────────────────────────────────────────
+  # 1. Gateway de WhatsApp: Chromium + open-wa. Estado en disco.
+  #    Docker obligatorio (necesita libs de sistema para Chromium).
+  #    Con disco → 1 sola instancia y deploy con ~10s de corte.
+  # ─────────────────────────────────────────────────────────────
+  - type: web
+    name: wa-gateway
+    runtime: docker
+    plan: standard           # $25/mo — 2 GB RAM. Starter (512 MB) hace OOM con Chromium.
+    region: oregon
+    dockerfilePath: ./apps/wa-gateway/Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    autoDeploy: false        # el gateway se redespliega a mano: cada deploy corta la sesión
+    disk:
+      name: wa-session
+      mountPath: /data       # TODO lo que no esté aquí se borra en cada deploy
+      sizeGB: 5              # $1.25/mo
+    envVars:
+      - key: WA_SESSION_PATH
+        value: /data/session
+      - key: GATEWAY_API_KEY
+        generateValue: true  # Render la genera; cópiala al agent-core
+      - key: CORE_WEBHOOK_URL
+        fromService:
+          type: web
+          name: agent-core
+          property: hostport # red privada interna, no sale a internet
+
+  # ─────────────────────────────────────────────────────────────
+  # 2. El cerebro. Sin Chromium, sin estado local → barato y escalable.
+  # ─────────────────────────────────────────────────────────────
+  - type: web
+    name: agent-core
+    runtime: node
+    plan: starter            # $7/mo — 512 MB sobra para NestJS
+    region: oregon
+    # El filtro por workspace es importante: sin él, `npm ci` instala también
+    # las deps del gateway y se baja un Chromium de 300 MB que aquí no sirve.
+    buildCommand: npm ci --include-workspace-root --workspace=agent-core && npx prisma generate && npm run build --workspace=agent-core
+    startCommand: npx prisma migrate deploy && node apps/agent-core/dist/main.js
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: bot-wa-db
+          property: connectionString
+      - key: GATEWAY_URL
+        fromService:
+          type: web
+          name: wa-gateway
+          property: hostport
+      - key: GATEWAY_API_KEY
+        fromService:
+          type: web
+          name: wa-gateway
+          envVarKey: GATEWAY_API_KEY
+      - key: ANTHROPIC_API_KEY
+        sync: false          # se pone a mano en el dashboard, nunca en el repo
+      - key: OWNER_WA_ID
+        sync: false          # tu número: "52155XXXXXXXX@c.us"
+
+# Nota: NO hay Render Key Value (Redis) aquí a propósito.
+# La cola va con pg-boss sobre el mismo Postgres — ver docs/ARCHITECTURE.md §4.5.
+# Ahorra $10/mo y, más importante, permite encolar el job y escribir el outbox
+# en la MISMA transacción.
