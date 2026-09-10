@@ -9,7 +9,10 @@ import {
   MESSAGING_PORT,
   type MessagingPort,
 } from '../ports/messaging.port';
-import { PrismaService } from '../../infrastructure/persistence/prisma.service';
+import {
+  PrismaService,
+  type TransactionClient,
+} from '../../infrastructure/persistence/prisma.service';
 
 /**
  * Estado de la conversación: de quién es el turno, de qué trata y desde
@@ -60,24 +63,21 @@ export class ConversationStateService implements OnModuleInit {
   }
 
   /**
-   * Llega un mensaje del cliente: el turno pasa a ser nuestro.
+   * Acuse de recibo en WhatsApp. SOLO red: los campos de la conversación
+   * los escribe el caso de uso dentro de su transacción.
    *
-   * Marcar como leído se hace aquí y no al responder: el acuse de recibo
-   * inmediato es lo que evita la sensación de "ni me leyeron" mientras el
-   * bot piensa. Si falla, no pasa nada — es cosmético y no debe tumbar el
-   * turno.
+   * Antes esto también hacía un update, y ahí estaba el fallo: la
+   * conversación se crea dentro de una transacción que todavía no ha hecho
+   * commit, así que otra conexión no la ve. Con un hilo que ya existía
+   * funcionaba; con uno nuevo reventaba en cada mensaje con "No record was
+   * found for an update". El síntoma era que el bot no contestaba
+   * justamente a los números recién dados de alta.
+   *
+   * Marcar como leído va al recibir y no al responder: el acuse inmediato
+   * es lo que evita la sensación de "ni me leyeron" mientras el bot piensa.
+   * Si falla, se registra y se sigue — es cosmético.
    */
-  async onInbound(input: {
-    conversationId: string;
-    chatId: string;
-  }): Promise<void> {
-    const now = new Date();
-
-    await this.prisma.conversation.update({
-      where: { id: input.conversationId },
-      data: { awaiting: 'BOT', lastInboundAt: now, seenAt: now },
-    });
-
+  async onInbound(input: { chatId: string }): Promise<void> {
     try {
       await this.messaging.markSeen(input.chatId);
     } catch (err) {
@@ -94,8 +94,14 @@ export class ConversationStateService implements OnModuleInit {
     conversationId: string;
     awaiting: Awaiting;
     topic?: DocCategory | null;
+    /**
+     * El cliente de la transacción en curso. Obligatorio en la práctica:
+     * escribir con otra conexión no ve lo que la transacción aún no ha
+     * confirmado.
+     */
+    tx: TransactionClient;
   }): Promise<void> {
-    await this.prisma.conversation.update({
+    await input.tx.conversation.update({
       where: { id: input.conversationId },
       data: {
         awaiting: input.awaiting,

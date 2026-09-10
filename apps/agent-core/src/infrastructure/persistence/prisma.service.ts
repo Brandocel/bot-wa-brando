@@ -1,6 +1,17 @@
 import { Injectable, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 
+/**
+ * El cliente que Prisma entrega dentro de `$transaction`.
+ *
+ * Tiene nombre propio porque hace falta pasarlo entre servicios: escribir
+ * con `this.prisma` mientras hay una transacción abierta usa OTRA conexión,
+ * que no ve lo que la transacción todavía no ha confirmado.
+ */
+export type TransactionClient = Parameters<
+  Parameters<PrismaClient['$transaction']>[0]
+>[0];
+
 @Injectable()
 export class PrismaService
   extends PrismaClient

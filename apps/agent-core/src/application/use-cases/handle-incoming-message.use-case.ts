@@ -73,65 +73,89 @@ export class HandleIncomingMessageUseCase {
    * FASE 1: eco. Aquí es donde en la Fase 3 entra el selector de Strategy
    * (Assistant / Sales / Support) y todo lo demás se queda igual.
    */
+  /**
+   * El turno, en dos fases.
+   *
+   * FASE 1 registra al contacto, la conversación y el mensaje entrante, y
+   * confirma. FASE 2 decide y escribe la respuesta.
+   *
+   * Están separadas por una razón concreta: dentro de una transacción sin
+   * confirmar, cualquier servicio que escriba con OTRA conexión no ve lo que
+   * esa transacción acaba de crear. Con un hilo que ya existía no se notaba;
+   * con uno nuevo, el ticket apuntaba a una conversación invisible y el
+   * turno entero moría. El síntoma era que el bot no contestaba justo a los
+   * números recién dados de alta.
+   *
+   * Las dos fases siguen bajo el mismo lock por chat, así que dos mensajes
+   * de la misma conversación se siguen atendiendo en orden. Lo que se pierde
+   * es la atomicidad entre "mensaje registrado" y "respuesta encolada": si
+   * el proceso muere entre ambas, queda el entrante sin contestar. Eso es
+   * visible y recuperable; lo otro era una caída silenciosa.
+   */
   private async handle(ctx: PipelineContext): Promise<void> {
     const { message, role } = ctx;
+    const ahora = new Date();
 
+    // ── FASE 1: registrar lo que llegó ──────────────────────────────────
+    const { contactId, conversationId } = await this.prisma.withChatLock(
+      message.chatId,
+      async (tx) => {
+        const contact = await tx.contact.upsert({
+          where: { waId: message.senderId },
+          create: {
+            waId: message.senderId,
+            displayName: message.senderName,
+            role: role === 'OWNER' ? 'OWNER' : 'PROSPECT',
+          },
+          update: { displayName: message.senderName ?? undefined },
+        });
+
+        const conversation = await tx.conversation.upsert({
+          where: { chatId: message.chatId },
+          create: {
+            chatId: message.chatId,
+            contactId: contact.id,
+            awaiting: 'BOT',
+            lastInboundAt: ahora,
+            seenAt: ahora,
+          },
+          update: { awaiting: 'BOT', lastInboundAt: ahora, seenAt: ahora },
+        });
+
+        await tx.message.create({
+          data: {
+            id: message.id,
+            conversationId: conversation.id,
+            direction: 'IN',
+            kind: message.kind,
+            body: message.body,
+            raw: message.raw as object,
+          },
+        });
+
+        return { contactId: contact.id, conversationId: conversation.id };
+      },
+    );
+
+    // Acuse de recibo en WhatsApp. Fuera de toda transacción: es red.
+    await this.conversations.onInbound({ chatId: message.chatId });
+
+    // ── FASE 2: decidir y responder ─────────────────────────────────────
     await this.prisma.withChatLock(message.chatId, async (tx) => {
-      const contact = await tx.contact.upsert({
-        where: { waId: message.senderId },
-        create: {
-          waId: message.senderId,
-          displayName: message.senderName,
-          role: role === 'OWNER' ? 'OWNER' : 'PROSPECT',
-        },
-        update: {
-          displayName: message.senderName ?? undefined,
-        },
-      });
-
-      const conversation = await tx.conversation.upsert({
-        where: { chatId: message.chatId },
-        create: { chatId: message.chatId, contactId: contact.id },
-        update: {},
-      });
-
-      await tx.message.create({
-        data: {
-          id: message.id,
-          conversationId: conversation.id,
-          direction: 'IN',
-          kind: message.kind,
-          body: message.body,
-          raw: message.raw as object,
-        },
-      });
-
-      // Acuse de recibo inmediato. Va aquí y no junto a la respuesta: el
-      // "visto" mientras el bot piensa es lo que evita la sensación de que
-      // nadie leyó el mensaje.
-      await this.conversations.onInbound({
-        conversationId: conversation.id,
-        chatId: message.chatId,
-      });
-
-      // Fase 3: aqui entra el selector de Strategy. Por ahora, comandos
-      // del dueno, comandos de soporte y eco para todo lo demas.
-      //
-      // El orden importa: los comandos del dueno ganan, para que /pausa
-      // siga funcionando aunque el numero tambien tenga membresias.
+      // Los comandos del dueño ganan, para que /pausa siga funcionando
+      // aunque ese número también tenga membresías.
       const ownerReply =
         role === 'OWNER' ? await this.ownerCommands.tryHandle(message) : null;
 
       const supportReply =
         ownerReply ??
         (await this.supportCommands.tryHandle(message, {
-          contactId: contact.id,
-          conversationId: conversation.id,
+          contactId,
+          conversationId,
         }));
 
       // Un comando que nadie reclamó es un error de tecleo, no un mensaje
-      // para el agente. Contestarlo aquí, y no en cada servicio, es lo que
-      // permite que los registros de comandos se encadenen sin pisarse.
+      // para el agente.
       const isCommand = looksLikeCommand(message.body);
 
       const unknownCommand =
@@ -139,13 +163,13 @@ export class HandleIncomingMessageUseCase {
           ? `No conozco ${message.body.trim().split(/\s+/)[0]}. Usa /ayuda para ver la lista.`
           : null;
 
-      // La Strategy solo ve lo que NO es un comando. Un comando mal escrito
-      // no debe gastar una llamada al modelo.
+      // La Strategy solo ve lo que NO es un comando: uno mal escrito no debe
+      // gastar una llamada al modelo.
       const strategyReply =
         supportReply === null && !isCommand
           ? await this.supportStrategy.handle(message, {
-              contactId: contact.id,
-              conversationId: conversation.id,
+              contactId,
+              conversationId,
             })
           : null;
 
@@ -155,9 +179,6 @@ export class HandleIncomingMessageUseCase {
         strategyReply?.text ??
         `eco (${role?.toLowerCase()}): ${message.body}`;
 
-      // No se envía aquí: se escribe al outbox dentro de la MISMA transacción.
-      // Si algo truena después, no queda un mensaje enviado sin registro ni
-      // un registro sin mensaje.
       await tx.outboxMessage.create({
         data: { chatId: message.chatId, payload: { kind: 'text', text: reply } },
       });
@@ -166,9 +187,10 @@ export class HandleIncomingMessageUseCase {
       // decir era una pregunta, una entrega o un escalado; un comando o un
       // eco no dejan nada pendiente.
       await this.conversations.onOutbound({
-        conversationId: conversation.id,
+        conversationId,
         awaiting: strategyReply?.awaiting ?? 'NADIE',
         topic: strategyReply?.topic ?? null,
+        tx,
       });
     });
 
