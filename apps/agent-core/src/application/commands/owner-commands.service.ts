@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { FlagsService } from '../../infrastructure/persistence/flags.service';
 import { PrismaService } from '../../infrastructure/persistence/prisma.service';
 import type { IncomingMessage } from '../../domain/message/incoming-message';
+import { DriveCommandsService } from './drive-commands.service';
 
 interface OwnerCommand {
   readonly help: string;
@@ -22,8 +23,34 @@ export class OwnerCommandsService {
   constructor(
     private readonly flags: FlagsService,
     private readonly prisma: PrismaService,
+    private readonly drive: DriveCommandsService,
   ) {
     this.commands = {
+      empresa: {
+        help: 'da de alta una empresa: /empresa <nombre> | <id de carpeta>',
+        run: async (args) => this.drive.registerOrganization(args),
+      },
+
+      sync: {
+        help: 'sincroniza ya con Drive, sin esperar al temporizador',
+        run: async () => this.drive.runSync(),
+      },
+
+      drive: {
+        help: 'diagnóstico de Drive: cuenta, empresas y última sincronización',
+        run: async () => this.drive.status(),
+      },
+
+      cuarentena: {
+        help: 'archivos que Drive tiene pero el bot no pudo clasificar',
+        run: async () => this.drive.listQuarantine(),
+      },
+
+      resync: {
+        help: 'borra el cursor de Drive para rehacer el barrido completo',
+        run: async () => this.drive.fullResync(),
+      },
+
       pausa: {
         help: 'silencia al bot con todos menos conmigo',
         run: async () => {
@@ -76,18 +103,29 @@ export class OwnerCommandsService {
         help: 'esta lista',
         run: async () =>
           [
-            'Comandos disponibles:',
+            'Comandos de dueño:',
             ...Object.entries(this.commands).map(
               ([name, cmd]) => `/${name} — ${cmd.help}`,
             ),
+            '',
+            'Comandos de soporte (los tiene cualquier número autorizado):',
+            '/buscar <qué> — busca un documento y te lo manda',
+            '/permisos — qué puedes consultar y de qué empresas',
+            '/tickets — tus últimos tickets en esta conversación',
+            '/id — tus identificadores de WhatsApp',
           ].join('\n'),
       },
     };
   }
 
   /**
-   * Devuelve la respuesta al comando, o `null` si el texto no es un comando.
-   * Ese `null` es lo que deja pasar el mensaje al agente en la Fase 3.
+   * Devuelve la respuesta al comando, o `null` si no es un comando MÍO.
+   *
+   * Ese null importa: antes esta función contestaba "No conozco /x" a
+   * cualquier cosa con barra, y con eso se tragaba /buscar y /permisos —
+   * los comandos de soporte, que corren después. El dueño también es
+   * usuario del sistema de soporte. Quien decide que un comando no existe
+   * es el caso de uso, cuando ya nadie lo reclamó.
    */
   async tryHandle(message: IncomingMessage): Promise<string | null> {
     const text = message.body.trim();
@@ -97,9 +135,7 @@ export class OwnerCommandsService {
     const name = (rawName ?? '').toLowerCase();
     const command = this.commands[name];
 
-    if (!command) {
-      return `No conozco /${name}. Usa /ayuda para ver la lista.`;
-    }
+    if (!command) return null;
 
     return command.run(rest.join(' '), message);
   }

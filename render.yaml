@@ -74,6 +74,8 @@ services:
         sync: false          # se pone a mano en el dashboard, nunca en el repo
       - key: OWNER_WA_ID
         sync: false          # tu número: "52155XXXXXXXX@c.us"
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false          # JSON de la cuenta de servicio, en una línea
 
 # Nota: NO hay Render Key Value (Redis) aquí a propósito.
 # La cola va con pg-boss sobre el mismo Postgres — ver docs/ARCHITECTURE.md §4.5.

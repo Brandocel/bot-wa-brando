@@ -5,6 +5,7 @@ import type { IncomingMessage } from '../../domain/message/incoming-message';
 import { AccessScopeService, type OrgScope } from './access-scope.service';
 import { DocumentSearchService } from './document-search.service';
 import { parseQuery } from './query-parser';
+import { DocumentDeliveryService } from './document-delivery.service';
 import { TicketService } from './ticket.service';
 
 /**
@@ -31,6 +32,7 @@ export class SupportCommandsService {
     private readonly scope: AccessScopeService,
     private readonly search: DocumentSearchService,
     private readonly tickets: TicketService,
+    private readonly delivery: DocumentDeliveryService,
   ) {}
 
   async tryHandle(
@@ -51,6 +53,14 @@ export class SupportCommandsService {
         return this.permisos(message);
       case 'tickets':
         return this.listarTickets(ctx);
+      case 'id':
+        // Disponible para cualquiera a propósito: solo muestra los
+        // identificadores de QUIEN pregunta, y es la única forma de averiguar
+        // el valor correcto de OWNER_WA_ID cuando el rol todavía no cuadra.
+        return [
+          `chatId: ${message.chatId}`,
+          `senderId: ${message.senderId}`,
+        ].join('\n');
       default:
         return null;
     }
@@ -146,17 +156,38 @@ export class SupportCommandsService {
 
     const doc = results[0]!;
     await this.audit(message.senderId, args, doc.id, 'ALLOW', 'dentro del alcance');
+
+    const sent = await this.delivery.deliver(
+      message.chatId,
+      doc,
+      `Ticket #${ticket.number} — ${doc.name}`,
+    );
+
     await this.tickets.record(ticket.id, 'entrega', 'bot', {
       documentId: doc.id,
       name: doc.name,
+      entregado: sent.ok,
+      motivo: sent.ok ? null : sent.reason,
     });
-    await this.tickets.close(ticket.id, 'resuelto');
+
+    // Solo se cierra si el documento salió. Un ticket cerrado con el archivo
+    // sin entregar es justo el caso que nadie vuelve a revisar.
+    if (sent.ok) {
+      await this.tickets.close(ticket.id, 'resuelto');
+      return `Ticket #${ticket.number} — aquí está tu ${doc.name}:`;
+    }
+
+    await this.tickets.escalate(ticket.id, 'sin_resultados', null);
+
+    const excuse =
+      sent.reason === 'too_big'
+        ? 'El archivo pesa más de lo que WhatsApp acepta.'
+        : 'No pude recuperar el archivo del repositorio.';
 
     return [
-      `Ticket #${ticket.number} — encontrado:`,
-      this.describe(doc),
-      '',
-      'Te lo envío en seguida.',
+      `Ticket #${ticket.number} — encontré el documento pero no pude enviártelo.`,
+      excuse,
+      'Ya lo pasé a revisión con el equipo.',
     ].join('\n');
   }
 

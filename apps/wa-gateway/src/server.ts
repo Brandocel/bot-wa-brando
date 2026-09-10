@@ -48,7 +48,10 @@ function wrap(
 
 export function buildServer() {
   const app = express();
-  app.use(express.json({ limit: '2mb' }));
+  // 25mb, no 2mb: los documentos viajan en base64 dentro del JSON, y base64
+  // infla ~33%. El tope real de lo que se entrega lo pone el core con
+  // MAX_DELIVERABLE_BYTES; esto solo tiene que quedar holgado por encima.
+  app.use(express.json({ limit: '25mb' }));
 
   // Health check de Render. Sin API key: Render no manda headers custom.
   // Responde 200 aunque WhatsApp esté caído — si devolviera 503, Render

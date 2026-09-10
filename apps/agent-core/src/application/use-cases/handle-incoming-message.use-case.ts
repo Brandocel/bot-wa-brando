@@ -117,8 +117,18 @@ export class HandleIncomingMessageUseCase {
           conversationId: conversation.id,
         }));
 
+      // Un comando que nadie reclamó es un error de tecleo, no un mensaje
+      // para el agente. Contestarlo aquí, y no en cada servicio, es lo que
+      // permite que los registros de comandos se encadenen sin pisarse.
+      const unknownCommand =
+        supportReply === null && message.body.trim().startsWith('/')
+          ? `No conozco ${message.body.trim().split(/\s+/)[0]}. Usa /ayuda para ver la lista.`
+          : null;
+
       const reply =
-        supportReply ?? `eco (${role?.toLowerCase()}): ${message.body}`;
+        supportReply ??
+        unknownCommand ??
+        `eco (${role?.toLowerCase()}): ${message.body}`;
 
       // No se envía aquí: se escribe al outbox dentro de la MISMA transacción.
       // Si algo truena después, no queda un mensaje enviado sin registro ni
