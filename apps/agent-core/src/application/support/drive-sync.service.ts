@@ -129,7 +129,34 @@ export class DriveSyncService implements OnModuleInit {
         for (const file of files) {
           await this.upsert(file, organization, report);
         }
-        this.logger.log(`${organization.name}: ${files.length} archivo(s) leídos`);
+
+        // Lo que el índice tenía y la carpeta ya no: se marca como borrado.
+        //
+        // Un barrido completo SÍ conoce la lista entera, así que puede
+        // afirmar lo que falta — el incremental no, porque solo ve cambios.
+        // Sin esto, un documento que dejó de estar en Drive seguiría
+        // ganando búsquedas y el bot lo prometería para después fallar al
+        // descargarlo. Es exactamente lo que pasa al cambiar una empresa de
+        // carpeta: los documentos de la carpeta vieja se quedan colgados.
+        const vistos = files.map((f) => f.id);
+
+        const huerfanos = await this.prisma.document.updateMany({
+          where: {
+            organizationId: organization.id,
+            status: { not: 'DELETED' },
+            driveFileId: { notIn: vistos },
+          },
+          data: { status: 'DELETED' },
+        });
+
+        report.deleted += huerfanos.count;
+
+        this.logger.log(
+          `${organization.name}: ${files.length} archivo(s) leídos` +
+            (huerfanos.count > 0
+              ? `, ${huerfanos.count} ya no está(n) en la carpeta`
+              : ''),
+        );
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
         report.errors.push(`${organization.name}: ${detail}`);
