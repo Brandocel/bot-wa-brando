@@ -1,4 +1,6 @@
 import { create, ev, type Client, type Message } from '@open-wa/wa-automate';
+import { existsSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { config } from './config';
 import { PendingQueue } from './pending-queue';
 
@@ -304,8 +306,69 @@ function patchOpenWaUserAgent(): void {
   }
 }
 
+/**
+ * Limpia los cerrojos que Chromium deja al morir de mala manera.
+ *
+ * El vigilante mata el proceso con process.exit para que Render reinicie, y
+ * eso no le da a Chromium ocasión de cerrar su perfil. Quedan SingletonLock
+ * y compañía en el directorio de sesión, y al siguiente arranque el
+ * navegador se niega a abrir ese perfil: el servicio queda en BOOTING para
+ * siempre.
+ *
+ * Son enlaces y ficheros de control, no la sesión. Borrarlos NO desvincula
+ * WhatsApp — eso vive en otros archivos del mismo directorio.
+ */
+function limpiarCerrojos(): void {
+  const dir = config.session.path;
+  if (!existsSync(dir)) return;
+
+  const cerrojos = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
+
+  const barrer = (carpeta: string, profundidad: number): void => {
+    if (profundidad > 3) return;
+
+    for (const entrada of readdirSync(carpeta)) {
+      const ruta = join(carpeta, entrada);
+
+      if (cerrojos.includes(entrada)) {
+        try {
+          rmSync(ruta, { force: true });
+          console.log(`[wa] cerrojo suelto borrado: ${entrada}`);
+        } catch {
+          /* si no se puede, el arranque dirá lo suyo */
+        }
+        continue;
+      }
+
+      try {
+        if (statSync(ruta).isDirectory()) barrer(ruta, profundidad + 1);
+      } catch {
+        /* enlaces rotos: justo los que estamos limpiando */
+      }
+    }
+  };
+
+  try {
+    barrer(dir, 0);
+  } catch (err) {
+    console.warn(`[wa] no se pudieron revisar los cerrojos: ${String(err)}`);
+  }
+}
+
 export async function startWhatsApp(): Promise<void> {
   console.log('[wa] arrancando open-wa...');
+
+  if (!config.headless) {
+    // En Render no hay pantalla: un Chromium con ventana muere con
+    // "Can't open display" y el servicio se queda en BOOTING sin explicar
+    // por qué. Mejor decirlo aquí que dejarlo deducir del log de puppeteer.
+    console.warn(
+      '[wa] WA_HEADLESS=false: Chromium intentará abrir una ventana. ' +
+        'Eso solo funciona en una máquina con pantalla, nunca en Render.',
+    );
+  }
+
+  limpiarCerrojos();
   patchOpenWaUserAgent();
 
   client = await create({
