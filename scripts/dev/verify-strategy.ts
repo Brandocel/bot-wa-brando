@@ -15,7 +15,10 @@ import { AccessScopeService } from '../../apps/agent-core/src/application/suppor
 import { DocumentDeliveryService } from '../../apps/agent-core/src/application/support/document-delivery.service';
 import { DocumentSearchService } from '../../apps/agent-core/src/application/support/document-search.service';
 import { SlotExtractorService } from '../../apps/agent-core/src/application/support/slot-extractor.service';
-import { SupportStrategy } from '../../apps/agent-core/src/application/support/support.strategy';
+import {
+  SupportStrategy,
+  type StrategyReply,
+} from '../../apps/agent-core/src/application/support/support.strategy';
 import { TicketService } from '../../apps/agent-core/src/application/support/ticket.service';
 import type { LlmPort } from '../../apps/agent-core/src/application/ports/llm.port';
 import type { IncomingMessage } from '../../apps/agent-core/src/domain/message/incoming-message';
@@ -83,6 +86,18 @@ const TURNS: Turn[] = [
   },
 ];
 
+/**
+ * La respuesta trae texto Y bandera. La bandera es la mitad que importa
+ * revisar: un texto correcto con el turno mal asignado deja la conversación
+ * fuera de la bandeja del operador, y nadie la vuelve a mirar.
+ */
+function describir(reply: StrategyReply | null): string {
+  if (reply === null) return 'null';
+  const tema = reply.topic ? `, tema ${reply.topic}` : '';
+  const texto = reply.text.split('\n').join(' | ');
+  return `[espera ${reply.awaiting}${tema}] ${texto}`;
+}
+
 function fakeMessage(waId: string, text: string): IncomingMessage {
   return {
     id: `test-${Math.random().toString(36).slice(2)}`,
@@ -131,9 +146,7 @@ async function conversacion(
       conversationId: conversation.id,
     });
     console.log(`  tú:  ${texto}`);
-    console.log(
-      `  bot: ${reply === null ? 'null' : reply.replace(/\n/g, ' | ')}\n`,
-    );
+    console.log(`  bot: ${describir(reply)}\n`);
   }
 
   // Cada conversación arranca limpia: un ticket abierto de la anterior
@@ -141,7 +154,34 @@ async function conversacion(
   await prisma.ticket.deleteMany({ where: { conversationId: conversation.id } });
 }
 
+/**
+ * Borra lo que dejaron corridas anteriores.
+ *
+ * Se llama al PRINCIPIO, no solo al final: si una corrida se cae a media
+ * ejecución, sus tickets quedan vivos y la siguiente los reengancha — con
+ * sus preguntas ya hechas. El resultado es una tanda de fallos que no
+ * tienen nada que ver con el código y cuesta un rato entender.
+ */
+async function limpiar(): Promise<void> {
+  const conversaciones = await prisma.conversation.findMany({
+    where: { chatId: { startsWith: 'test-' } },
+    select: { id: true },
+  });
+
+  await prisma.ticket.deleteMany({
+    where: { conversationId: { in: conversaciones.map((c) => c.id) } },
+  });
+  await prisma.conversation.deleteMany({
+    where: { chatId: { startsWith: 'test-' } },
+  });
+  await prisma.outboxMessage.deleteMany({
+    where: { chatId: { startsWith: '52155000000' } },
+  });
+}
+
 async function main(): Promise<void> {
+  await limpiar();
+
   for (const turn of TURNS) {
     const contact = await prisma.contact.findUnique({
       where: { waId: turn.waId },
@@ -174,7 +214,7 @@ async function main(): Promise<void> {
 
     console.log(`${turn.waId}  "${turn.text}"`);
     console.log(`   esperado: ${turn.expect}`);
-    console.log(`   obtenido: ${reply === null ? 'null' : reply.replace(/\n/g, ' | ')}\n`);
+    console.log(`   obtenido: ${describir(reply)}\n`);
   }
 
   // La conversación de varios turnos va ANTES de limpiar: si no, borraría
@@ -190,20 +230,9 @@ async function main(): Promise<void> {
     'ya te dije cuál',
   ]);
 
-  // Limpieza: los tickets de prueba no deben quedar en la cola del operador.
-  const testConversations = await prisma.conversation.findMany({
-    where: { chatId: { startsWith: 'test-' } },
-    select: { id: true },
-  });
-  await prisma.ticket.deleteMany({
-    where: { conversationId: { in: testConversations.map((c) => c.id) } },
-  });
-  await prisma.conversation.deleteMany({
-    where: { chatId: { startsWith: 'test-' } },
-  });
-  await prisma.outboxMessage.deleteMany({
-    where: { chatId: { startsWith: '52155000000' } },
-  });
+  // Y también al terminar: los tickets de prueba no deben quedar en la cola
+  // del operador.
+  await limpiar();
 
   await prisma.$disconnect();
 }
