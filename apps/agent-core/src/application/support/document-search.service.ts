@@ -67,6 +67,17 @@ export class DocumentSearchService {
   }
 
   /**
+   * Un documento por su id. Solo para reenviar algo YA entregado a esta
+   * misma conversación: el permiso se comprobó cuando se entregó, y quien
+   * llama pasa un id que salió de su propia bitácora, no del usuario.
+   */
+  async byId(id: string): Promise<Document | null> {
+    return this.prisma.document.findFirst({
+      where: { id, status: 'INDEXED' },
+    });
+  }
+
+  /**
    * Traduce el alcance a condiciones SQL: una por (organización, categoría),
    * con su ventana de periodo. Si la consulta fija categoría u organización,
    * las condiciones que no apliquen se descartan aquí y no llegan a la base.

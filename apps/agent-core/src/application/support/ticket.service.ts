@@ -203,6 +203,36 @@ export class TicketService {
     });
   }
 
+  /**
+   * La última entrega registrada en esta conversación.
+   *
+   * Se lee de la bitácora y no de un campo del ticket porque la bitácora
+   * es la que sabe qué se entregó y cuándo; el ticket solo sabe su estado.
+   */
+  async ultimaEntrega(conversationId: string): Promise<{
+    ticketId: string;
+    ticketNumber: number;
+    documentId: string;
+  } | null> {
+    const evento = await this.prisma.ticketEvent.findFirst({
+      where: {
+        type: 'entrega',
+        ticket: { conversationId },
+      },
+      orderBy: { createdAt: 'desc' },
+      include: { ticket: { select: { id: true, number: true } } },
+    });
+
+    const datos = evento?.data as { documentId?: string } | null;
+    if (!evento || !datos?.documentId) return null;
+
+    return {
+      ticketId: evento.ticket.id,
+      ticketNumber: evento.ticket.number,
+      documentId: datos.documentId,
+    };
+  }
+
   async record(
     ticketId: string,
     type: string,

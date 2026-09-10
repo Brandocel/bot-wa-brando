@@ -80,6 +80,19 @@ export class SupportStrategy {
       };
     }
 
+    /**
+     * "No veo el doc", "no me llegó", "no lo recibí".
+     *
+     * Es una queja sobre lo último que se entregó, no una petición nueva.
+     * Tratarla como petición nueva es lo que producía el diálogo absurdo de
+     * "¿cuál doc buscabas?" justo después de haberlo mandado — y obligaba a
+     * la persona a repetir lo que ya había dicho.
+     */
+    if (esQuejaDeNoRecibido(message.body)) {
+      const reenviado = await this.reenviarUltimo(message.chatId, ctx);
+      if (reenviado) return reenviado;
+    }
+
     const extraction = await this.slots.extract(message.body);
 
     if (extraction.notADocumentRequest) {
@@ -236,6 +249,50 @@ export class SupportStrategy {
   }
 
   /**
+   * Reintenta la última entrega de esta conversación.
+   *
+   * Se busca el último ticket que registró una entrega y se vuelve a mandar
+   * ese documento. Si el envío falla otra vez, se escala: dos fallos
+   * seguidos ya no son mala suerte, y hacer que la persona lo pida por
+   * tercera vez es perderla.
+   */
+  private async reenviarUltimo(
+    chatId: string,
+    ctx: StrategyContext,
+  ): Promise<StrategyReply | null> {
+    const entrega = await this.tickets.ultimaEntrega(ctx.conversationId);
+    if (!entrega) return null;
+
+    const documento = await this.search.byId(entrega.documentId);
+    if (!documento) return null;
+
+    const sent = await this.delivery.deliver(
+      chatId,
+      documento,
+      `Ticket #${entrega.ticketNumber} — ${documento.name}`,
+    );
+
+    if (sent.ok) {
+      return {
+        text: 'Perdón, te lo mando otra vez:',
+        awaiting: 'NADIE',
+        topic: documento.category,
+      };
+    }
+
+    await this.tickets.escalate(entrega.ticketId, 'sin_resultados', null);
+
+    return {
+      text: [
+        'Sigo sin poder enviártelo por aquí.',
+        `Ya lo pasé al equipo con el folio #${entrega.ticketNumber} para que te lo hagan llegar.`,
+      ].join('\n'),
+      awaiting: 'AGENTE',
+      topic: documento.category,
+    };
+  }
+
+  /**
    * Saludos, agradecimientos y preguntas generales.
    *
    * El modelo redacta, pero solo con lo que ya está resuelto: qué empresas
@@ -345,6 +402,29 @@ function mergeSlots(stored: unknown, fresh: SearchQuery): SearchQuery {
     folio: fresh.folio ?? (typeof previous.folio === 'string' ? previous.folio : null),
     text: fresh.text,
   };
+}
+
+/**
+ * ¿Está diciendo que no le llegó lo que mandamos?
+ *
+ * Deliberadamente por reglas y no por modelo: es una frase corta y muy
+ * repetida, y acertar aquí importa más que cubrir todas las variantes. Lo
+ * que no case cae en el flujo normal, que ya funciona.
+ *
+ * El tope de longitud evita que un mensaje largo que mencione "no lo veo"
+ * de pasada se lleve por delante una petición nueva.
+ */
+function esQuejaDeNoRecibido(texto: string): boolean {
+  const limpio = texto
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '');
+
+  if (limpio.length > 60) return false;
+
+  return /\b(no (lo |la |me )?(veo|llego|llega|recibi|aparece|abre)|no me lo mandaste|donde esta|no vino|no esta el (doc|archivo|pdf))\b/.test(
+    limpio,
+  );
 }
 
 /** Los datos que el bot sabe pedir cuando faltan. */

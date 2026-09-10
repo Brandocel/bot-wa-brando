@@ -25,7 +25,8 @@
     "verify:drive": "tsx --tsconfig tsconfig.base.json scripts/dev/verify-drive.ts",
     "verify:strategy": "tsx --tsconfig tsconfig.base.json scripts/dev/verify-strategy.ts",
     "panel:user": "tsx --tsconfig tsconfig.base.json scripts/dev/create-panel-user.ts",
-    "verify:phone": "tsx --tsconfig tsconfig.base.json scripts/dev/verify-phone.ts"
+    "verify:phone": "tsx --tsconfig tsconfig.base.json scripts/dev/verify-phone.ts",
+    "verify:delivery": "tsx --tsconfig tsconfig.base.json scripts/dev/verify-delivery.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

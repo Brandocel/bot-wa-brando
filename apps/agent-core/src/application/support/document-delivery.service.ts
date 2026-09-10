@@ -23,6 +23,39 @@ export type DeliveryResult =
   | { ok: true }
   | { ok: false; reason: 'too_big' | 'not_available' | 'download_failed' };
 
+/** Extensión por tipo de archivo, para los que Drive puede entregar. */
+const EXTENSIONES: Record<string, string> = {
+  'application/pdf': '.pdf',
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/webp': '.webp',
+  'text/plain': '.txt',
+  'text/csv': '.csv',
+  'application/msword': '.doc',
+  'application/vnd.ms-excel': '.xls',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx',
+};
+
+/**
+ * Garantiza que el nombre lleve extensión.
+ *
+ * WhatsApp deduce el tipo de archivo del nombre, no de la cabecera: un PDF
+ * llamado "FACTURA_2026-02_V3001" a secas lo rechaza sin más explicación
+ * que un "false" de open-wa. Y en Drive la gente sube archivos sin
+ * extensión constantemente, porque ahí no hace falta para nada.
+ *
+ * El tipo real lo tenemos del propio Drive, así que la extensión se deduce
+ * de ahí y no de adivinar mirando el nombre.
+ */
+function conExtension(nombre: string, mimeType: string): string {
+  const esperada = EXTENSIONES[mimeType];
+  if (!esperada) return nombre;
+
+  return nombre.toLowerCase().endsWith(esperada) ? nombre : nombre + esperada;
+}
+
 @Injectable()
 export class DocumentDeliveryService {
   private readonly logger = new Logger(DocumentDeliveryService.name);
@@ -68,6 +101,7 @@ export class DocumentDeliveryService {
     }
 
     const base64 = `data:${document.mimeType};base64,${bytes.toString('base64')}`;
+    const filename = conExtension(document.name, document.mimeType);
 
     await this.prisma.outboxMessage.create({
       data: {
@@ -75,7 +109,7 @@ export class DocumentDeliveryService {
         payload: {
           kind: 'file',
           base64,
-          filename: document.name,
+          filename,
           caption,
         },
       },
