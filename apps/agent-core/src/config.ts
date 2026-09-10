@@ -55,7 +55,7 @@ export const config = {
      */
     serviceAccount: parseServiceAccount(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
 
-    syncIntervalMs: Number(process.env.DRIVE_SYNC_INTERVAL_MS ?? 10 * 60 * 1000),
+    syncIntervalMs: Number(process.env.DRIVE_SYNC_INTERVAL_MS ?? 5 * 60 * 1000),
 
     /**
      * Tope de tamaño para entregar por WhatsApp. Más grande que esto se

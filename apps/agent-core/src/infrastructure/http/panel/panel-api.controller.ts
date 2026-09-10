@@ -496,7 +496,13 @@ export class PanelApiController {
     // sus archivos son viejos y no aparecerían nunca. Borrar el cursor
     // fuerza un barrido completo en el siguiente /sync.
     if (body.driveFolderId) {
-      await this.prisma.driveSyncState.deleteMany({});
+      // Marcarla como no barrida basta: la siguiente pasada automática la
+      // recorre entera. Antes se borraba el cursor global, lo que obligaba
+      // a rebarrer TODAS las empresas por cambiar una sola.
+      await this.prisma.organization.update({
+        where: { id: body.id },
+        data: { lastScanAt: null },
+      });
     }
 
     return { id: organization.id, name: organization.name };

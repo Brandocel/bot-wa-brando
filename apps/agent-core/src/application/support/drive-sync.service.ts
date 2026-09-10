@@ -101,78 +101,99 @@ export class DriveSyncService implements OnModuleInit {
         where: { id: SYNC_STATE_ID },
       });
 
-      if (!state) {
-        await this.fullScan(organizations, report);
-        return report;
+      /**
+       * Primero el cursor, y se guarda antes de leer nada.
+       *
+       * Antes el cursor solo se guardaba si NINGUNA carpeta fallaba, y con
+       * una empresa mal configurada eso no pasaba nunca: cada pasada
+       * repetía el barrido completo, fallaba igual, y los cambios de las
+       * empresas que sí funcionaban no se veían jamás. Una empresa rota
+       * bloqueaba a todas.
+       *
+       * Pedirlo antes de leer también evita perder cambios: lo que alguien
+       * suba durante el barrido cae dentro de la ventana del cursor y se
+       * procesa en la vuelta siguiente.
+       */
+      let cursor = state?.pageToken ?? null;
+
+      if (!cursor) {
+        cursor = await this.source.startCursor();
+        await this.prisma.driveSyncState.upsert({
+          where: { id: SYNC_STATE_ID },
+          create: { id: SYNC_STATE_ID, pageToken: cursor },
+          update: { pageToken: cursor },
+        });
       }
 
-      await this.incremental(state.pageToken, organizations, report);
+      // Empresas nunca barridas, o que acaban de cambiar de carpeta. Cada
+      // una va por su cuenta: si una falla, las demás siguen.
+      const pendientes = organizations.filter((o) => o.lastScanAt === null);
+
+      for (const organization of pendientes) {
+        await this.scanOrganization(organization, report);
+      }
+
+      // Y los cambios desde el cursor, para todo lo ya barrido.
+      if (state?.pageToken) {
+        await this.incremental(state.pageToken, organizations, report);
+      }
+
       return report;
     } finally {
       this.running = false;
     }
   }
 
-  /** Primer arranque: se recorre cada carpeta raíz y se fija el cursor. */
-  private async fullScan(
-    organizations: Organization[],
+  /**
+   * Recorre la carpeta de UNA empresa y reconcilia su índice.
+   *
+   * Por empresa y no todas juntas: un fallo aquí ya no arrastra al resto,
+   * y la que falló se vuelve a intentar en la pasada siguiente porque su
+   * lastScanAt sigue en null.
+   */
+  private async scanOrganization(
+    organization: Organization,
     report: SyncReport,
   ): Promise<void> {
-    // El cursor se pide ANTES de leer, no después: si alguien sube un archivo
-    // durante el barrido, el cambio queda dentro de la ventana del cursor y
-    // se procesa en la siguiente pasada. Al revés, se perdería.
-    const cursor = await this.source.startCursor();
+    try {
+      const files = await this.source.listFolder(organization.driveFolderId);
 
-    for (const organization of organizations) {
-      try {
-        const files = await this.source.listFolder(organization.driveFolderId);
-        for (const file of files) {
-          await this.upsert(file, organization, report);
-        }
-
-        // Lo que el índice tenía y la carpeta ya no: se marca como borrado.
-        //
-        // Un barrido completo SÍ conoce la lista entera, así que puede
-        // afirmar lo que falta — el incremental no, porque solo ve cambios.
-        // Sin esto, un documento que dejó de estar en Drive seguiría
-        // ganando búsquedas y el bot lo prometería para después fallar al
-        // descargarlo. Es exactamente lo que pasa al cambiar una empresa de
-        // carpeta: los documentos de la carpeta vieja se quedan colgados.
-        const vistos = files.map((f) => f.id);
-
-        const huerfanos = await this.prisma.document.updateMany({
-          where: {
-            organizationId: organization.id,
-            status: { not: 'DELETED' },
-            driveFileId: { notIn: vistos },
-          },
-          data: { status: 'DELETED' },
-        });
-
-        report.deleted += huerfanos.count;
-
-        this.logger.log(
-          `${organization.name}: ${files.length} archivo(s) leídos` +
-            (huerfanos.count > 0
-              ? `, ${huerfanos.count} ya no está(n) en la carpeta`
-              : ''),
-        );
-      } catch (err) {
-        const detail = err instanceof Error ? err.message : String(err);
-        report.errors.push(`${organization.name}: ${detail}`);
-        this.logger.error(`barrido de ${organization.name} falló: ${detail}`);
+      for (const file of files) {
+        await this.upsert(file, organization, report);
       }
-    }
 
-    // Solo se guarda el cursor si ninguna carpeta falló. Con un error a medias
-    // el próximo arranque repite el barrido, que es idempotente; guardarlo
-    // dejaría a esa organización sin indexar para siempre.
-    if (report.errors.length === 0) {
-      await this.prisma.driveSyncState.upsert({
-        where: { id: SYNC_STATE_ID },
-        create: { id: SYNC_STATE_ID, pageToken: cursor },
-        update: { pageToken: cursor, lastError: null },
+      // Lo que el índice tenía y la carpeta ya no: se marca como borrado.
+      //
+      // Un barrido completo SÍ conoce la lista entera, así que puede
+      // afirmar lo que falta — el incremental no, porque solo ve cambios.
+      // Sin esto, un documento que dejó de estar en Drive seguiría ganando
+      // búsquedas y el bot lo prometería para después fallar al bajarlo.
+      const huerfanos = await this.prisma.document.updateMany({
+        where: {
+          organizationId: organization.id,
+          status: { not: 'DELETED' },
+          driveFileId: { notIn: files.map((f) => f.id) },
+        },
+        data: { status: 'DELETED' },
       });
+
+      report.deleted += huerfanos.count;
+
+      await this.prisma.organization.update({
+        where: { id: organization.id },
+        data: { lastScanAt: new Date() },
+      });
+
+      this.logger.log(
+        `${organization.name}: ${files.length} archivo(s) leídos` +
+          (huerfanos.count > 0
+            ? `, ${huerfanos.count} ya no está(n) en la carpeta`
+            : ''),
+      );
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      report.errors.push(`${organization.name}: ${detail}`);
+      this.logger.error(`barrido de ${organization.name} falló: ${detail}`);
     }
   }
 

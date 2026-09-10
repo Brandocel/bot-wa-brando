@@ -264,6 +264,11 @@ model Organization {
   driveFolderId String  @unique // carpeta raíz en Drive
   active        Boolean @default(true)
 
+  /// Cuando se recorrio su carpeta por completo. null = pendiente de
+  /// barrido, que es el estado de una empresa nueva o de una que acaba
+  /// de cambiar de carpeta.
+  lastScanAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
