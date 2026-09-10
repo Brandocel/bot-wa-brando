@@ -210,8 +210,8 @@ function qrPage(key: string): string {
 <style>
   :root { color-scheme: dark; }
   /* Sin esto, el atributo hidden NO oculta la caja del QR: el
-     `display: inline-block` de .qr le gana a la regla del navegador y la
-     caja se queda visible con el icono de imagen rota dentro. */
+     display inline-block de .qr le gana a la regla del navegador y la caja
+     se queda visible con el icono de imagen rota dentro. */
   [hidden] { display: none !important; }
   body {
     margin: 0; min-height: 100vh; display: grid; place-items: center;
