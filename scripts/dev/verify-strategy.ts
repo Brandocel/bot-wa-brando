@@ -97,6 +97,50 @@ function fakeMessage(waId: string, text: string): IncomingMessage {
   } as IncomingMessage;
 }
 
+/**
+ * Una conversación de varios turnos sobre la MISMA conversación.
+ *
+ * Reproduce el bucle que se vio en producción: el bot preguntaba el mes,
+ * le contestaban el mes, y al turno siguiente volvía a preguntar el tipo de
+ * documento porque no recordaba nada. Cada turno se extrae por separado, así
+ * que sin fusionar slots contra el ticket la conversación no avanza nunca.
+ */
+async function conversacion(
+  titulo: string,
+  turnos: string[],
+): Promise<void> {
+  const waId = '5215500000001@c.us';
+  const chatId = 'test-conversacion';
+
+  const contact = await prisma.contact.findUniqueOrThrow({
+    where: { waId },
+    select: { id: true },
+  });
+
+  const conversation = await prisma.conversation.upsert({
+    where: { chatId },
+    create: { chatId, contactId: contact.id },
+    update: {},
+  });
+
+  console.log(`=== ${titulo} ===\n`);
+
+  for (const texto of turnos) {
+    const reply = await strategy.handle(fakeMessage(waId, texto), {
+      contactId: contact.id,
+      conversationId: conversation.id,
+    });
+    console.log(`  tú:  ${texto}`);
+    console.log(
+      `  bot: ${reply === null ? 'null' : reply.replace(/\n/g, ' | ')}\n`,
+    );
+  }
+
+  // Cada conversación arranca limpia: un ticket abierto de la anterior
+  // reengancharía y contaminaría el resultado.
+  await prisma.ticket.deleteMany({ where: { conversationId: conversation.id } });
+}
+
 async function main(): Promise<void> {
   for (const turn of TURNS) {
     const contact = await prisma.contact.findUnique({
@@ -132,6 +176,19 @@ async function main(): Promise<void> {
     console.log(`   esperado: ${turn.expect}`);
     console.log(`   obtenido: ${reply === null ? 'null' : reply.replace(/\n/g, ' | ')}\n`);
   }
+
+  // La conversación de varios turnos va ANTES de limpiar: si no, borraría
+  // el ticket a medio camino y el segundo turno arrancaría de cero, que es
+  // justo el bug que este caso existe para detectar.
+  await conversacion('Conversación por partes: no debe repetir preguntas', [
+    'Alguna factura',
+    'de febrero 2026',
+  ]);
+
+  await conversacion('Respuesta que no aporta: no insiste, escala', [
+    'necesito un documento',
+    'ya te dije cuál',
+  ]);
 
   // Limpieza: los tickets de prueba no deben quedar en la cola del operador.
   const testConversations = await prisma.conversation.findMany({

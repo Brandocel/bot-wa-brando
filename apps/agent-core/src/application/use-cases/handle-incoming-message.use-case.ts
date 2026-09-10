@@ -122,7 +122,7 @@ export class HandleIncomingMessageUseCase {
       // Un comando que nadie reclamó es un error de tecleo, no un mensaje
       // para el agente. Contestarlo aquí, y no en cada servicio, es lo que
       // permite que los registros de comandos se encadenen sin pisarse.
-      const isCommand = message.body.trim().startsWith('/');
+      const isCommand = looksLikeCommand(message.body);
 
       const unknownCommand =
         supportReply === null && isCommand
@@ -156,4 +156,19 @@ export class HandleIncomingMessageUseCase {
     // Fuera de la transacción: la red no va dentro de un lock.
     await this.outbox.drain();
   }
+}
+
+/**
+ * ¿Esto es un comando o solo empieza con barra?
+ *
+ * No basta con mirar el primer carácter. Una URL pegada, una fracción
+ * escrita a mano o cualquier texto que arranque con `/` acababa recibiendo
+ * un "No conozco ...". Un comando de verdad es una palabra corta, sin
+ * espacios, y con caracteres de nombre.
+ *
+ * El tope de longitud no es cosmético: es lo que impide que un texto largo
+ * se devuelva entero dentro del mensaje de error.
+ */
+function looksLikeCommand(body: string): boolean {
+  return /^\/[a-záéíóúñ0-9_-]{1,24}(\s|$)/i.test(body.trim());
 }

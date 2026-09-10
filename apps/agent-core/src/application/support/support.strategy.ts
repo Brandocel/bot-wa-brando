@@ -5,6 +5,7 @@ import { LLM_PORT, type LlmPort } from '../ports/llm.port';
 import { AccessScopeService, type OrgScope } from './access-scope.service';
 import { DocumentDeliveryService } from './document-delivery.service';
 import { DocumentSearchService } from './document-search.service';
+import type { SearchQuery } from './document-search.service';
 import { SlotExtractorService } from './slot-extractor.service';
 import { TicketService } from './ticket.service';
 
@@ -55,6 +56,13 @@ export class SupportStrategy {
     // más adelante, la Strategy de ventas.
     if (scope.decision !== 'ALLOW') return null;
 
+    // Una foto o un audio sin texto no traen nada que extraer. Antes caían
+    // en el flujo de documentos y provocaban un "¿qué documento necesitas?"
+    // que no venía a cuento.
+    if (message.kind !== 'TEXT' && message.body.trim() === '') {
+      return 'Recibí tu archivo, pero todavía no sé leerlo. Escríbeme qué documento necesitas y de qué mes.';
+    }
+
     const extraction = await this.slots.extract(message.body);
 
     if (extraction.notADocumentRequest) {
@@ -68,17 +76,32 @@ export class SupportStrategy {
         scope.scopes.length === 1 ? scope.scopes[0]!.organizationId : null,
       subject: message.body,
       priority: this.tickets.priorityFor(extraction.query),
-      slots: {
-        category: extraction.query.category,
-        period: extraction.query.period?.toISOString() ?? null,
-        folio: extraction.query.folio,
-      },
     });
 
-    const asked = countQuestions(ticket.slots);
+    /**
+     * ESTO es lo que convierte mensajes sueltos en una conversación.
+     *
+     * Cada mensaje se extrae por separado, así que "de este mes" trae
+     * periodo y ninguna categoría, y "factura" trae categoría y ningún
+     * periodo. Sin fusionar contra lo que ya está en el ticket, el bot
+     * pregunta el mes, le contestan el mes, y a la siguiente vuelta ya no
+     * se acuerda de que le habían dicho "factura" — y pregunta otra vez.
+     *
+     * Lo nuevo pisa a lo viejo, pero un hueco NUNCA borra lo que ya
+     * estaba: por eso se comprueba contra null en vez de asignar de plano.
+     */
+    const query = mergeSlots(ticket.slots, extraction.query);
+
+    await this.tickets.updateSlots(ticket.id, {
+      category: query.category,
+      period: query.period?.toISOString() ?? null,
+      folio: query.folio,
+    });
+
+    const asked = readAsked(ticket.slots);
 
     // Presupuesto agotado: escala en vez de seguir preguntando.
-    if (asked >= MAX_QUESTIONS) {
+    if (asked.total >= MAX_QUESTIONS) {
       await this.tickets.escalate(ticket.id, 'slots_incompletos', null);
       return [
         'Creo que no te estoy entendiendo bien, y no quiero hacerte dar más vueltas.',
@@ -91,34 +114,36 @@ export class SupportStrategy {
     // Varias empresas y no dijo cuál: se pregunta. Elegir la primera es
     // exactamente cómo se entrega la factura de la empresa equivocada.
     if (scope.scopes.length > 1 && !organizationId) {
-      await this.countUp(ticket.id, ticket.slots);
-      return [
+      return this.ask(ticket, asked, 'empresa', [
         'Tienes acceso a varias empresas. ¿De cuál lo necesitas?',
         ...scope.scopes.map((s) => `• ${s.organizationName}`),
-      ].join('\n');
+      ].join('\n'));
     }
 
-    if (!extraction.query.category && !extraction.query.folio) {
-      await this.countUp(ticket.id, ticket.slots);
-      return '¿Qué documento necesitas? Puedo buscarte facturas, contratos, cotizaciones, reportes y pólizas.';
+    if (!query.category && !query.folio) {
+      return this.ask(
+        ticket,
+        asked,
+        'categoria',
+        '¿Qué documento necesitas? Puedo buscarte facturas, contratos, cotizaciones, reportes y pólizas.',
+      );
     }
 
-    if (!extraction.query.period && !extraction.query.folio) {
-      await this.countUp(ticket.id, ticket.slots);
-      return '¿De qué mes lo necesitas?';
+    if (!query.period && !query.folio) {
+      return this.ask(ticket, asked, 'periodo', '¿De qué mes lo necesitas?');
     }
 
     const results = await this.search.search(scope.scopes, {
-      ...extraction.query,
+      ...query,
       organizationId,
     });
 
     if (results.length === 0) {
-      const denial = extraction.query.category
+      const denial = query.category
         ? this.scope.denialFor(
             scope.scopes,
-            extraction.query.category,
-            extraction.query.period,
+            query.category,
+            query.period,
           )
         : null;
 
@@ -136,8 +161,10 @@ export class SupportStrategy {
       ].join('\n');
     }
 
+    // Varios resultados NO es ambigüedad de la persona: preguntó bien y hay
+    // más de un documento que encaja. Se listan con su folio para que pueda
+    // señalar uno, y esta pregunta no cuenta contra el presupuesto.
     if (results.length > 1) {
-      await this.countUp(ticket.id, ticket.slots);
       return [
         `Encontré ${results.length}. ¿Cuál necesitas?`,
         ...results.map((doc) => `• ${describe(doc)}`),
@@ -220,23 +247,95 @@ export class SupportStrategy {
   }
 
   /**
-   * El contador de preguntas vive en los slots del ticket, no en memoria:
-   * el core puede reiniciarse o correr en varias instancias entre un
-   * mensaje y el siguiente.
+   * Hace una pregunta, pero solo si no se hizo ya.
+   *
+   * Repetir una pregunta que la persona ya contestó es la forma más rápida
+   * de que abandone la conversación: da la sensación de no estar hablando
+   * con nadie. Si un dato sigue faltando DESPUÉS de haberlo pedido, el
+   * problema no es que falte información — es que no nos estamos
+   * entendiendo, y eso lo resuelve una persona, no otra pregunta.
+   *
+   * Qué se preguntó vive en los slots del ticket, no en memoria: entre un
+   * mensaje y el siguiente el core puede reiniciarse o atender desde otra
+   * instancia.
    */
-  private async countUp(
-    ticketId: string,
-    slots: unknown,
-  ): Promise<void> {
-    const current = countQuestions(slots);
-    await this.tickets.updateSlots(ticketId, { preguntas: current + 1 });
+  private async ask(
+    ticket: { id: string; number: number; slots: unknown },
+    asked: AskedState,
+    slot: AskableSlot,
+    question: string,
+  ): Promise<string> {
+    if (asked.slots[slot]) {
+      await this.tickets.escalate(ticket.id, 'slots_incompletos', null);
+      return [
+        'Ya te pregunté esto y sigo sin entenderlo bien; no quiero hacerte repetir.',
+        `Se lo pasé al equipo con el folio #${ticket.number}.`,
+      ].join('\n');
+    }
+
+    await this.tickets.updateSlots(ticket.id, {
+      preguntas: asked.total + 1,
+      preguntado: { ...asked.slots, [slot]: true },
+    });
+
+    return question;
   }
 }
 
-function countQuestions(slots: unknown): number {
-  if (typeof slots !== 'object' || slots === null) return 0;
-  const value = (slots as Record<string, unknown>).preguntas;
-  return typeof value === 'number' ? value : 0;
+/**
+ * Fusiona lo que el ticket ya sabía con lo que trajo este mensaje.
+ *
+ * Un campo nuevo gana. Un campo vacío se ignora: "de este mes" no puede
+ * borrar el "factura" que la persona dijo hace dos mensajes.
+ */
+function mergeSlots(stored: unknown, fresh: SearchQuery): SearchQuery {
+  const previous = (typeof stored === 'object' && stored !== null
+    ? stored
+    : {}) as Record<string, unknown>;
+
+  const storedPeriod =
+    typeof previous.period === 'string' ? new Date(previous.period) : null;
+
+  return {
+    category: fresh.category ?? (previous.category as SearchQuery['category']) ?? null,
+    period: fresh.period ?? storedPeriod,
+    folio: fresh.folio ?? (typeof previous.folio === 'string' ? previous.folio : null),
+    text: fresh.text,
+  };
+}
+
+/** Los datos que el bot sabe pedir cuando faltan. */
+type AskableSlot = 'categoria' | 'periodo' | 'empresa';
+
+interface AskedState {
+  /** Cuántas preguntas se han hecho en este ticket. */
+  total: number;
+  /** Cuáles en concreto, para no repetir ninguna. */
+  slots: Partial<Record<AskableSlot, boolean>>;
+}
+
+/**
+ * El estado de la conversación vive en el ticket.
+ *
+ * Es la "ventana de contexto" del bot, y a propósito NO es el historial de
+ * mensajes: es un puñado de campos resueltos. Mandarle al modelo cuarenta
+ * mensajes crudos es la causa número uno de que un bot se pierda, además de
+ * lo que hace que cada turno cueste más que el anterior.
+ */
+function readAsked(slots: unknown): AskedState {
+  const raw = (typeof slots === 'object' && slots !== null
+    ? slots
+    : {}) as Record<string, unknown>;
+
+  const preguntado =
+    typeof raw.preguntado === 'object' && raw.preguntado !== null
+      ? (raw.preguntado as Partial<Record<AskableSlot, boolean>>)
+      : {};
+
+  return {
+    total: typeof raw.preguntas === 'number' ? raw.preguntas : 0,
+    slots: preguntado,
+  };
 }
 
 function describe(doc: Document): string {

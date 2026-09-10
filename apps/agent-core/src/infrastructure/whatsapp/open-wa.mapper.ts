@@ -93,8 +93,23 @@ export class OpenWaMessageMapper {
       (to !== null && from !== null && to === from) ||
       chatId === config.ownerWaId;
 
-    // open-wa manda el texto en `body` para chat y en `caption` para media.
-    const body = str(raw['body']) ?? str(raw['caption']) ?? '';
+    /**
+     * En un mensaje de texto, `body` ES el texto. En uno con media, `body`
+     * son los BYTES del archivo en base64 y el texto está en `caption`.
+     *
+     * Dejar pasar ese base64 como si fuera lo que escribió la persona es
+     * exactamente lo que hacía que una foto se leyera como un comando: el
+     * base64 de un JPEG empieza por `/9j/`, con barra, así que el bot
+     * contestaba "No conozco /9j/4AAQSkZJRg..." con medio archivo dentro.
+     *
+     * Que esto se corrija aquí y no más abajo es el punto de la capa
+     * anticorrupción: el dominio no tiene por qué saber que open-wa mete
+     * archivos en un campo llamado `body`.
+     */
+    const body =
+      kind === 'TEXT'
+        ? (str(raw['body']) ?? '')
+        : (str(raw['caption']) ?? '');
 
     // `t` viene en segundos, no en milisegundos. Confundirlos deja todos los
     // mensajes en 1970.

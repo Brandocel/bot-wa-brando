@@ -400,6 +400,38 @@ grupo o número del agente. Nunca se avisa sin cambiar el estado.
 
 ---
 
+## 7bis. La ventana de contexto es el ticket
+
+El bot **no** recuerda la conversación releyendo mensajes. Recuerda porque
+cada dato resuelto se escribe en `Ticket.slots`, y cada turno nuevo se
+fusiona contra lo que ya había:
+
+```
+turno 1: "alguna factura"     → {categoria: FACTURA}                  → pregunta el mes
+turno 2: "de febrero 2026"    → {categoria: FACTURA, periodo: 2026-02} → entrega
+```
+
+Un campo nuevo pisa al viejo; **un campo vacío nunca borra lo que ya
+estaba**. Sin esa segunda mitad, "de febrero" llega sin categoría y
+sobrescribe el "factura" de hace dos mensajes — que es exactamente el bucle
+que se vio en producción: el bot preguntaba el mes, le contestaban el mes, y
+al turno siguiente volvía a preguntar qué documento era.
+
+**Por qué el ticket y no el historial de mensajes.** Mandarle al modelo los
+últimos cuarenta mensajes es la causa número uno de que un bot se pierda, y
+además hace que cada turno cueste más que el anterior. Un puñado de campos
+resueltos ni deriva ni crece.
+
+**Ninguna pregunta se repite.** El ticket también guarda *qué* se preguntó
+ya (`preguntado: {categoria, periodo, empresa}`). Si un dato sigue faltando
+después de haberlo pedido, el bot no insiste: escala. Que el dato falte dos
+veces no significa que falte información — significa que no se están
+entendiendo, y eso lo resuelve una persona, no otra pregunta.
+
+La única pregunta que no cuenta contra el presupuesto es la de
+desambiguación entre varios documentos encontrados: ahí la persona preguntó
+bien y de verdad hay más de un resultado válido.
+
 ## 8. Cómo se evita que el bot "se pierda"
 
 1. **El LLM tiene dos trabajos, y ninguno es decidir.** Extraer slots (salida JSON
