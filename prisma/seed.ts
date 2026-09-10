@@ -270,15 +270,34 @@ const ORGS: SeedOrg[] = [
 
 async function main(): Promise<void> {
   for (const org of ORGS) {
-    const organization = await prisma.organization.upsert({
-      where: { driveFolderId: org.driveFolderId },
-      create: {
-        name: org.name,
-        taxId: org.taxId,
-        driveFolderId: org.driveFolderId,
-      },
-      update: { name: org.name, active: true },
+    /**
+     * Se busca por RFC, no por carpeta de Drive.
+     *
+     * La carpeta cambia: es lo primero que se corrige al conectar una
+     * empresa de verdad. Buscando por ella, el seed no reconocía la empresa
+     * ya existente e intentaba crear otra con el mismo RFC — que revienta
+     * por la restricción de unicidad.
+     *
+     * Y sobre todo: a una empresa que ya existe NO se le toca la carpeta.
+     * Volver a correr el seed no puede deshacer la configuración real de
+     * alguien, que es exactamente lo que habría pasado aquí.
+     */
+    const existente = await prisma.organization.findFirst({
+      where: { OR: [{ taxId: org.taxId }, { name: org.name }] },
     });
+
+    const organization = existente
+      ? await prisma.organization.update({
+          where: { id: existente.id },
+          data: { active: true },
+        })
+      : await prisma.organization.create({
+          data: {
+            name: org.name,
+            taxId: org.taxId,
+            driveFolderId: org.driveFolderId,
+          },
+        });
 
     for (const member of org.members) {
       const contact = await prisma.contact.upsert({
@@ -331,7 +350,19 @@ async function main(): Promise<void> {
       }
     }
 
-    for (const doc of org.documents) {
+    // Si la empresa ya está conectada a una carpeta de Drive real, sus
+    // documentos salen de ahí. Sembrar los ficticios encima haría que el bot
+    // prometiera archivos que no existen — que es justo el fallo que costó
+    // una tarde entender.
+    const conectadaAdrive = !organization.driveFolderId.startsWith('drive-folder-');
+
+    if (conectadaAdrive) {
+      console.log(
+        `↷ ${org.name}: conectada a Drive, no se siembran documentos de prueba`,
+      );
+    }
+
+    for (const doc of conectadaAdrive ? [] : org.documents) {
       const driveFileId = `drive-${org.key}-${doc.name}`;
 
       await prisma.document.upsert({
