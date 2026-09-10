@@ -27,6 +27,15 @@ let lastError: string | null = null;
 let aliveAt: Date | null = null;
 let deadChecks = 0;
 
+/**
+ * Cuándo WhatsApp nos entregó CUALQUIER evento por última vez.
+ *
+ * Es la única señal que prueba que el flujo de entrada sigue vivo. Una
+ * sonda puede contestar con la página a medio morir; esto solo se actualiza
+ * si de verdad llegó algo.
+ */
+let lastEventAt: Date | null = null;
+
 export const status = () => ({
   state,
   hasQr: lastQrPng !== null,
@@ -41,6 +50,12 @@ export const status = () => ({
    * el peor estado posible: nadie sabe que hay que reiniciar.
    */
   aliveAt,
+  /**
+   * Silencio total desde el último evento entrante. Un rato largo aquí con
+   * el estado en CONNECTED es la firma de la sesión zombi: el proceso cree
+   * que todo va bien y WhatsApp ya no le entrega nada.
+   */
+  lastEventAt,
 });
 
 export const getQrPng = () => lastQrPng;
@@ -155,7 +170,15 @@ function startWatchdog(): void {
   const timer = setInterval(() => {
     void (async () => {
       try {
-        await client?.getHostNumber();
+        // getConnectionState pregunta a los internos de WhatsApp Web, no a
+        // un dato cacheado. getHostNumber contestaba aunque la página
+        // estuviera rota, que es justo el caso que hay que cazar.
+        const conexion = await client?.getConnectionState();
+
+        if (conexion !== 'CONNECTED') {
+          throw new Error(`WhatsApp reporta ${String(conexion)}`);
+        }
+
         aliveAt = new Date();
         deadChecks = 0;
         if (state === 'CRASHED') state = 'CONNECTED';
@@ -263,6 +286,7 @@ export async function startWhatsApp(): Promise<void> {
 
   state = 'CONNECTED';
   aliveAt = new Date();
+  lastEventAt = new Date();
   startPendingDrain();
   startWatchdog();
   lastQrPng = null; // ya no sirve y no queremos credenciales colgando en RAM
@@ -273,6 +297,7 @@ export async function startWhatsApp(): Promise<void> {
   // El costo es que también nos reenvía lo que el bot acaba de mandar; de eso
   // se protege el core (IdempotencyFilter + LoopGuardFilter).
   await client.onAnyMessage(async (message) => {
+    lastEventAt = new Date();
     await forwardToCore(message);
   });
 
