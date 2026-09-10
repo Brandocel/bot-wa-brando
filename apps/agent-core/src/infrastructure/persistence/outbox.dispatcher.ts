@@ -15,6 +15,34 @@ const MAX_ATTEMPTS = 5;
 const SWEEP_MS = 15_000;
 
 /**
+ * Lo que el caso de uso escribe en `OutboxMessage.payload`. Union discriminada
+ * a propósito: agregar un tipo de envío (ubicación, botones) es un caso nuevo
+ * en `drain()` que el compilador obliga a cubrir.
+ */
+interface OutboxTextPayload {
+  kind: 'text';
+  text: string;
+}
+
+interface OutboxFilePayload {
+  kind: 'file';
+  /** URL de descarga; el gateway la baja. Camino normal para Drive. */
+  url?: string;
+  /** Data URI completo. Solo para archivos chicos que ya están en RAM. */
+  base64?: string;
+  filename: string;
+  caption?: string;
+}
+
+type OutboxPayload = OutboxTextPayload | OutboxFilePayload;
+
+interface SentMessage {
+  id: string;
+  body: string;
+  kind: 'TEXT' | 'DOCUMENT';
+}
+
+/**
  * Patrón OUTBOX.
  *
  * El caso de uso escribe la intención de enviar dentro de su transacción;
@@ -65,13 +93,17 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
       });
 
       for (const row of pending) {
-        const payload = row.payload as { kind: string; text: string };
+        const payload = row.payload as unknown as OutboxPayload;
 
         try {
           // Ritmo humano: nada de responder en 200ms como una máquina.
           await this.messaging.setTyping(row.chatId, true);
-          await this.humanDelay(payload.text ?? '');
-          const sentId = await this.messaging.sendText(row.chatId, payload.text);
+
+          const sent =
+            payload.kind === 'file'
+              ? await this.sendFilePayload(row.chatId, payload)
+              : await this.sendTextPayload(row.chatId, payload);
+
           await this.messaging.setTyping(row.chatId, false);
 
           await this.prisma.outboxMessage.update({
@@ -79,7 +111,7 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
             data: { status: 'SENT', sentAt: new Date(), attempts: row.attempts + 1 },
           });
 
-          await this.recordOutbound(row.chatId, sentId, payload.text);
+          await this.recordOutbound(row.chatId, sent.id, sent.body, sent.kind);
         } catch (err) {
           const attempts = row.attempts + 1;
           const detail = err instanceof Error ? err.message : String(err);
@@ -107,6 +139,36 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async sendTextPayload(
+    chatId: string,
+    payload: OutboxTextPayload,
+  ): Promise<SentMessage> {
+    await this.humanDelay(payload.text ?? '');
+    const id = await this.messaging.sendText(chatId, payload.text);
+    return { id, body: payload.text, kind: 'TEXT' };
+  }
+
+  /**
+   * Los documentos NO llevan retardo humano: nadie teclea un PDF, y la
+   * descarga desde Drive ya mete su propia latencia.
+   *
+   * El cuerpo que se guarda en el historial es el nombre del archivo, no su
+   * contenido. La tabla Message es un índice de la conversación, no un
+   * almacén de binarios.
+   */
+  private async sendFilePayload(
+    chatId: string,
+    payload: OutboxFilePayload,
+  ): Promise<SentMessage> {
+    const id = await this.messaging.sendFile(chatId, {
+      url: payload.url,
+      base64: payload.base64,
+      filename: payload.filename,
+      caption: payload.caption,
+    });
+    return { id, body: `[documento] ${payload.filename}`, kind: 'DOCUMENT' };
+  }
+
   /**
    * Guarda el mensaje saliente con el messageId que devolvió WhatsApp.
    *
@@ -117,7 +179,8 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
   private async recordOutbound(
     chatId: string,
     messageId: string,
-    text: string,
+    body: string,
+    kind: 'TEXT' | 'DOCUMENT',
   ): Promise<void> {
     try {
       const conversation = await this.prisma.conversation.findUnique({
@@ -131,8 +194,8 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
           id: messageId,
           conversationId: conversation.id,
           direction: 'OUT',
-          kind: 'TEXT',
-          body: text,
+          kind,
+          body,
         },
       });
     } catch (err) {

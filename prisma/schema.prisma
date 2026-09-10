@@ -54,6 +54,8 @@ model Contact {
   memoryFacts   MemoryFact[]
   reminders     Reminder[]
   lead          Lead?
+  memberships   Membership[]
+  tickets       Ticket[]
 
   @@index([role])
 }
@@ -70,6 +72,7 @@ model Conversation {
 
   contact  Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
   messages Message[]
+  tickets  Ticket[]
 
   @@index([contactId])
 }
@@ -221,4 +224,195 @@ model SystemFlag {
   key       String   @id
   value     Json
   updatedAt DateTime @updatedAt
+}
+
+// ─── Soporte documental: multi-empresa ────────────────────────────────────
+// Ver docs/ARQUITECTURA-SOPORTE.md. Regla que manda sobre todo lo de abajo:
+// el permiso se resuelve en SQL contra el waId ANTES de que el LLM vea nada.
+
+model Organization {
+  id            String  @id @default(cuid())
+  name          String
+  taxId         String? @unique // RFC: la llave real del negocio
+  driveFolderId String  @unique // carpeta raíz en Drive
+  active        Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships Membership[]
+  documents   Document[]
+  tickets     Ticket[]
+}
+
+enum MemberRole {
+  VIEWER // consulta solo lo que su AccessGrant permita
+  MANAGER // consulta todo lo de su organización
+  ADMIN // además puede autorizar a otros números
+}
+
+/// Un número puede pertenecer a varias organizaciones. La membresía —no el
+/// contacto— es lo que otorga acceso, y caduca: los números cambian de dueño.
+model Membership {
+  id             String     @id @default(cuid())
+  contactId      String
+  organizationId String
+  role           MemberRole @default(VIEWER)
+
+  /// null = nunca entregar documento sensible. Un número de WhatsApp no es
+  /// una credencial: se reasigna, se clona, se pierde el teléfono.
+  verifiedAt DateTime?
+
+  validFrom  DateTime  @default(now())
+  validUntil DateTime?
+  revokedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  contact      Contact       @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  grants       AccessGrant[]
+
+  @@unique([contactId, organizationId])
+  @@index([organizationId, revokedAt])
+}
+
+enum DocCategory {
+  FACTURA
+  CONTRATO
+  COTIZACION
+  REPORTE
+  POLIZA
+  OTRO
+}
+
+/// Permiso explícito y acotado. Sin grant aplicable, denegado.
+/// periodFrom/periodTo acotan por el periodo DEL DOCUMENTO, no por su fecha
+/// de subida: "este proveedor solo ve sus facturas de 2026 en adelante".
+model AccessGrant {
+  id           String      @id @default(cuid())
+  membershipId String
+  category     DocCategory
+  periodFrom   DateTime?
+  periodTo     DateTime?
+  grantedBy    String // waId de quien autorizó, para auditoría
+  createdAt    DateTime    @default(now())
+  revokedAt    DateTime?
+
+  membership Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+
+  @@unique([membershipId, category])
+}
+
+// ─── Índice de Drive ──────────────────────────────────────────────────────
+
+enum DocStatus {
+  INDEXED // metadatos verificados: entregable
+  QUARANTINE // no se pudo determinar organización o periodo: invisible
+  DELETED // borrado en Drive; la fila se conserva para la auditoría
+}
+
+model Document {
+  id             String      @id @default(cuid())
+  organizationId String
+  driveFileId    String      @unique
+  driveVersion   String // headRevisionId: así se detecta un cambio
+  name           String
+  mimeType       String
+  sizeBytes      Int
+  category       DocCategory
+  period         DateTime? // primer día del mes al que pertenece el documento
+  folio          String?
+  status         DocStatus   @default(QUARANTINE)
+  extractedText  String?     @db.Text
+  indexedAt      DateTime    @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, category, period])
+  @@index([status])
+}
+
+/// Cursor de la Drive Changes API. Una sola fila ("singleton"). Sin esto,
+/// cada sincronización sería un barrido completo del Drive.
+model DriveSyncState {
+  id         String   @id @default("singleton")
+  pageToken  String
+  lastSyncAt DateTime @updatedAt
+  lastError  String?
+}
+
+// ─── Tickets ──────────────────────────────────────────────────────────────
+
+enum TicketState {
+  ABIERTO
+  EN_REVISION
+  CERRADO
+}
+
+enum TicketPriority {
+  BAJA
+  MEDIA
+  ALTA
+}
+
+model Ticket {
+  id             String         @id @default(cuid())
+  number         Int            @unique @default(autoincrement()) // el folio humano
+  conversationId String
+  organizationId String?
+  contactId      String
+  subject        String
+  state          TicketState    @default(ABIERTO)
+  priority       TicketPriority @default(MEDIA)
+  level          Int            @default(0) // 0 bot · 1 agente · 2 supervisor
+  assignedToWaId String?
+  slots          Json           @default("{}")
+  slaDueAt       DateTime?
+  closedAt       DateTime?
+  closeReason    String? // resuelto | sin_permiso | no_encontrado | ttl | usuario
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  conversation Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  organization Organization? @relation(fields: [organizationId], references: [id])
+  contact      Contact       @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  events       TicketEvent[]
+
+  @@index([state, priority, slaDueAt])
+  @@index([conversationId, state])
+}
+
+/// Bitácora append-only del ticket: aquí nunca se hace UPDATE. El campo
+/// `state` del ticket existe por comodidad de consulta; la verdad está aquí.
+model TicketEvent {
+  id        String   @id @default(cuid())
+  ticketId  String
+  type      String // creado | estado | prioridad | escalado | asignado | nota | entrega
+  actor     String // "bot" o el waId del humano
+  data      Json
+  createdAt DateTime @default(now())
+
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId, createdAt])
+}
+
+// ─── Auditoría de acceso ──────────────────────────────────────────────────
+
+/// Toda decisión de acceso queda escrita, permitida o no. Con facturas de por
+/// medio esto deja de ser higiene y pasa a ser requisito.
+model AccessAudit {
+  id         String   @id @default(cuid())
+  ticketId   String?
+  waId       String
+  query      String   @db.Text
+  documentId String?
+  decision   String // ALLOW | DENY_NO_MEMBERSHIP | DENY_NO_GRANT | DENY_PERIOD | DENY_UNVERIFIED | NOT_FOUND
+  decidedBy  String // nombre de la regla que decidió
+  createdAt  DateTime @default(now())
+
+  @@index([waId, createdAt])
+  @@index([decision, createdAt])
 }

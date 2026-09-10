@@ -8,6 +8,7 @@ import { KillSwitchFilter } from '../pipeline/filters/kill-switch.filter';
 import { LoopGuardFilter } from '../pipeline/filters/loop-guard.filter';
 import { RateLimitFilter } from '../pipeline/filters/rate-limit.filter';
 import { OwnerCommandsService } from '../commands/owner-commands.service';
+import { SupportCommandsService } from '../support/support-commands.service';
 import { SourceFilter } from '../pipeline/filters/source.filter';
 import { runPipeline, type MessageFilter, type PipelineContext } from '../pipeline/pipeline';
 
@@ -21,6 +22,7 @@ export class HandleIncomingMessageUseCase {
     private readonly prisma: PrismaService,
     private readonly outbox: OutboxDispatcher,
     private readonly ownerCommands: OwnerCommandsService,
+    private readonly supportCommands: SupportCommandsService,
     source: SourceFilter,
     idempotency: IdempotencyFilter,
     loopGuard: LoopGuardFilter,
@@ -101,12 +103,22 @@ export class HandleIncomingMessageUseCase {
       });
 
       // Fase 3: aqui entra el selector de Strategy. Por ahora, comandos
-      // del dueno y eco para todo lo demas.
-      const command =
+      // del dueno, comandos de soporte y eco para todo lo demas.
+      //
+      // El orden importa: los comandos del dueno ganan, para que /pausa
+      // siga funcionando aunque el numero tambien tenga membresias.
+      const ownerReply =
         role === 'OWNER' ? await this.ownerCommands.tryHandle(message) : null;
 
+      const supportReply =
+        ownerReply ??
+        (await this.supportCommands.tryHandle(message, {
+          contactId: contact.id,
+          conversationId: conversation.id,
+        }));
+
       const reply =
-        command ?? `eco (${role?.toLowerCase()}): ${message.body}`;
+        supportReply ?? `eco (${role?.toLowerCase()}): ${message.body}`;
 
       // No se envía aquí: se escribe al outbox dentro de la MISMA transacción.
       // Si algo truena después, no queda un mensaje enviado sin registro ni

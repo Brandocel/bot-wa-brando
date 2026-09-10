@@ -1,6 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { config } from '../../config';
-import type { MessagingPort } from '../../application/ports/messaging.port';
+import type {
+  MessagingPort,
+  OutgoingFile,
+} from '../../application/ports/messaging.port';
 
 /**
  * ADAPTER del MessagingPort. Habla el contrato HTTP del wa-gateway.
@@ -12,7 +15,11 @@ import type { MessagingPort } from '../../application/ports/messaging.port';
 export class GatewayMessagingAdapter implements MessagingPort {
   private readonly logger = new Logger(GatewayMessagingAdapter.name);
 
-  private async post<T>(path: string, body: unknown): Promise<T> {
+  private async post<T>(
+    path: string,
+    body: unknown,
+    timeoutMs = 15_000,
+  ): Promise<T> {
     const res = await fetch(`${config.gatewayUrl}${path}`, {
       method: 'POST',
       headers: {
@@ -20,7 +27,7 @@ export class GatewayMessagingAdapter implements MessagingPort {
         'x-gateway-key': config.gatewayApiKey,
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
 
     if (!res.ok) {
@@ -35,6 +42,17 @@ export class GatewayMessagingAdapter implements MessagingPort {
     const { messageId } = await this.post<{ messageId: string }>(
       '/messages/text',
       { to, text },
+    );
+    return messageId;
+  }
+
+  async sendFile(to: string, file: OutgoingFile): Promise<string> {
+    // Timeout más largo que el de texto: el gateway tiene que descargar el
+    // archivo de Drive antes de poder mandarlo.
+    const { messageId } = await this.post<{ messageId: string }>(
+      '/messages/file',
+      { to, ...file },
+      60_000,
     );
     return messageId;
   }

@@ -223,6 +223,38 @@ export async function sendText(to: string, text: string): Promise<string> {
   return result;
 }
 
+/**
+ * Envía un archivo. Dos orígenes posibles y una regla: el core NUNCA manda
+ * una ruta de disco, porque el disco del gateway no es el del core.
+ *
+ *  - `url`: el gateway lo descarga. Es el camino normal para Drive, que da
+ *    URLs de descarga temporales.
+ *  - `base64`: data URI completo. Para archivos que el core ya tiene en RAM.
+ *
+ * `filename` importa más de lo que parece: WhatsApp lo usa para decidir el
+ * icono y el visor. Un PDF sin extensión .pdf llega como archivo genérico.
+ */
+export async function sendFile(input: {
+  to: string;
+  url?: string;
+  base64?: string;
+  filename: string;
+  caption?: string;
+}): Promise<string> {
+  const c = requireClient();
+  const { to, url, base64, filename, caption = '' } = input;
+
+  const result = url
+    ? await c.sendFileFromUrl(to as never, url, filename, caption)
+    : await c.sendFile(to as never, base64 as string, filename, caption);
+
+  if (typeof result !== 'string') {
+    throw new Error(`WhatsApp rechazó el archivo ${filename} para ${to}`);
+  }
+
+  return result;
+}
+
 export async function setTyping(to: string, on: boolean): Promise<void> {
   await requireClient().simulateTyping(to as never, on);
 }

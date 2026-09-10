@@ -7,6 +7,10 @@ import { LoopGuardFilter } from './application/pipeline/filters/loop-guard.filte
 import { RateLimitFilter } from './application/pipeline/filters/rate-limit.filter';
 import { OwnerCommandsService } from './application/commands/owner-commands.service';
 import { SourceFilter } from './application/pipeline/filters/source.filter';
+import { AccessScopeService } from './application/support/access-scope.service';
+import { DocumentSearchService } from './application/support/document-search.service';
+import { SupportCommandsService } from './application/support/support-commands.service';
+import { TicketService } from './application/support/ticket.service';
 import { MESSAGING_PORT } from './application/ports/messaging.port';
 import { HandleIncomingMessageUseCase } from './application/use-cases/handle-incoming-message.use-case';
 
@@ -42,6 +46,12 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     AuthorizationFilter,
     KillSwitchFilter,
     RateLimitFilter,
+
+    // ── Soporte documental ─────────────────────────────────────────────
+    AccessScopeService,
+    DocumentSearchService,
+    TicketService,
+    SupportCommandsService,
 
     // ── Casos de uso ───────────────────────────────────────────────────
     OwnerCommandsService,

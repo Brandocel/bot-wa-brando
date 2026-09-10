@@ -4,6 +4,7 @@ import { config } from './config';
 import {
   getQrPng,
   markSeen,
+  sendFile,
   sendText,
   setTyping,
   status,
@@ -98,6 +99,34 @@ export function buildServer() {
         return;
       }
       const messageId = await sendText(to, text);
+      res.json({ messageId });
+    }),
+  );
+
+  // Entrega de documentos. El límite del body es 2mb, así que el camino
+  // normal es `url` (el gateway descarga); `base64` solo para archivos chicos.
+  app.post(
+    '/messages/file',
+    requireApiKey,
+    wrap(async (req, res) => {
+      const { to, url, base64, filename, caption } = req.body as {
+        to?: string;
+        url?: string;
+        base64?: string;
+        filename?: string;
+        caption?: string;
+      };
+
+      if (!to || !filename) {
+        res.status(400).json({ error: 'faltan "to" o "filename"' });
+        return;
+      }
+      if (!url && !base64) {
+        res.status(400).json({ error: 'se requiere "url" o "base64"' });
+        return;
+      }
+
+      const messageId = await sendFile({ to, url, base64, filename, caption });
       res.json({ messageId });
     }),
   );
