@@ -175,7 +175,12 @@ async function limpiar(): Promise<void> {
     where: { chatId: { startsWith: 'test-' } },
   });
   await prisma.outboxMessage.deleteMany({
-    where: { chatId: { startsWith: '52155000000' } },
+    where: {
+      OR: [
+        { chatId: { startsWith: '52155000000' } },
+        { chatId: { startsWith: 'test-' } },
+      ],
+    },
   });
 }
 
@@ -235,6 +240,23 @@ async function main(): Promise<void> {
   await conversacion(
     'Elegir empresa por número sin perder lo ya dicho',
     ['Tienes la factura A1002', '1'],
+    '5215500000099@c.us',
+  );
+
+  // Lo que se vio en producción con dos empresas: el bot pregunta cuál, la
+  // persona contesta con el nombre mal escrito, y esa respuesta se perdía —
+  // el modelo la tomaba por charla y el bot volvía a preguntar la empresa.
+  // La errata tiene que resolverse y el folio seguir ahí.
+  await conversacion(
+    'Contestar la empresa por nombre, con errata, sin perder el folio',
+    ['Tienes información de B2001', 'De pollos pirta'],
+    '5215500000099@c.us',
+  );
+
+  // Y al revés: primero dice la empresa (mal escrita) y luego el folio.
+  await conversacion(
+    'Empresa primero, folio después',
+    ['La de polos pirata', 'el documento B2001'],
     '5215500000099@c.us',
   );
 

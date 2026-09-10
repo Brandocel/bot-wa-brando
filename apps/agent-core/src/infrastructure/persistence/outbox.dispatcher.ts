@@ -32,6 +32,12 @@ interface OutboxFilePayload {
   base64?: string;
   filename: string;
   caption?: string;
+  /**
+   * Qué decirle a la persona si el archivo no sale después de todos los
+   * reintentos. Sin esto el fallo es mudo: el bot dijo "aquí está" y nunca
+   * llegó nada, y quien espera no sabe si volver a pedirlo o a quién.
+   */
+  fallbackText?: string;
 }
 
 type OutboxPayload = OutboxTextPayload | OutboxFilePayload;
@@ -92,8 +98,34 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
         take: 20,
       });
 
+      /**
+       * Chats en los que ya falló algo en este barrido. Lo que venga
+       * detrás para el mismo chat espera al siguiente: si el archivo no
+       * salió, mandar el "aquí está" que lo acompaña es mentirle a la
+       * persona, y además le llegaría en el orden equivocado.
+       */
+      const bloqueados = new Set<string>();
+
       for (const row of pending) {
+        if (bloqueados.has(row.chatId)) continue;
+
         const payload = row.payload as unknown as OutboxPayload;
+        const attempts = row.attempts + 1;
+
+        /**
+         * Reclamar la fila ANTES de enviar, y de forma atómica.
+         *
+         * Durante un deploy conviven dos instancias del core unos segundos,
+         * y las dos barren el mismo outbox. Sin esto las dos leían la misma
+         * fila PENDING, las dos la mandaban, y el cliente recibía cada
+         * respuesta dos veces. El `attempts` en el where es el cerrojo: solo
+         * una de las dos consigue subirlo, y la otra ve 0 filas y se aparta.
+         */
+        const claimed = await this.prisma.outboxMessage.updateMany({
+          where: { id: row.id, status: 'PENDING', attempts: row.attempts },
+          data: { attempts },
+        });
+        if (claimed.count === 0) continue;
 
         try {
           // Ritmo humano: nada de responder en 200ms como una máquina.
@@ -108,14 +140,16 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
 
           await this.prisma.outboxMessage.update({
             where: { id: row.id },
-            data: { status: 'SENT', sentAt: new Date(), attempts: row.attempts + 1 },
+            data: { status: 'SENT', sentAt: new Date() },
           });
 
           await this.recordOutbound(row.chatId, sent.id, sent.body, sent.kind);
         } catch (err) {
-          const attempts = row.attempts + 1;
           const detail = err instanceof Error ? err.message : String(err);
           this.logger.warn(`outbox ${row.id} intento ${attempts}: ${detail}`);
+          bloqueados.add(row.chatId);
+
+          const agotado = attempts >= MAX_ATTEMPTS;
 
           // La fila pudo desaparecer entre el findMany y este update (otro
           // proceso, una limpieza). Registrar el fallo es lo secundario aqui:
@@ -124,11 +158,21 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
             await this.prisma.outboxMessage.update({
               where: { id: row.id },
               data: {
-                attempts,
                 lastError: detail,
-                status: attempts >= MAX_ATTEMPTS ? 'FAILED' : 'PENDING',
+                status: agotado ? 'FAILED' : 'PENDING',
               },
             });
+
+            // Se rindió con el archivo: que la persona lo sepa, en vez de
+            // quedarse esperando un PDF que ya no va a llegar.
+            if (agotado && payload.kind === 'file' && payload.fallbackText) {
+              await this.prisma.outboxMessage.create({
+                data: {
+                  chatId: row.chatId,
+                  payload: { kind: 'text', text: payload.fallbackText },
+                },
+              });
+            }
           } catch {
             this.logger.warn(`outbox ${row.id} ya no existe; se ignora`);
           }

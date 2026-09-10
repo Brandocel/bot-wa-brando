@@ -68,11 +68,16 @@ export class DocumentDeliveryService {
   /**
    * Encola el archivo en el outbox. No envía aquí: enviar es trabajo del
    * despachador, que ya sabe reintentar si el gateway está caído.
+   *
+   * `fallbackText` es lo que se le dice a la persona si, después de todos
+   * los reintentos, el archivo no sale. El envío es asíncrono, así que
+   * quien llama ya no está ahí cuando eso pasa; deja aquí el mensaje.
    */
   async deliver(
     chatId: string,
     document: Document,
     caption: string,
+    fallbackText?: string,
   ): Promise<DeliveryResult> {
     if (document.status !== 'INDEXED') {
       return { ok: false, reason: 'not_available' };
@@ -111,6 +116,7 @@ export class DocumentDeliveryService {
           base64,
           filename,
           caption,
+          fallbackText,
         },
       },
     });

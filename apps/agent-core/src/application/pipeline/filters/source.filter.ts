@@ -22,6 +22,14 @@ export class SourceFilter implements MessageFilter {
       return stop(ctx, this.name, 'mensaje propio');
     }
 
+    // Un archivo propio tampoco, ni en el chat propio: es el eco de un
+    // documento que el bot acaba de entregar. Si llegara a procesarse, su
+    // leyenda ("Ticket #98 — FACTURA...") se leería como una petición nueva
+    // y el bot se lo volvería a mandar a sí mismo, en bucle.
+    if (message.isFromMe && message.kind !== 'TEXT') {
+      return stop(ctx, this.name, 'archivo propio');
+    }
+
     if (message.isBroadcast) {
       return stop(ctx, this.name, 'status/broadcast');
     }

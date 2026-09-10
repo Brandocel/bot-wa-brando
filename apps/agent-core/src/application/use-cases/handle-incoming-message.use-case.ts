@@ -179,9 +179,13 @@ export class HandleIncomingMessageUseCase {
         strategyReply?.text ??
         `eco (${role?.toLowerCase()}): ${message.body}`;
 
-      await tx.outboxMessage.create({
-        data: { chatId: message.chatId, payload: { kind: 'text', text: reply } },
-      });
+      // Texto vacío = la Strategy ya encoló lo que había que mandar (un
+      // archivo con su leyenda) y no quiere un mensaje aparte.
+      if (reply !== '') {
+        await tx.outboxMessage.create({
+          data: { chatId: message.chatId, payload: { kind: 'text', text: reply } },
+        });
+      }
 
       // De quién queda el turno. Solo la Strategy sabe si lo que acaba de
       // decir era una pregunta, una entrega o un escalado; un comando o un

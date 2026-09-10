@@ -514,17 +514,80 @@ export async function sendFile(input: {
   caption?: string;
 }): Promise<string> {
   const c = requireClient();
-  const { to, url, base64, filename, caption = '' } = input;
+  const { url, base64, filename, caption = '' } = input;
 
+  const to = await destinoParaArchivos(input.to);
+
+  // waitForId en true: sin él open-wa devuelve `true` en vez del id del
+  // mensaje, y sin id el core no puede reconocer el eco del archivo cuando
+  // WhatsApp lo devuelve por onAnyMessage.
   const result = url
-    ? await c.sendFileFromUrl(to as never, url, filename, caption)
-    : await c.sendFile(to as never, base64 as string, filename, caption);
+    ? await c.sendFileFromUrl(to as never, url, filename, caption, undefined, undefined, true)
+    : await c.sendFile(to as never, base64 as string, filename, caption, undefined, true);
 
-  if (typeof result !== 'string') {
-    throw new Error(`WhatsApp rechazó el archivo ${filename} para ${to}`);
+  if (typeof result === 'string') return result;
+
+  // Se envió pero no llegó el id a tiempo. Es un envío correcto: reportarlo
+  // como fallo haría que el core lo reintentara y el archivo llegara repetido.
+  if (result === true) return `sent_${Date.now()}_${to}`;
+
+  throw new Error(`WhatsApp rechazó el archivo ${filename} para ${to}`);
+}
+
+/**
+ * El id al que sí se le pueden mandar archivos.
+ *
+ * WhatsApp ya direcciona los chats por LID (`...@lid`) y el texto llega bien
+ * a esos ids. Los archivos no: open-wa los rechaza de plano si el destino no
+ * es `@c.us` ni `@g.us`, sin más explicación que un `false`. El chat sigue
+ * siendo el mismo, así que basta con mandar el archivo al número de teléfono
+ * del contacto, que WhatsApp asocia al mismo hilo.
+ *
+ * El número se pregunta a WhatsApp, no se deduce: el LID no contiene el
+ * teléfono y no hay forma de calcularlo.
+ */
+async function destinoParaArchivos(to: string): Promise<string> {
+  if (!to.endsWith('@lid')) return to;
+
+  const c = requireClient();
+
+  const candidatos: unknown[] = [];
+  try {
+    const chat = (await c.getChatById(to as never)) as unknown as {
+      contact?: { phoneNumber?: unknown; id?: unknown };
+    } | null;
+    candidatos.push(chat?.contact?.phoneNumber, chat?.contact?.id);
+  } catch {
+    // Se intenta por el contacto directamente.
+  }
+  try {
+    const contact = (await c.getContact(to as never)) as unknown as {
+      phoneNumber?: unknown;
+      id?: unknown;
+    } | null;
+    candidatos.push(contact?.phoneNumber, contact?.id);
+  } catch {
+    // Sin contacto tampoco; se decide abajo.
   }
 
-  return result;
+  for (const candidato of candidatos) {
+    const id = jidTelefono(candidato);
+    if (id) return id;
+  }
+
+  throw new Error(`no se pudo resolver el número de teléfono de ${to}`);
+}
+
+/** `xxx@c.us` si el valor lo trae, en forma de string o de Wid serializado. */
+function jidTelefono(value: unknown): string | null {
+  const raw =
+    typeof value === 'string'
+      ? value
+      : typeof value === 'object' && value !== null
+        ? (value as { _serialized?: unknown })._serialized
+        : null;
+
+  return typeof raw === 'string' && raw.endsWith('@c.us') ? raw : null;
 }
 
 /**

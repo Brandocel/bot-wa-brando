@@ -160,7 +160,11 @@ export class SupportCommandsService {
     const sent = await this.delivery.deliver(
       message.chatId,
       doc,
-      `Ticket #${ticket.number} — ${doc.name}`,
+      `Ticket #${ticket.number} — aquí está tu ${doc.name}.`,
+      [
+        `Ticket #${ticket.number} — encontré ${doc.name} pero no pude enviártelo por aquí.`,
+        'Ya lo pasé al equipo para que te lo hagan llegar.',
+      ].join('\n'),
     );
 
     await this.tickets.record(ticket.id, 'entrega', 'bot', {
@@ -174,7 +178,9 @@ export class SupportCommandsService {
     // sin entregar es justo el caso que nadie vuelve a revisar.
     if (sent.ok) {
       await this.tickets.close(ticket.id, 'resuelto');
-      return `Ticket #${ticket.number} — aquí está tu ${doc.name}:`;
+      // El texto va como leyenda del archivo; sin mensaje aparte que
+      // prometa algo que después pueda no salir.
+      return '';
     }
 
     await this.tickets.escalate(ticket.id, 'sin_resultados', null);

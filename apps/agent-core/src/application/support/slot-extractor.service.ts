@@ -57,6 +57,9 @@ const SCHEMA = {
   additionalProperties: false,
 };
 
+/** El dato que el bot acaba de pedir, si la respuesta viene a eso. */
+export type SlotPendiente = 'categoria' | 'periodo' | 'empresa';
+
 export interface ExtractionResult {
   query: SearchQuery;
   /** Empresa mencionada en el texto, para desambiguar. */
@@ -71,7 +74,12 @@ export interface ExtractionResult {
 export class SlotExtractorService {
   constructor(@Inject(LLM_PORT) private readonly llm: LlmPort) {}
 
-  async extract(text: string, today = new Date()): Promise<ExtractionResult> {
+  async extract(
+    text: string,
+    options: { pendiente?: SlotPendiente | null; today?: Date } = {},
+  ): Promise<ExtractionResult> {
+    const today = options.today ?? new Date();
+    const pendiente = options.pendiente ?? null;
     const byRules = parseQuery(text);
 
     // Con categoría Y periodo el parser ya resolvió: no se llama al modelo.
@@ -86,7 +94,7 @@ export class SlotExtractorService {
     }
 
     const extracted = await this.llm.extract({
-      system: systemPrompt(today),
+      system: systemPrompt(today, pendiente),
       user: text,
       schema: SCHEMA,
       validate: (value) => {
@@ -120,8 +128,24 @@ export class SlotExtractorService {
   }
 }
 
-function systemPrompt(today: Date): string {
+/**
+ * Lo que se le explica al modelo. Si el bot acaba de hacer una pregunta, se
+ * le dice cuál: "de este" después de "¿de qué mes?" es un periodo, y
+ * "contrucora vega" después de "¿de qué empresa?" es una empresa, aunque
+ * sueltos no parezcan pedir ningún documento. Sin ese contexto el modelo
+ * los marcaba como charla y la conversación volvía a empezar.
+ */
+function systemPrompt(today: Date, pendiente: SlotPendiente | null): string {
   const iso = today.toISOString().slice(0, 10);
+
+  const contexto = {
+    categoria:
+      '- El bot acaba de preguntar QUÉ TIPO de documento necesita. Interpreta el mensaje como esa respuesta (categoria), y no lo marques como no_es_documento.',
+    periodo:
+      '- El bot acaba de preguntar DE QUÉ MES lo necesita. Interpreta el mensaje como esa respuesta (periodo), y no lo marques como no_es_documento.',
+    empresa:
+      '- El bot acaba de preguntar DE QUÉ EMPRESA lo necesita. Interpreta el mensaje como esa respuesta (empresa, aunque venga con erratas), y no lo marques como no_es_documento.',
+  };
 
   return [
     'Extraes datos de mensajes de WhatsApp que piden documentos a una empresa.',
@@ -133,6 +157,7 @@ function systemPrompt(today: Date): string {
     '- No inventes: lo que el mensaje no diga, va como NINGUNO o NINGUNA.',
     '- "recibo", "nota" y "comprobante" cuentan como FACTURA.',
     '- Un saludo, una queja o una pregunta general llevan no_es_documento en true.',
+    ...(pendiente ? [contexto[pendiente]] : []),
   ].join('\n');
 }
 

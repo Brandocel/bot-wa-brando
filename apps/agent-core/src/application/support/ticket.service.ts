@@ -261,6 +261,14 @@ export class TicketService {
     };
   }
 
+  /** El ticket ABIERTO de la conversación: el que el bot sigue atendiendo. */
+  async ticketAbierto(conversationId: string) {
+    return this.prisma.ticket.findFirst({
+      where: { conversationId, state: 'ABIERTO' },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
   /** El ticket más reciente de la conversación, escalado o no. */
   async ultimoTicket(conversationId: string) {
     return this.prisma.ticket.findFirst({
