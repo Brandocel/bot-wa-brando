@@ -81,6 +81,20 @@ export class SupportStrategy {
     }
 
     /**
+     * Respuesta a una lista numerada: "1", "2", "el 2".
+     *
+     * Los botones de WhatsApp no funcionan de forma fiable fuera de la API
+     * oficial —se rompieron con multidispositivo—, así que la lista
+     * numerada es la forma que sí llega a todos los teléfonos. Las opciones
+     * se guardaron en el ticket al ofrecerlas.
+     */
+    const eleccion = leerNumero(message.body);
+    if (eleccion !== null) {
+      const resuelto = await this.resolverOpcion(eleccion, message, ctx);
+      if (resuelto) return resuelto;
+    }
+
+    /**
      * "No veo el doc", "no me llegó", "no lo recibí".
      *
      * Es una queja sobre lo último que se entregó, no una petición nueva.
@@ -145,15 +159,44 @@ export class SupportStrategy {
       };
     }
 
-    const organizationId = this.resolveCompany(extraction.companyHint, scope.scopes);
+    /**
+     * La empresa puede venir de tres sitios, y este es el orden correcto:
+     * lo que dijo en ESTE mensaje, lo que ya se guardó en el ticket, o —si
+     * solo tiene acceso a una— la única posible.
+     *
+     * Leer la del ticket es lo que hace que elegir '1' funcione: la
+     * elección se guarda ahí y el mensaje siguiente no la vuelve a
+     * mencionar.
+     */
+    const organizationId =
+      this.resolveCompany(extraction.companyHint, scope.scopes) ??
+      empresaGuardada(ticket.slots, scope.scopes);
 
     // Varias empresas y no dijo cuál: se pregunta. Elegir la primera es
     // exactamente cómo se entrega la factura de la empresa equivocada.
     if (scope.scopes.length > 1 && !organizationId) {
-      return this.ask(ticket, asked, 'empresa', [
-        'Tienes acceso a varias empresas. ¿De cuál lo necesitas?',
-        ...scope.scopes.map((s) => `• ${s.organizationName}`),
-      ].join('\n'));
+      // Numeradas y guardadas: la persona puede contestar "1" en vez de
+      // teclear el nombre, que es donde se cuelan las erratas.
+      await this.tickets.updateSlots(ticket.id, {
+        opciones: scope.scopes.map((s, i) => ({
+          n: i + 1,
+          tipo: 'empresa',
+          id: s.organizationId,
+          nombre: s.organizationName,
+        })),
+      });
+
+      return this.ask(
+        ticket,
+        asked,
+        'empresa',
+        [
+          'Tienes acceso a varias empresas. ¿De cuál lo necesitas?',
+          ...scope.scopes.map((s, i) => `${i + 1}. ${s.organizationName}`),
+          '',
+          'Responde con el número.',
+        ].join('\n'),
+      );
     }
 
     if (!query.category && !query.folio) {
@@ -205,10 +248,21 @@ export class SupportStrategy {
     // más de un documento que encaja. Se listan con su folio para que pueda
     // señalar uno, y esta pregunta no cuenta contra el presupuesto.
     if (results.length > 1) {
+      await this.tickets.updateSlots(ticket.id, {
+        opciones: results.map((doc, i) => ({
+          n: i + 1,
+          tipo: 'documento',
+          id: doc.id,
+          nombre: doc.name,
+        })),
+      });
+
       return {
         text: [
           `Encontré ${results.length}. ¿Cuál necesitas?`,
-          ...results.map((doc) => `• ${describe(doc)}`),
+          ...results.map((doc, i) => `${i + 1}. ${describe(doc)}`),
+          '',
+          'Responde con el número.',
         ].join('\n'),
         awaiting: 'CLIENTE',
         topic: query.category,
@@ -245,6 +299,77 @@ export class SupportStrategy {
       text: `Aquí está. Te dejo el folio #${ticket.number} por si necesitas darle seguimiento:`,
       awaiting: 'NADIE',
       topic: doc.category,
+    };
+  }
+
+  /**
+   * Aplica la opción elegida de la última lista ofrecida.
+   *
+   * Devuelve null si no había lista o el número no corresponde a ninguna:
+   * ahí el mensaje sigue su camino normal, porque un "2" suelto también
+   * puede ser parte de una frase que no tiene nada que ver.
+   */
+  private async resolverOpcion(
+    numero: number,
+    message: IncomingMessage,
+    ctx: StrategyContext,
+  ): Promise<StrategyReply | null> {
+    const ticket = await this.tickets.ultimoTicket(ctx.conversationId);
+    if (!ticket) return null;
+
+    const slots = ticket.slots as { opciones?: unknown };
+    if (!Array.isArray(slots.opciones)) return null;
+
+    const elegida = (slots.opciones as Opcion[]).find((o) => o.n === numero);
+    if (!elegida) return null;
+
+    // La lista se consume: si sigue guardada, un "1" de otra conversación
+    // más adelante resucitaría una elección que ya no viene a cuento.
+    await this.tickets.updateSlots(ticket.id, { opciones: null });
+
+    if (elegida.tipo === 'empresa') {
+      await this.tickets.updateSlots(ticket.id, { organizationId: elegida.id });
+
+      // Con la empresa ya resuelta, se reprocesa la solicitud tal como
+      // estaba: los demás slots siguen en el ticket.
+      return this.handle(
+        { ...message, body: `de ${elegida.nombre}` } as IncomingMessage,
+        ctx,
+      );
+    }
+
+    const documento = await this.search.byId(elegida.id);
+    if (!documento) return null;
+
+    const sent = await this.delivery.deliver(
+      message.chatId,
+      documento,
+      `Ticket #${ticket.number} — ${documento.name}`,
+    );
+
+    await this.tickets.record(ticket.id, 'entrega', 'bot', {
+      documentId: documento.id,
+      name: documento.name,
+      entregado: sent.ok,
+    });
+
+    if (!sent.ok) {
+      await this.tickets.escalate(ticket.id, 'sin_resultados', null);
+      return {
+        text: [
+          'Encontré tu documento pero no pude enviártelo por aquí.',
+          `Ya lo pasé al equipo con el folio #${ticket.number}.`,
+        ].join('\n'),
+        awaiting: 'AGENTE',
+        topic: documento.category,
+      };
+    }
+
+    await this.tickets.close(ticket.id, 'resuelto');
+    return {
+      text: `Aquí está. Te dejo el folio #${ticket.number} por si necesitas darle seguimiento:`,
+      awaiting: 'NADIE',
+      topic: documento.category,
     };
   }
 
@@ -402,6 +527,45 @@ function mergeSlots(stored: unknown, fresh: SearchQuery): SearchQuery {
     folio: fresh.folio ?? (typeof previous.folio === 'string' ? previous.folio : null),
     text: fresh.text,
   };
+}
+
+/**
+ * La empresa que ya se había resuelto en este ticket, si sigue estando
+ * dentro del alcance de quien escribe.
+ *
+ * Se revalida contra el alcance a propósito: un permiso pudo revocarse
+ * entre dos mensajes, y un id guardado no es autorización.
+ */
+function empresaGuardada(
+  slots: unknown,
+  scopes: readonly OrgScope[],
+): string | null {
+  const guardado = (slots as { organizationId?: unknown } | null)?.organizationId;
+  if (typeof guardado !== 'string') return null;
+
+  return scopes.some((s) => s.organizationId === guardado) ? guardado : null;
+}
+
+interface Opcion {
+  n: number;
+  tipo: 'empresa' | 'documento';
+  id: string;
+  nombre: string;
+}
+
+/**
+ * El número de una lista, si el mensaje es SOLO eso.
+ *
+ * "1", "el 2", "opcion 3". Un número dentro de una frase larga no cuenta:
+ * "necesito la factura 2026" no es elegir la opción 2026.
+ */
+function leerNumero(texto: string): number | null {
+  const limpio = texto.trim().toLowerCase();
+  const match = /^(?:el |la |opcion |opción |numero |número )?([1-9])\.?$/.exec(
+    limpio,
+  );
+
+  return match ? Number(match[1]) : null;
 }
 
 /**

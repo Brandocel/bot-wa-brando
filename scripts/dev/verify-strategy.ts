@@ -123,8 +123,8 @@ function fakeMessage(waId: string, text: string): IncomingMessage {
 async function conversacion(
   titulo: string,
   turnos: string[],
+  waId = '5215500000001@c.us',
 ): Promise<void> {
-  const waId = '5215500000001@c.us';
   const chatId = 'test-conversacion';
 
   const contact = await prisma.contact.findUniqueOrThrow({
@@ -229,6 +229,14 @@ async function main(): Promise<void> {
     'necesito un documento',
     'ya te dije cuál',
   ]);
+
+  // El caso que se vio en producción: pide con folio, hay dos empresas, y
+  // al elegir una NO debe olvidarse del folio que ya había dicho.
+  await conversacion(
+    'Elegir empresa por número sin perder lo ya dicho',
+    ['Tienes la factura A1002', '1'],
+    '5215500000099@c.us',
+  );
 
   // Y también al terminar: los tickets de prueba no deben quedar en la cola
   // del operador.

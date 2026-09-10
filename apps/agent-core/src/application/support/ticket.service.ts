@@ -16,6 +16,9 @@ const TTL_MS = 24 * 60 * 60 * 1000;
 /** Ventana de reapertura: después de esto, es un ticket nuevo. */
 const REOPEN_MS = 72 * 60 * 60 * 1000;
 
+/** Cuánto sigue contando lo dicho en el ticket anterior de la conversación. */
+const CONTINUIDAD_MS = 30 * 60 * 1000;
+
 export type EscalationReason =
   | 'sin_resultados'
   | 'sin_permiso'
@@ -98,6 +101,31 @@ export class TicketService {
       });
     }
 
+    /**
+     * Un ticket nuevo hereda lo que ya se sabía, si viene justo detrás.
+     *
+     * Sin esto, escalar rompía la conversación: el ticket escalado deja de
+     * estar ABIERTO, el mensaje siguiente abre uno nuevo con los slots en
+     * blanco, y el bot vuelve a preguntar el tipo de documento que la
+     * persona acababa de decir. Desde fuera parece amnesia; desde dentro es
+     * que la memoria vivía en un ticket que ya se cerró.
+     *
+     * Solo dentro de la ventana de continuidad: media hora después, quien
+     * escribe casi siempre viene a otra cosa.
+     */
+    const reciente = await this.prisma.ticket.findFirst({
+      where: {
+        conversationId: input.conversationId,
+        createdAt: { gte: new Date(Date.now() - CONTINUIDAD_MS) },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { slots: true },
+    });
+
+    const heredados = reciente
+      ? soloDatos(reciente.slots as Record<string, unknown>)
+      : {};
+
     const ticket = await this.prisma.ticket.create({
       data: {
         conversationId: input.conversationId,
@@ -105,7 +133,7 @@ export class TicketService {
         organizationId: input.organizationId ?? null,
         subject: input.subject.slice(0, 120),
         priority: input.priority,
-        slots: (input.slots ?? {}) as Prisma.InputJsonValue,
+        slots: { ...heredados, ...(input.slots ?? {}) } as Prisma.InputJsonValue,
         slaDueAt: new Date(Date.now() + TTL_MS),
       },
     });
@@ -233,6 +261,14 @@ export class TicketService {
     };
   }
 
+  /** El ticket más reciente de la conversación, escalado o no. */
+  async ultimoTicket(conversationId: string) {
+    return this.prisma.ticket.findFirst({
+      where: { conversationId },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
   async record(
     ticketId: string,
     type: string,
@@ -243,6 +279,19 @@ export class TicketService {
       data: { ticketId, type, actor, data: data as Prisma.InputJsonValue },
     });
   }
+}
+
+/**
+ * Los datos de la solicitud, sin el rastro de la conversación anterior.
+ *
+ * Se heredan categoría, periodo, folio y empresa. NO se hereda cuántas
+ * preguntas se hicieron ni cuáles: un ticket nuevo empieza con el
+ * presupuesto entero, o escalar una vez condenaría a la persona a no poder
+ * volver a intentarlo.
+ */
+function soloDatos(slots: Record<string, unknown>): Record<string, unknown> {
+  const { category, period, folio, organizationId } = slots;
+  return { category, period, folio, organizationId };
 }
 
 const ORDER = { BAJA: 0, MEDIA: 1, ALTA: 2 } as const;
