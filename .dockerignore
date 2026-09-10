@@ -1,0 +1,18 @@
+# El build del gateway usa la RAÍZ del repo como contexto, así que sin este
+# archivo Docker sube todo — incluido node_modules y, peor, la sesión de
+# WhatsApp. Esa sesión son credenciales: no tiene por qué entrar al contexto
+# de build ni acabar en una capa de la imagen.
+node_modules
+**/node_modules
+data
+.node-persist
+dist
+**/dist
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+docs
+scripts/dev
+*.log

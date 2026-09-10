@@ -1,12 +1,16 @@
 # Blueprint de Render — bot-wa-brando
 # Dashboard → Blueprints → New Blueprint Instance → apunta a este repo.
 
-databases:
-  - name: bot-wa-db
-    plan: basic-256mb        # $6/mo. Subir a basic-1gb cuando crezca el historial.
-    region: oregon
-    databaseName: botwa
-    user: botwa
+# La base NO se declara aquí a propósito.
+#
+# `bot-wa-db` ya existe en la cuenta y ya tiene el esquema y los datos del
+# módulo de soporte. Si el blueprint la declarara, Render intentaría crear
+# una base suya con ese nombre y chocaría con la que está en uso — que es
+# justo lo que el proyecto lleva marcado como "Needs attention".
+#
+# Por eso DATABASE_URL va como `sync: false` y se pega a mano: Internal
+# Database URL de bot-wa-db (Dashboard → bot-wa-db → Connect → Internal).
+# La interna, no la externa: no sale a internet y no cobra tráfico.
 
 services:
   # ─────────────────────────────────────────────────────────────
@@ -55,9 +59,7 @@ services:
       - key: NODE_VERSION
         value: "20"
       - key: DATABASE_URL
-        fromDatabase:
-          name: bot-wa-db
-          property: connectionString
+        sync: false          # Internal Database URL de bot-wa-db, a mano
       - key: GATEWAY_URL
         fromService:
           type: web
