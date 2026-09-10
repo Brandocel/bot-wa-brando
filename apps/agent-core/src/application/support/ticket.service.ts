@@ -181,6 +181,28 @@ export class TicketService {
     return reopened;
   }
 
+  /** Mezcla campos en los slots del ticket sin pisar los que ya estaban. */
+  async updateSlots(
+    ticketId: string,
+    patch: Record<string, unknown>,
+  ): Promise<void> {
+    const ticket = await this.prisma.ticket.findUnique({
+      where: { id: ticketId },
+      select: { slots: true },
+    });
+    if (!ticket) return;
+
+    await this.prisma.ticket.update({
+      where: { id: ticketId },
+      data: {
+        slots: {
+          ...(ticket.slots as Record<string, unknown>),
+          ...patch,
+        } as Prisma.InputJsonValue,
+      },
+    });
+  }
+
   async record(
     ticketId: string,
     type: string,

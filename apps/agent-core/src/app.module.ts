@@ -11,10 +11,13 @@ import { SourceFilter } from './application/pipeline/filters/source.filter';
 import { AccessScopeService } from './application/support/access-scope.service';
 import { DocumentDeliveryService } from './application/support/document-delivery.service';
 import { DriveSyncService } from './application/support/drive-sync.service';
+import { SlotExtractorService } from './application/support/slot-extractor.service';
+import { SupportStrategy } from './application/support/support.strategy';
 import { DocumentSearchService } from './application/support/document-search.service';
 import { SupportCommandsService } from './application/support/support-commands.service';
 import { TicketService } from './application/support/ticket.service';
 import { DOCUMENT_SOURCE_PORT } from './application/ports/document-source.port';
+import { LLM_PORT } from './application/ports/llm.port';
 import { MESSAGING_PORT } from './application/ports/messaging.port';
 import { HandleIncomingMessageUseCase } from './application/use-cases/handle-incoming-message.use-case';
 
@@ -26,6 +29,7 @@ import { PrismaService } from './infrastructure/persistence/prisma.service';
 import { MessageWorker } from './infrastructure/queue/message.worker';
 import { QueueService } from './infrastructure/queue/queue.service';
 import { GoogleDriveAdapter } from './infrastructure/drive/google-drive.adapter';
+import { AnthropicAdapter } from './infrastructure/llm/anthropic.adapter';
 import { GatewayMessagingAdapter } from './infrastructure/whatsapp/gateway-messaging.adapter';
 import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
 
@@ -47,6 +51,7 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     // Igual para el repositorio documental: cambiar Drive por SharePoint es
     // un adaptador nuevo y esta línea.
     { provide: DOCUMENT_SOURCE_PORT, useClass: GoogleDriveAdapter },
+    { provide: LLM_PORT, useClass: AnthropicAdapter },
 
     // ── Pipeline ───────────────────────────────────────────────────────
     SourceFilter,
@@ -63,6 +68,8 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     SupportCommandsService,
     DocumentDeliveryService,
     DriveSyncService,
+    SlotExtractorService,
+    SupportStrategy,
 
     // ── Casos de uso ───────────────────────────────────────────────────
     DriveCommandsService,

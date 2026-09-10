@@ -18,8 +18,12 @@
     "prisma:studio": "prisma studio",
     "typecheck": "tsc -b --pretty",
     "smoke-test": "node scripts/smoke-test.js",
-    "seed": "tsx prisma/seed.ts",
-    "prisma:deploy": "prisma migrate deploy"
+    "seed": "tsx --tsconfig tsconfig.base.json prisma/seed.ts",
+    "prisma:deploy": "prisma migrate deploy",
+    "verify:access": "tsx --tsconfig tsconfig.base.json scripts/dev/verify-access.ts",
+    "verify:parser": "tsx --tsconfig tsconfig.base.json scripts/dev/verify-parser.ts",
+    "verify:drive": "tsx --tsconfig tsconfig.base.json scripts/dev/verify-drive.ts",
+    "verify:strategy": "tsx --tsconfig tsconfig.base.json scripts/dev/verify-strategy.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
@@ -31,6 +35,6 @@
     "@prisma/client": "^6.2.0"
   },
   "prisma": {
-    "seed": "tsx prisma/seed.ts"
+    "seed": "tsx --tsconfig tsconfig.base.json prisma/seed.ts"
   }
 }

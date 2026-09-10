@@ -9,6 +9,7 @@ import { LoopGuardFilter } from '../pipeline/filters/loop-guard.filter';
 import { RateLimitFilter } from '../pipeline/filters/rate-limit.filter';
 import { OwnerCommandsService } from '../commands/owner-commands.service';
 import { SupportCommandsService } from '../support/support-commands.service';
+import { SupportStrategy } from '../support/support.strategy';
 import { SourceFilter } from '../pipeline/filters/source.filter';
 import { runPipeline, type MessageFilter, type PipelineContext } from '../pipeline/pipeline';
 
@@ -23,6 +24,7 @@ export class HandleIncomingMessageUseCase {
     private readonly outbox: OutboxDispatcher,
     private readonly ownerCommands: OwnerCommandsService,
     private readonly supportCommands: SupportCommandsService,
+    private readonly supportStrategy: SupportStrategy,
     source: SourceFilter,
     idempotency: IdempotencyFilter,
     loopGuard: LoopGuardFilter,
@@ -120,14 +122,27 @@ export class HandleIncomingMessageUseCase {
       // Un comando que nadie reclamó es un error de tecleo, no un mensaje
       // para el agente. Contestarlo aquí, y no en cada servicio, es lo que
       // permite que los registros de comandos se encadenen sin pisarse.
+      const isCommand = message.body.trim().startsWith('/');
+
       const unknownCommand =
-        supportReply === null && message.body.trim().startsWith('/')
+        supportReply === null && isCommand
           ? `No conozco ${message.body.trim().split(/\s+/)[0]}. Usa /ayuda para ver la lista.`
+          : null;
+
+      // La Strategy solo ve lo que NO es un comando. Un comando mal escrito
+      // no debe gastar una llamada al modelo.
+      const strategyReply =
+        supportReply === null && !isCommand
+          ? await this.supportStrategy.handle(message, {
+              contactId: contact.id,
+              conversationId: conversation.id,
+            })
           : null;
 
       const reply =
         supportReply ??
         unknownCommand ??
+        strategyReply ??
         `eco (${role?.toLowerCase()}): ${message.body}`;
 
       // No se envía aquí: se escribe al outbox dentro de la MISMA transacción.

@@ -1,0 +1,20 @@
+{
+  // Raíz del monorepo. Existe por dos razones:
+  //
+  //  1. `tsc -b` necesita un proyecto raíz que apunte a los workspaces; sin
+  //     este archivo, `npm run typecheck` fallaba con TS5083.
+  //  2. tsx lee el tsconfig.json del directorio actual para saber cómo
+  //     transformar. Sin `experimentalDecorators` aquí, cualquier script de
+  //     scripts/dev/ que importe una clase de Nest con @Inject revienta con
+  //     "Parameter decorators only work when experimental decorators are
+  //     enabled" — el código está bien, es el transformador el que no sabía.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "files": [],
+  "references": [
+    { "path": "./apps/agent-core" },
+    { "path": "./apps/wa-gateway" }
+  ]
+}
