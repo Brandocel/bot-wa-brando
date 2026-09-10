@@ -23,11 +23,24 @@ let lastQrPng: Buffer | null = null;
 let lastQrAt: Date | null = null;
 let lastError: string | null = null;
 
+/** Último resultado de la sonda contra el cliente real. */
+let aliveAt: Date | null = null;
+let deadChecks = 0;
+
 export const status = () => ({
   state,
   hasQr: lastQrPng !== null,
   lastQrAt,
   lastError,
+  /**
+   * Cuándo respondió por última vez el cliente de verdad.
+   *
+   * `state` por sí solo miente: se pone en CONNECTED una vez al arrancar y
+   * solo cambia si open-wa avisa. Cuando la sesión se muere sin avisar —y
+   * pasa— el proceso se queda diciendo CONNECTED con WhatsApp caído, que es
+   * el peor estado posible: nadie sabe que hay que reiniciar.
+   */
+  aliveAt,
 });
 
 export const getQrPng = () => lastQrPng;
@@ -124,6 +137,47 @@ function startPendingDrain(): void {
 }
 
 /**
+ * Vigilante de la conexión.
+ *
+ * Cada minuto le pregunta el número a WhatsApp. Es la llamada más barata
+ * que atraviesa de verdad hasta el navegador: si contesta, hay sesión.
+ *
+ * A los tres fallos seguidos el proceso se sale con código 1 y Render lo
+ * vuelve a levantar. Tres y no uno porque un fallo aislado es normal
+ * —Chromium se pone lento, la red parpadea— y reiniciar por eso sería peor
+ * que el problema.
+ *
+ * Salir del proceso es la reparación correcta aquí: la sesión vive en el
+ * disco persistente, así que el arranque nuevo la recupera sin QR. Lo que
+ * no se puede es dejar el proceso vivo fingiendo que todo va bien.
+ */
+function startWatchdog(): void {
+  const timer = setInterval(() => {
+    void (async () => {
+      try {
+        await client?.getHostNumber();
+        aliveAt = new Date();
+        deadChecks = 0;
+        if (state === 'CRASHED') state = 'CONNECTED';
+      } catch (err) {
+        deadChecks += 1;
+        lastError = err instanceof Error ? err.message : String(err);
+        console.error(`[wa] sonda fallida (${deadChecks}/3): ${lastError}`);
+
+        if (deadChecks >= 3) {
+          state = 'CRASHED';
+          console.error('[wa] sesión muerta: saliendo para que Render reinicie');
+          // Un momento para que el log llegue antes de morir.
+          setTimeout(() => process.exit(1), 1000);
+        }
+      }
+    })();
+  }, 60_000);
+
+  timer.unref();
+}
+
+/**
  * User-Agent moderno. Verificado contra web.whatsapp.com: con este UA la
  * página renderiza el QR; con el que trae open-wa por defecto (Chrome/104)
  * responde "actualiza tu navegador" y el QR nunca existe.
@@ -208,7 +262,9 @@ export async function startWhatsApp(): Promise<void> {
   });
 
   state = 'CONNECTED';
+  aliveAt = new Date();
   startPendingDrain();
+  startWatchdog();
   lastQrPng = null; // ya no sirve y no queremos credenciales colgando en RAM
   console.log('[wa] conectado');
 
