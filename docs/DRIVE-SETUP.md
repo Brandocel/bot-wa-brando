@@ -25,15 +25,29 @@ Ese JSON es una credencial. No va al repositorio.
 
 ## 2. Cargar la credencial en Render
 
-El JSON tiene que ir como **una sola línea** en la variable de entorno. Desde
-la carpeta donde lo descargaste:
+El JSON tiene que ir como **una sola línea** en la variable de entorno. Hay un
+script que hace la conversión y además te dice qué correo compartir:
 
 ```bash
-node -e "console.log(JSON.stringify(require('fs').readFileSync('CLAVE.json','utf8')))"
+node scripts/dev/drive-env.js ~/Downloads/tu-clave.json
 ```
 
-Copia la salida **sin las comillas exteriores** y pégala en Render →
-`agent-core` → Environment → `GOOGLE_SERVICE_ACCOUNT_JSON`.
+Copia la línea que imprime y pégala en Render → `agent-core` → Environment →
+`GOOGLE_SERVICE_ACCOUNT_JSON`. Esa línea es una credencial: va del terminal al
+panel de Render y a ningún otro lado — ni a un chat, ni a un ticket, ni a un
+commit.
+
+Para el `.env` local, la misma línea pero entre **comillas simples**:
+
+```
+GOOGLE_SERVICE_ACCOUNT_JSON='{"type":"service_account",...}'
+```
+
+Simples, no dobles. Con comillas dobles, dotenv expande las secuencias 
+ de la
+llave privada a saltos de línea reales y el JSON deja de ser válido. El síntoma
+es `Expected property name or '}' in JSON at position 4`, que no menciona nada
+de comillas.
 
 > Si al arrancar aparece `error:1E08010C:DECODER routines::unsupported`, es la
 > llave privada mal escapada. El código ya normaliza el caso común (los saltos
@@ -96,6 +110,25 @@ Por cada empresa:
 ```
 /sync
 ```
+
+## 4bis. Comprobar antes de tocar WhatsApp
+
+Con el `.env` local listo:
+
+```bash
+npx tsx scripts/dev/verify-drive.ts
+```
+
+Comprueba autenticación y que la Drive API esté habilitada. Con el id de una
+carpeta comprueba además el acceso y te muestra, archivo por archivo, si se
+indexaría o se iría a cuarentena:
+
+```bash
+npx tsx scripts/dev/verify-drive.ts <idDeCarpeta>
+```
+
+Vale la pena correrlo antes que `/sync`: aquí los errores vienen completos, y
+por WhatsApp solo llega el resumen.
 
 ## 5. Comandos de operador
 
