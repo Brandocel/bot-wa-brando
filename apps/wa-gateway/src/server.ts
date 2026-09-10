@@ -60,9 +60,29 @@ export function buildServer() {
     res.json({ ok: true, ...status() });
   });
 
-  // El QR, servido como PNG. Ábrelo en el navegador con la API key:
-  //   https://wa-gateway.onrender.com/qr?key=<GATEWAY_API_KEY>
+  /**
+   * Pantalla de vinculación. Ábrela en el navegador:
+   *   https://wa-gateway.onrender.com/qr?key=<GATEWAY_API_KEY>
+   *
+   * Es una página y no el PNG pelón porque el QR de WhatsApp caduca cada
+   * ~20 segundos. Con la imagen sola hay que recargar a mano y casi siempre
+   * escaneas uno ya vencido; aquí la página se refresca sola y avisa cuando
+   * la sesión quedó conectada.
+   */
   app.get('/qr', (req, res) => {
+    const key = String(req.query.key ?? req.header('x-gateway-key') ?? '');
+    if (!safeEqual(key, config.apiKey)) {
+      res.status(401).send('unauthorized');
+      return;
+    }
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(qrPage(key));
+  });
+
+  /** La imagen sola. La consume la página de arriba. */
+  app.get('/qr.png', (req, res) => {
     const key = String(req.query.key ?? req.header('x-gateway-key') ?? '');
     if (!safeEqual(key, config.apiKey)) {
       res.status(401).send('unauthorized');
@@ -106,8 +126,10 @@ export function buildServer() {
     }),
   );
 
-  // Entrega de documentos. El límite del body es 2mb, así que el camino
-  // normal es `url` (el gateway descarga); `base64` solo para archivos chicos.
+  // Entrega de documentos. `base64` es el camino normal: el core baja el
+  // archivo de Drive con sus credenciales y lo manda ya resuelto, porque el
+  // gateway no tiene con qué autenticarse contra Drive. `url` queda para
+  // archivos de acceso público.
   app.post(
     '/messages/file',
     requireApiKey,
@@ -163,4 +185,104 @@ export function buildServer() {
   );
 
   return app;
+}
+
+/**
+ * Página de vinculación.
+ *
+ * Sin dependencias ni assets: un solo HTML que se sirve desde memoria. El
+ * gateway existe para hablar con WhatsApp, no para servir una aplicación web,
+ * y meterle un framework por una pantalla sería pagar arranque y superficie
+ * de ataque a cambio de nada.
+ *
+ * La llave viaja en la URL porque es como ya se abría el QR. Es una URL para
+ * pegar en tu navegador, no para compartir.
+ */
+function qrPage(key: string): string {
+  const encodedKey = encodeURIComponent(key);
+
+  return `<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Vincular WhatsApp</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; min-height: 100vh; display: grid; place-items: center;
+    background: #0f1115; color: #e6e6e6;
+    font: 15px/1.5 system-ui, -apple-system, Segoe UI, sans-serif;
+  }
+  .card { text-align: center; padding: 24px; max-width: 380px; }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+  p { color: #9aa0aa; margin: 0 0 20px; }
+  /* Fondo blanco fijo: un QR sobre fondo oscuro no lo lee ningún teléfono. */
+  .qr { background: #fff; padding: 12px; border-radius: 12px; display: inline-block; }
+  .qr img { display: block; width: 260px; height: 260px; }
+  .state {
+    margin-top: 20px; padding: 10px 14px; border-radius: 8px;
+    background: #1a1d24; font-size: 13px;
+  }
+  .ok { background: #10331d; color: #7ee2a8; }
+  .warn { background: #33270f; color: #e8c07d; }
+  ol { text-align: left; color: #9aa0aa; font-size: 13px; padding-left: 20px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Vincular WhatsApp</h1>
+  <p>El código se renueva solo cada 20 segundos.</p>
+
+  <div class="qr"><img id="qr" alt="Código QR" src="/qr.png?key=${encodedKey}"></div>
+
+  <div class="state" id="state">Consultando estado…</div>
+
+  <ol>
+    <li>WhatsApp en tu teléfono</li>
+    <li>Ajustes → Dispositivos vinculados</li>
+    <li>Vincular un dispositivo</li>
+  </ol>
+</div>
+
+<script>
+const key = ${JSON.stringify(key)};
+const img = document.getElementById('qr');
+const state = document.getElementById('state');
+
+async function tick() {
+  try {
+    const res = await fetch('/healthz');
+    const data = await res.json();
+
+    if (data.state === 'CONNECTED') {
+      state.className = 'state ok';
+      state.textContent = 'Conectado. Ya puedes cerrar esta pestaña.';
+      img.style.opacity = '0.15';
+      return; // se deja de refrescar: ya no hay QR que mostrar
+    }
+
+    if (data.state === 'WAITING_QR') {
+      state.className = 'state';
+      state.textContent = 'Esperando escaneo…';
+      // El parámetro sirve para saltarse la caché del navegador; sin él,
+      // la imagen se queda pegada en el primer QR, que ya caducó.
+      img.src = '/qr.png?key=' + encodeURIComponent(key) + '&t=' + Date.now();
+    } else {
+      state.className = 'state warn';
+      state.textContent = 'Estado: ' + data.state +
+        (data.lastError ? ' — ' + data.lastError : '');
+    }
+  } catch {
+    state.className = 'state warn';
+    state.textContent = 'Sin conexión con el gateway.';
+  }
+
+  setTimeout(tick, 5000);
+}
+
+tick();
+</script>
+</body>
+</html>`;
 }
