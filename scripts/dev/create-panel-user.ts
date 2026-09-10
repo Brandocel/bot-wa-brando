@@ -20,26 +20,30 @@ import { PanelAuthService } from '../../apps/agent-core/src/infrastructure/http/
 const prisma = new PrismaClient();
 const auth = new PanelAuthService(prisma as never);
 
+/**
+ * Pide algo por teclado sin que se vea al escribirlo.
+ *
+ * La pregunta se imprime ANTES de crear el readline. Interceptando
+ * `_writeToOutput` se silencia todo lo que readline escribe — y la pregunta
+ * también, con lo que quedaba un cursor parpadeando en una línea vacía sin
+ * ninguna pista de qué se esperaba.
+ */
 function askHidden(question: string): Promise<string> {
+  process.stdout.write(question);
+
   const rl = createInterface({ input: process.stdin, output: process.stdout });
 
-  // readline hace eco de todo lo que se teclea. Se intercepta la escritura
-  // para que la contraseña no quede en pantalla ni en la terminal.
-  const output = rl as unknown as { output: NodeJS.WriteStream; _writeToOutput?: unknown };
-  let visible = true;
-
-  (output as { _writeToOutput: (text: string) => void })._writeToOutput = (text) => {
-    if (visible) output.output.write(text);
-    else output.output.write('');
-  };
+  (rl as unknown as { _writeToOutput: (text: string) => void })._writeToOutput =
+    () => {
+      // Ni la contraseña ni asteriscos: nada. Así no se filtra ni su longitud.
+    };
 
   return new Promise((resolve) => {
-    rl.question(question, (answer) => {
+    rl.question('', (answer) => {
       rl.close();
       process.stdout.write('\n');
       resolve(answer);
     });
-    visible = false;
   });
 }
 
