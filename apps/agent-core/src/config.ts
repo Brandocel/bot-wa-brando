@@ -92,9 +92,18 @@ function parseServiceAccount(raw: string | undefined): ServiceAccount | null {
       private_key: parsed.private_key.replace(/\\n/g, '\n'),
     };
   } catch (err) {
+    // NO se lanza. Esto corre al importar el módulo, antes de que Nest
+    // exista, así que un throw aquí mata el proceso entero: el bot deja de
+    // contestar a todo el mundo porque una credencial OPCIONAL venía mal
+    // pegada. Drive es un subsistema; su fallo lo apaga a él, no al bot.
+    //
+    // El error se grita en el log para que no pase inadvertido, que es el
+    // otro modo de fallo que hay que evitar.
     const detail = err instanceof Error ? err.message : String(err);
-    throw new Error(
-      `GOOGLE_SERVICE_ACCOUNT_JSON no es un JSON de cuenta de servicio válido: ${detail}`,
+    console.error(
+      `[config] GOOGLE_SERVICE_ACCOUNT_JSON inválido (${detail}). ` +
+        'La sincronización con Drive queda apagada; el resto del bot sigue.',
     );
+    return null;
   }
 }
