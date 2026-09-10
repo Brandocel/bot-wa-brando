@@ -416,3 +416,44 @@ model AccessAudit {
   @@index([waId, createdAt])
   @@index([decision, createdAt])
 }
+
+// ─── Panel de operación ───────────────────────────────────────────────────
+// Cuentas propias del panel, separadas de Contact a propósito: un operador
+// no es un contacto de WhatsApp, y mezclar las dos cosas haría que dar de
+// alta a alguien en el panel le diera permisos sobre documentos.
+
+enum PanelRole {
+  ADMIN // ve todo y, en la siguiente etapa, edita
+  AGENTE // ve tickets y conversaciones, no toca permisos
+}
+
+model PanelUser {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  name         String
+  passwordHash String // scrypt: sal y hash en la misma cadena
+  role         PanelRole @default(AGENTE)
+  active       Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  sessions PanelSession[]
+}
+
+/// Sesiones en base y no un JWT: así una cuenta se puede revocar de verdad.
+/// Un JWT firmado sigue siendo válido hasta que caduca, aunque desactives
+/// al usuario — y aquí del otro lado hay facturas.
+model PanelSession {
+  id        String   @id @default(cuid())
+  /// Hash del token, no el token. Si alguien lee esta tabla, no se lleva
+  /// sesiones utilizables.
+  tokenHash String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user PanelUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+}

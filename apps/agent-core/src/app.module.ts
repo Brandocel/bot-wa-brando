@@ -23,6 +23,10 @@ import { HandleIncomingMessageUseCase } from './application/use-cases/handle-inc
 
 import { HealthController } from './infrastructure/http/health.controller';
 import { WaWebhookController } from './infrastructure/http/wa-webhook.controller';
+import { PanelApiController } from './infrastructure/http/panel/panel-api.controller';
+import { PanelAuthService } from './infrastructure/http/panel/panel-auth.service';
+import { PanelController } from './infrastructure/http/panel/panel.controller';
+import { PanelGuard } from './infrastructure/http/panel/panel.guard';
 import { OutboxDispatcher } from './infrastructure/persistence/outbox.dispatcher';
 import { FlagsService } from './infrastructure/persistence/flags.service';
 import { PrismaService } from './infrastructure/persistence/prisma.service';
@@ -34,7 +38,12 @@ import { GatewayMessagingAdapter } from './infrastructure/whatsapp/gateway-messa
 import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
 
 @Module({
-  controllers: [HealthController, WaWebhookController],
+  controllers: [
+    HealthController,
+    WaWebhookController,
+    PanelController,
+    PanelApiController,
+  ],
   providers: [
     // ── Infraestructura ────────────────────────────────────────────────
     PrismaService,
@@ -43,6 +52,8 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     MessageWorker,
     OutboxDispatcher,
     OpenWaMessageMapper,
+    PanelAuthService,
+    PanelGuard,
 
     // Aquí, y solo aquí, se decide con qué se habla WhatsApp.
     // Migrar a Baileys = cambiar esta línea.
