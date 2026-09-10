@@ -220,6 +220,12 @@ function qrPage(key: string): string {
   /* Fondo blanco fijo: un QR sobre fondo oscuro no lo lee ningún teléfono. */
   .qr { background: #fff; padding: 12px; border-radius: 12px; display: inline-block; }
   .qr img { display: block; width: 260px; height: 260px; }
+  .waiting {
+    width: 284px; height: 284px; margin: 0 auto; border-radius: 12px;
+    background: #141821; border: 1px solid #232733;
+    display: grid; place-items: center; color: #8b93a1; font-size: 13px;
+    padding: 0 24px; text-align: center;
+  }
   .state {
     margin-top: 20px; padding: 10px 14px; border-radius: 8px;
     background: #1a1d24; font-size: 13px;
@@ -234,7 +240,8 @@ function qrPage(key: string): string {
   <h1>Vincular WhatsApp</h1>
   <p>El código se renueva solo cada 20 segundos.</p>
 
-  <div class="qr"><img id="qr" alt="Código QR" src="/qr.png?key=${encodedKey}"></div>
+  <div class="qr" id="qrbox" hidden><img id="qr" alt="Código QR" src="/qr.png?key=${encodedKey}"></div>
+  <div class="waiting" id="waiting">Levantando el navegador…</div>
 
   <div class="state" id="state">Consultando estado…</div>
 
@@ -248,7 +255,16 @@ function qrPage(key: string): string {
 <script>
 const key = ${JSON.stringify(key)};
 const img = document.getElementById('qr');
+const qrbox = document.getElementById('qrbox');
+const waiting = document.getElementById('waiting');
 const state = document.getElementById('state');
+
+/** Mientras no haya QR, la caja se oculta: un <img> sin imagen dibuja el
+ *  icono de rota, que parece un error y no lo es. */
+function mostrarQr(visible) {
+  qrbox.hidden = !visible;
+  waiting.hidden = visible;
+}
 
 async function tick() {
   try {
@@ -258,13 +274,15 @@ async function tick() {
     if (data.state === 'CONNECTED') {
       state.className = 'state ok';
       state.textContent = 'Conectado. Ya puedes cerrar esta pestaña.';
-      img.style.opacity = '0.15';
+      mostrarQr(false);
+      waiting.textContent = 'Sesión vinculada.';
       return; // se deja de refrescar: ya no hay QR que mostrar
     }
 
     if (data.state === 'WAITING_QR') {
       state.className = 'state';
       state.textContent = 'Esperando escaneo…';
+      mostrarQr(true);
       // El parámetro sirve para saltarse la caché del navegador; sin él,
       // la imagen se queda pegada en el primer QR, que ya caducó.
       img.src = '/qr.png?key=' + encodeURIComponent(key) + '&t=' + Date.now();
@@ -272,6 +290,10 @@ async function tick() {
       state.className = 'state warn';
       state.textContent = 'Estado: ' + data.state +
         (data.lastError ? ' — ' + data.lastError : '');
+      mostrarQr(false);
+      waiting.textContent = data.state === 'BOOTING'
+        ? 'Levantando el navegador… puede tardar un par de minutos.'
+        : 'Sin código disponible ahora mismo.';
     }
   } catch {
     state.className = 'state warn';
