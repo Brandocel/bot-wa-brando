@@ -458,6 +458,51 @@ export class PanelApiController {
   }
 
   /**
+   * Corregir una empresa. Sobre todo, su carpeta de Drive.
+   *
+   * Hace falta porque el id de la carpeta se equivoca con facilidad —se
+   * copia de una URL— y porque las empresas sembradas para probar apuntan a
+   * carpetas que no existen. Sin esto habría que crear una empresa nueva y
+   * mover los números uno por uno.
+   */
+  @UseGuards(PanelGuard)
+  @Post('empresas/actualizar')
+  async updateOrganization(
+    @Req() req: PanelRequest,
+    @Body()
+    body: {
+      id?: string;
+      name?: string;
+      taxId?: string;
+      driveFolderId?: string;
+      active?: boolean;
+    },
+  ) {
+    this.requireAdmin(req);
+    if (!body.id) throw new BadRequestException('falta el id');
+
+    const organization = await this.prisma.organization.update({
+      where: { id: body.id },
+      data: {
+        ...(body.name ? { name: body.name.trim() } : {}),
+        ...(body.taxId !== undefined ? { taxId: body.taxId.trim() || null } : {}),
+        ...(body.driveFolderId ? { driveFolderId: body.driveFolderId.trim() } : {}),
+        ...(body.active !== undefined ? { active: body.active } : {}),
+      },
+    });
+
+    // Cambiar de carpeta invalida el cursor de Drive: el barrido incremental
+    // solo trae CAMBIOS, y la carpeta nueva no ha cambiado desde entonces —
+    // sus archivos son viejos y no aparecerían nunca. Borrar el cursor
+    // fuerza un barrido completo en el siguiente /sync.
+    if (body.driveFolderId) {
+      await this.prisma.driveSyncState.deleteMany({});
+    }
+
+    return { id: organization.id, name: organization.name };
+  }
+
+  /**
    * Enviar un mensaje a mano desde el panel.
    *
    * Va por el outbox y no directo al gateway: así queda en el historial de

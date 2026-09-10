@@ -352,15 +352,30 @@ const VISTAS = {
         <button type="submit">Crear empresa</button>
       </form>\` : '';
 
+    // Una carpeta que empieza por "drive-folder-" es de los datos de prueba:
+    // no existe en Drive y conviene que salte a la vista.
+    const esFalsa = (id) => id.startsWith('drive-folder-');
+
     return formulario + tabla(
-      ['Empresa', 'RFC', 'Carpeta de Drive', 'Números', 'Documentos', 'Tickets'],
+      ['Empresa', 'RFC', 'Carpeta de Drive', 'Números', 'Documentos', 'Tickets', ''],
       filas.map((o) => '<tr>' +
         '<td>' + esc(o.name) + (o.active ? '' : ' <span class="pill warn">inactiva</span>') + '</td>' +
         '<td>' + esc(o.taxId ?? '—') + '</td>' +
-        '<td class="mono muted">' + esc(o.driveFolderId) + '</td>' +
+        '<td class="mono">' +
+          (esAdmin
+            ? '<input class="mono compacto" value="' + esc(o.driveFolderId) +
+              '" data-carpeta="' + o.id + '">'
+            : esc(o.driveFolderId)) +
+          (esFalsa(o.driveFolderId)
+            ? ' <span class="pill warn">de prueba</span>'
+            : '') +
+        '</td>' +
         '<td>' + o._count.memberships + '</td>' +
         '<td>' + o._count.documents + '</td>' +
         '<td>' + o._count.tickets + '</td>' +
+        '<td>' + (esAdmin
+          ? '<button class="mini" data-guardar="' + o.id + '">Guardar</button>'
+          : '') + '</td>' +
       '</tr>'),
       'No hay empresas registradas.',
     );
@@ -484,6 +499,18 @@ document.addEventListener('submit', async (e) => {
 });
 
 document.addEventListener('click', async (e) => {
+  const guardar = e.target.closest('[data-guardar]');
+  if (guardar) {
+    const id = guardar.dataset.guardar;
+    const campo = document.querySelector('[data-carpeta="' + id + '"]');
+    try {
+      await enviar('empresas/actualizar', { id, driveFolderId: campo.value });
+      aviso('Carpeta actualizada. Corre /sync por WhatsApp para reindexar.');
+      pintar('empresas');
+    } catch (err) { aviso(err.message, 'error'); }
+    return;
+  }
+
   const verificar = e.target.closest('[data-verificar]');
   if (verificar) {
     try {
@@ -646,6 +673,7 @@ const STYLES = `<style>
     padding: 9px 10px; color: var(--texto); font-size: 14px; font-family: inherit;
   }
   input:focus, select:focus { outline: none; border-color: var(--azul); }
+  .compacto { padding: 4px 7px; font-size: 12px; width: 240px; }
   .permisos { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin: 14px 0; font-size: 13px; }
   .check { flex-direction: row; align-items: center; gap: 6px; color: var(--texto); }
   button[type=submit] {
