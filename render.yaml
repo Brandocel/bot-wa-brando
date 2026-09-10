@@ -34,6 +34,11 @@ services:
     envVars:
       - key: WA_SESSION_PATH
         value: /data/session
+      # La cola de mensajes pendientes va en el DISCO, no en el contenedor:
+      # el sistema de archivos de /app se borra en cada deploy, y un deploy
+      # es justo el momento en que esa cola tiene mensajes dentro.
+      - key: WA_PENDING_PATH
+        value: /data/pending
       - key: GATEWAY_API_KEY
         generateValue: true  # Render la genera; cópiala al agent-core
       - key: CORE_WEBHOOK_URL

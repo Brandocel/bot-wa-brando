@@ -29,6 +29,13 @@ export const config = {
     path: process.env.WA_SESSION_PATH ?? './data/session',
   },
 
+  /**
+   * Dónde esperan los mensajes que el core todavía no pudo recibir.
+   * Va en el disco persistente, al lado de la sesión: una cola que se borra
+   * al reiniciar no sirve de nada, porque reiniciar es justo cuando se usa.
+   */
+  pendingPath: process.env.WA_PENDING_PATH ?? './data/pending',
+
   coreWebhookUrl: normalizeBaseUrl(required('CORE_WEBHOOK_URL')),
 
   /**

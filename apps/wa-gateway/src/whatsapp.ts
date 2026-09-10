@@ -1,5 +1,6 @@
 import { create, ev, type Client, type Message } from '@open-wa/wa-automate';
 import { config } from './config';
+import { PendingQueue } from './pending-queue';
 
 /**
  * Envoltorio delgado sobre open-wa.
@@ -46,36 +47,80 @@ ev.on('qr.**', (qrDataUrl: string) => {
   console.log('[wa] QR nuevo disponible en GET /qr');
 });
 
-async function forwardToCore(message: Message): Promise<void> {
-  const url = `${config.coreWebhookUrl}/webhooks/wa`;
+const pending = new PendingQueue(config.pendingPath);
 
-  // 3 intentos: el core puede estar redeployando. Después de eso se pierde,
-  // y por eso el log es de error y no de warn.
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-gateway-key': config.apiKey,
-        },
-        body: JSON.stringify({ event: 'message', payload: message }),
-        signal: AbortSignal.timeout(5000),
-      });
+/** Un intento de entrega. true si el core lo aceptó. */
+async function deliver(payload: unknown): Promise<boolean> {
+  try {
+    const res = await fetch(`${config.coreWebhookUrl}/webhooks/wa`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-gateway-key': config.apiKey,
+      },
+      body: JSON.stringify({ event: 'message', payload }),
+      signal: AbortSignal.timeout(5000),
+    });
 
-      if (res.ok) return;
-      throw new Error(`core respondió ${res.status}`);
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      if (attempt === 3) {
-        console.error(
-          `[wa] MENSAJE PERDIDO ${message.id} tras 3 intentos: ${detail}`,
-        );
-        return;
-      }
-      await new Promise((r) => setTimeout(r, attempt * 1000));
-    }
+    return res.ok;
+  } catch {
+    return false;
   }
+}
+
+/**
+ * Entrega al core, y si no puede, lo deja en la cola de disco.
+ *
+ * Antes había tres reintentos y luego se tiraba el mensaje. El problema es
+ * que el core se reinicia en cada despliegue —treinta segundos sin aceptar
+ * nada— así que la ventana de pérdida era exactamente la de un deploy
+ * normal. Y "se perdió tu mensaje" es el fallo que un bot de soporte no se
+ * puede permitir: la persona no sabe que tiene que repetirlo.
+ */
+async function forwardToCore(message: Message): Promise<void> {
+  if (await deliver(message)) return;
+
+  console.warn(`[wa] core no disponible: ${message.id} queda en cola`);
+  pending.save(message.id, message);
+}
+
+/**
+ * Reintenta lo que quedó pendiente. Cada 30 s, en orden de llegada.
+ *
+ * Reenviar de más es inofensivo: el core descarta duplicados por el id de
+ * WhatsApp, que es su llave de idempotencia.
+ */
+function startPendingDrain(): void {
+  const timer = setInterval(() => {
+    void (async () => {
+      const pendientes = pending.list();
+      if (pendientes.length === 0) return;
+
+      console.log(`[cola] reintentando ${pendientes.length} mensaje(s)`);
+
+      for (const registro of pendientes) {
+        if (await deliver(registro.payload)) {
+          pending.remove(registro.id);
+          console.log(`[cola] entregado ${registro.id}`);
+          continue;
+        }
+
+        const intentos = registro.intentos + 1;
+
+        if (pending.agotado({ ...registro, intentos })) {
+          console.error(
+            `[cola] MENSAJE PERDIDO ${registro.id} tras ${intentos} intentos`,
+          );
+          pending.remove(registro.id);
+          continue;
+        }
+
+        pending.save(registro.id, registro.payload, intentos);
+      }
+    })();
+  }, 30_000);
+
+  timer.unref();
 }
 
 /**
@@ -163,6 +208,7 @@ export async function startWhatsApp(): Promise<void> {
   });
 
   state = 'CONNECTED';
+  startPendingDrain();
   lastQrPng = null; // ya no sirve y no queremos credenciales colgando en RAM
   console.log('[wa] conectado');
 
