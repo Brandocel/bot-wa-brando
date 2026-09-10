@@ -10,6 +10,7 @@ import { OwnerCommandsService } from './application/commands/owner-commands.serv
 import { SourceFilter } from './application/pipeline/filters/source.filter';
 import { AccessScopeService } from './application/support/access-scope.service';
 import { ConversationStateService } from './application/support/conversation-state.service';
+import { DirectoryService } from './application/support/directory.service';
 import { DocumentDeliveryService } from './application/support/document-delivery.service';
 import { DriveSyncService } from './application/support/drive-sync.service';
 import { SlotExtractorService } from './application/support/slot-extractor.service';
@@ -83,6 +84,7 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     SlotExtractorService,
     SupportStrategy,
     ConversationStateService,
+    DirectoryService,
 
     // ── Casos de uso ───────────────────────────────────────────────────
     DriveCommandsService,

@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { config } from '../../config';
 import type {
   MessagingPort,
+  NumberCheck,
   OutgoingFile,
 } from '../../application/ports/messaging.port';
 
@@ -55,6 +56,23 @@ export class GatewayMessagingAdapter implements MessagingPort {
       60_000,
     );
     return messageId;
+  }
+
+  async checkNumber(candidate: string): Promise<NumberCheck> {
+    const res = await fetch(
+      `${config.gatewayUrl}/contacts/check?number=${encodeURIComponent(candidate)}`,
+      {
+        headers: { 'x-gateway-key': config.gatewayApiKey },
+        signal: AbortSignal.timeout(20_000),
+      },
+    );
+
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new Error(`el gateway no pudo comprobar el número: ${detail.slice(0, 200)}`);
+    }
+
+    return (await res.json()) as NumberCheck;
   }
 
   async setTyping(to: string, on: boolean): Promise<void> {

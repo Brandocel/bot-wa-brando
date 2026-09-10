@@ -2,6 +2,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { timingSafeEqual } from 'node:crypto';
 import { config } from './config';
 import {
+  checkNumber,
   getQrPng,
   markSeen,
   sendFile,
@@ -153,6 +154,27 @@ export function buildServer() {
 
       const messageId = await sendFile({ to, url, base64, filename, caption });
       res.json({ messageId });
+    }),
+  );
+
+  /**
+   * Comprueba un número contra WhatsApp y devuelve su id canónico.
+   *
+   * Lo usa el panel al dar de alta un número: así el permiso se guarda con
+   * el identificador que WhatsApp usa de verdad, y no con el que nosotros
+   * dedujimos.
+   */
+  app.get(
+    '/contacts/check',
+    requireApiKey,
+    wrap(async (req, res) => {
+      const number = String(req.query.number ?? '');
+      if (!number) {
+        res.status(400).json({ error: 'falta "number"' });
+        return;
+      }
+
+      res.json(await checkNumber(number));
     }),
   );
 

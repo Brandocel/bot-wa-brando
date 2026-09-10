@@ -9,7 +9,14 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import type { Prisma, TicketState } from '@prisma/client';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import type {
+  DocCategory,
+  MemberRole,
+  Prisma,
+  TicketState,
+} from '@prisma/client';
+import { DirectoryService } from '../../../application/support/directory.service';
 import { PrismaService } from '../../persistence/prisma.service';
 import { PanelAuthService, SESSION_COOKIE } from './panel-auth.service';
 import { PanelGuard, readCookie, type PanelRequest } from './panel.guard';
@@ -27,7 +34,23 @@ export class PanelApiController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auth: PanelAuthService,
+    private readonly directory: DirectoryService,
   ) {}
+
+  /**
+   * Solo ADMIN toca el directorio.
+   *
+   * Un AGENTE ve tickets y contesta; conceder acceso a las facturas de una
+   * empresa es otra cosa. Se comprueba en el servidor y no escondiendo el
+   * boton: quien sabe abrir las herramientas del navegador puede llamar al
+   * endpoint igual.
+   */
+  private requireAdmin(req: PanelRequest): string {
+    if (req.panelUser?.role !== 'ADMIN') {
+      throw new ForbiddenException('hace falta ser ADMIN');
+    }
+    return req.panelUser.email;
+  }
 
   @Post('login')
   async login(
@@ -250,6 +273,252 @@ export class PanelApiController {
       // ordenaciones distintas.
       esperando: quietFor(row.lastInboundAt),
     }));
+  }
+
+
+  /**
+   * Un hilo completo: mensajes y los tickets que salieron de él.
+   *
+   * Agrupar por conversación y no por ticket es lo que hace legible el
+   * trabajo: el operador no atiende "el ticket #6", atiende a una persona
+   * que lleva tres solicitudes y una queja. Ver la charla entera es lo que
+   * evita contestar algo que ya se contestó dos mensajes antes.
+   */
+  @UseGuards(PanelGuard)
+  @Get('conversacion')
+  async thread(@Query('chatId') chatId: string) {
+    if (!chatId) throw new BadRequestException('falta chatId');
+
+    const conversation = await this.prisma.conversation.findUnique({
+      where: { chatId },
+      select: {
+        id: true,
+        chatId: true,
+        topic: true,
+        awaiting: true,
+        seenAt: true,
+        lastInboundAt: true,
+        contact: {
+          select: {
+            waId: true,
+            displayName: true,
+            memberships: {
+              where: { revokedAt: null },
+              select: {
+                role: true,
+                verifiedAt: true,
+                organization: { select: { name: true } },
+              },
+            },
+          },
+        },
+        tickets: {
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            number: true,
+            subject: true,
+            state: true,
+            priority: true,
+            level: true,
+            createdAt: true,
+            closeReason: true,
+            events: { orderBy: { createdAt: 'asc' } },
+          },
+        },
+      },
+    });
+
+    if (!conversation) return null;
+
+    // Los últimos 60, pero se devuelven en orden de lectura: la conversación
+    // se lee de arriba abajo, no al revés.
+    const messages = await this.prisma.message.findMany({
+      where: { conversationId: conversation.id },
+      orderBy: { createdAt: 'desc' },
+      take: 60,
+      select: {
+        id: true,
+        direction: true,
+        kind: true,
+        body: true,
+        createdAt: true,
+      },
+    });
+
+    return { ...conversation, messages: messages.reverse() };
+  }
+
+  // ── Escritura ───────────────────────────────────────────────────────────
+
+  /**
+   * Vista previa del número: qué se guardaría, sin guardar nada.
+   *
+   * El operador teclea "9984862017" y aquí ve "+52 1 998 486 2017" y si
+   * WhatsApp lo reconoce. Enseñar el resultado ANTES de guardar es lo que
+   * evita el alta mal formateada, que después se manifiesta como "el bot
+   * dice que no tengo acceso" y no apunta al formato por ningún lado.
+   */
+  @UseGuards(PanelGuard)
+  @Post('numeros/preview')
+  async previewNumber(@Body() body: { phone?: string }) {
+    if (!body.phone) throw new BadRequestException('falta el número');
+    return this.directory.preview(body.phone);
+  }
+
+  @UseGuards(PanelGuard)
+  @Post('numeros')
+  async addNumber(
+    @Req() req: PanelRequest,
+    @Body()
+    body: {
+      organizationId?: string;
+      phone?: string;
+      displayName?: string;
+      role?: MemberRole;
+      categories?: DocCategory[];
+    },
+  ) {
+    const grantedBy = this.requireAdmin(req);
+
+    if (!body.organizationId || !body.phone) {
+      throw new BadRequestException('faltan la empresa o el número');
+    }
+
+    return this.directory.addMember({
+      organizationId: body.organizationId,
+      phone: body.phone,
+      displayName: body.displayName,
+      role: body.role ?? 'VIEWER',
+      categories: body.categories ?? [],
+      grantedBy,
+    });
+  }
+
+  @UseGuards(PanelGuard)
+  @Post('numeros/verificar')
+  async verifyNumber(@Req() req: PanelRequest, @Body() body: { id?: string }) {
+    this.requireAdmin(req);
+    if (!body.id) throw new BadRequestException('falta el id');
+
+    await this.directory.verifyMember(body.id);
+    return { ok: true };
+  }
+
+  @UseGuards(PanelGuard)
+  @Post('numeros/revocar')
+  async revokeNumber(@Req() req: PanelRequest, @Body() body: { id?: string }) {
+    this.requireAdmin(req);
+    if (!body.id) throw new BadRequestException('falta el id');
+
+    await this.directory.revokeMember(body.id);
+    return { ok: true };
+  }
+
+  @UseGuards(PanelGuard)
+  @Post('numeros/permiso')
+  async setGrant(
+    @Req() req: PanelRequest,
+    @Body()
+    body: { membershipId?: string; category?: DocCategory; enabled?: boolean },
+  ) {
+    const grantedBy = this.requireAdmin(req);
+
+    if (!body.membershipId || !body.category) {
+      throw new BadRequestException('faltan datos del permiso');
+    }
+
+    await this.directory.setGrant({
+      membershipId: body.membershipId,
+      category: body.category,
+      enabled: body.enabled === true,
+      grantedBy,
+    });
+
+    return { ok: true };
+  }
+
+  @UseGuards(PanelGuard)
+  @Post('empresas')
+  async addOrganization(
+    @Req() req: PanelRequest,
+    @Body() body: { name?: string; driveFolderId?: string; taxId?: string },
+  ) {
+    this.requireAdmin(req);
+
+    if (!body.name || !body.driveFolderId) {
+      throw new BadRequestException('faltan el nombre o la carpeta de Drive');
+    }
+
+    return this.directory.addOrganization({
+      name: body.name,
+      driveFolderId: body.driveFolderId,
+      taxId: body.taxId,
+    });
+  }
+
+  /**
+   * Enviar un mensaje a mano desde el panel.
+   *
+   * Va por el outbox y no directo al gateway: así queda en el historial de
+   * la conversación, se reintenta si WhatsApp está caído, y el operador ve
+   * en el hilo lo mismo que ve el cliente. Un mensaje enviado por fuera es
+   * un mensaje que no existe para el resto del sistema.
+   */
+  @UseGuards(PanelGuard)
+  @Post('mensaje')
+  async sendMessage(
+    @Req() req: PanelRequest,
+    @Body() body: { chatId?: string; text?: string },
+  ) {
+    if (!body.chatId || !body.text?.trim()) {
+      throw new BadRequestException('faltan el chat o el texto');
+    }
+
+    await this.prisma.outboxMessage.create({
+      data: {
+        chatId: body.chatId,
+        payload: { kind: 'text', text: body.text.trim() },
+      },
+    });
+
+    // Contestar deja la pelota del lado del cliente: el operador ya movió.
+    await this.prisma.conversation.updateMany({
+      where: { chatId: body.chatId },
+      data: { awaiting: 'CLIENTE', lastOutboundAt: new Date() },
+    });
+
+    return { ok: true, enviadoPor: req.panelUser?.email };
+  }
+
+  /** Cierra un ticket a mano, con su autor en la bitácora. */
+  @UseGuards(PanelGuard)
+  @Post('ticket/cerrar')
+  async closeTicket(
+    @Req() req: PanelRequest,
+    @Body() body: { id?: string; motivo?: string },
+  ) {
+    if (!body.id) throw new BadRequestException('falta el id');
+
+    await this.prisma.ticket.update({
+      where: { id: body.id },
+      data: {
+        state: 'CERRADO',
+        closedAt: new Date(),
+        closeReason: body.motivo?.trim() || 'resuelto por operador',
+      },
+    });
+
+    await this.prisma.ticketEvent.create({
+      data: {
+        ticketId: body.id,
+        type: 'estado',
+        actor: req.panelUser?.email ?? 'panel',
+        data: { to: 'CERRADO', motivo: body.motivo ?? 'resuelto por operador' },
+      },
+    });
+
+    return { ok: true };
   }
 
   /** Últimos mensajes, para ver de qué habla la gente con el bot. */

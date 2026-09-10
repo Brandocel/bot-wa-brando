@@ -357,6 +357,42 @@ export async function sendFile(input: {
   return result;
 }
 
+/**
+ * ¿Existe este número en WhatsApp, y con qué identificador exacto?
+ *
+ * Es la única fuente de verdad sobre el formato. La heurística del core
+ * (el "1" mexicano y compañía) acierta casi siempre, pero "casi siempre"
+ * en un sistema de permisos significa que de vez en cuando alguien con
+ * acceso recibe un "no encontré" que nadie sabe explicar.
+ *
+ * Devuelve el id canónico o null si el número no está en WhatsApp.
+ */
+export async function checkNumber(
+  candidate: string,
+): Promise<{ exists: boolean; waId: string | null }> {
+  const c = requireClient();
+
+  try {
+    const result = (await c.checkNumberStatus(candidate as never)) as {
+      numberExists?: boolean;
+      id?: { _serialized?: string } | string;
+    } | null;
+
+    if (!result?.numberExists) return { exists: false, waId: null };
+
+    const id =
+      typeof result.id === 'string' ? result.id : result.id?._serialized;
+
+    return { exists: true, waId: id ?? candidate };
+  } catch (err) {
+    // Que WhatsApp no conteste no es lo mismo que el número no exista, y
+    // confundirlos daría de baja a gente válida. Se propaga.
+    throw new Error(
+      `no se pudo comprobar ${candidate}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
 export async function setTyping(to: string, on: boolean): Promise<void> {
   await requireClient().simulateTyping(to as never, on);
 }

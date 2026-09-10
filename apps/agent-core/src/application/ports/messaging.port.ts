@@ -15,8 +15,20 @@ export interface OutgoingFile {
   caption?: string;
 }
 
+/** Lo que WhatsApp dice de un número. La verdad sobre su formato. */
+export interface NumberCheck {
+  exists: boolean;
+  waId: string | null;
+}
+
 export interface MessagingPort {
   sendText(to: string, text: string): Promise<string>;
+  /**
+   * Comprueba un número contra WhatsApp. Devuelve su id canónico.
+   * Lanza si no se pudo comprobar: "no contestó" no es lo mismo que "no
+   * existe", y confundirlos daría de baja a gente válida.
+   */
+  checkNumber(candidate: string): Promise<NumberCheck>;
   sendFile(to: string, file: OutgoingFile): Promise<string>;
   setTyping(to: string, on: boolean): Promise<void>;
   markSeen(to: string): Promise<void>;
