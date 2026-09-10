@@ -43,9 +43,9 @@ Para el `.env` local, la misma línea pero entre **comillas simples**:
 GOOGLE_SERVICE_ACCOUNT_JSON='{"type":"service_account",...}'
 ```
 
-Simples, no dobles. Con comillas dobles, dotenv expande las secuencias 
- de la
-llave privada a saltos de línea reales y el JSON deja de ser válido. El síntoma
+Simples, no dobles. Con comillas dobles, dotenv expande las secuencias de
+escape de la llave privada a saltos de línea reales y el JSON deja de ser
+válido. El síntoma
 es `Expected property name or '}' in JSON at position 4`, que no menciona nada
 de comillas.
 
