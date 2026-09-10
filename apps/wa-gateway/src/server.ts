@@ -54,11 +54,24 @@ export function buildServer() {
   // MAX_DELIVERABLE_BYTES; esto solo tiene que quedar holgado por encima.
   app.use(express.json({ limit: '25mb' }));
 
-  // Health check de Render. Sin API key: Render no manda headers custom.
-  // Responde 200 aunque WhatsApp esté caído — si devolviera 503, Render
-  // reiniciaría el servicio en loop y nunca podrías escanear el QR.
+  /**
+   * Health check de Render. Sin API key: Render no manda headers custom.
+   *
+   * Devuelve 503 SOLO en CRASHED, que es cuando la sesión está muerta de
+   * verdad. Así Render reinicia el servicio por su cuenta, sin depender de
+   * que el proceso se suicide correctamente — dos mecanismos independientes
+   * para el mismo fallo, que es lo que hace que no haga falta un humano.
+   *
+   * BOOTING y WAITING_QR siguen devolviendo 200 a propósito: si un servicio
+   * esperando QR respondiera 503, Render lo reiniciaría en bucle y nunca
+   * habría tiempo de escanear nada.
+   */
   app.get('/healthz', (_req, res) => {
-    res.json({ ok: true, ...status() });
+    const estado = status();
+    res.status(estado.state === 'CRASHED' ? 503 : 200).json({
+      ok: estado.state !== 'CRASHED',
+      ...estado,
+    });
   });
 
   /**

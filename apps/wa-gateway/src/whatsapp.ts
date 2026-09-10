@@ -36,6 +36,17 @@ let deadChecks = 0;
  */
 let lastEventAt: Date | null = null;
 
+/**
+ * Marca del latido en vuelo. null = no hay ninguno esperando respuesta.
+ *
+ * El latido es la única prueba que no miente: se manda un mensaje y se
+ * comprueba que vuelve por onAnyMessage. Eso ejercita el camino completo
+ * —envío, WhatsApp, recepción— que es justo lo que se rompe cuando la
+ * sesión queda zombi. Una sonda puede contestar con la página medio muerta;
+ * un mensaje que da la vuelta, no.
+ */
+let latidoPendiente: { marca: string; enviadoAt: number } | null = null;
+
 export const status = () => ({
   state,
   hasQr: lastQrPng !== null,
@@ -151,6 +162,54 @@ function startPendingDrain(): void {
   timer.unref();
 }
 
+/** Silencio a partir del cual se prueba el camino completo. */
+const SILENCIO_MS = 10 * 60 * 1000;
+
+/** Lo que se espera a que el latido dé la vuelta antes de darlo por muerto. */
+const LATIDO_TIMEOUT_MS = 90 * 1000;
+
+/**
+ * Latido de ida y vuelta.
+ *
+ * Se manda un mensaje al propio número y se espera a que vuelva por
+ * onAnyMessage. Si vuelve, el camino completo funciona: el envío llega a
+ * WhatsApp y WhatsApp nos sigue entregando eventos. Si no vuelve, algo de
+ * ese camino está roto por mucho que las sondas digan que sí.
+ *
+ * Solo se lanza tras un rato de silencio. Con tráfico real no hace falta:
+ * cada mensaje de un cliente ya prueba lo mismo y gratis.
+ */
+async function latir(): Promise<void> {
+  // Un latido en vuelo que no volvió a tiempo: el camino está roto.
+  if (latidoPendiente) {
+    if (Date.now() - latidoPendiente.enviadoAt > LATIDO_TIMEOUT_MS) {
+      state = 'CRASHED';
+      lastError = 'el latido no volvió: WhatsApp ya no entrega eventos';
+      console.error(`[latido] ${lastError}: saliendo para reiniciar`);
+      setTimeout(() => process.exit(1), 1000);
+    }
+    return;
+  }
+
+  const silencio = Date.now() - (lastEventAt?.getTime() ?? 0);
+  if (silencio < SILENCIO_MS) return;
+
+  try {
+    const numero = await client?.getHostNumber();
+    if (!numero) return;
+
+    const marca = `hb-${Date.now().toString(36)}`;
+    latidoPendiente = { marca, enviadoAt: Date.now() };
+
+    // El punto invisible de delante hace que el mensaje casi no se vea en
+    // la lista de chats mientras da la vuelta.
+    await sendText(`${numero}@c.us`, `\u200b${marca}`);
+  } catch (err) {
+    latidoPendiente = null;
+    console.error(`[latido] no se pudo enviar: ${String(err)}`);
+  }
+}
+
 /**
  * Vigilante de la conexión.
  *
@@ -182,6 +241,10 @@ function startWatchdog(): void {
         aliveAt = new Date();
         deadChecks = 0;
         if (state === 'CRASHED') state = 'CONNECTED';
+
+        // La sonda dice que hay sesión. El latido comprueba si además
+        // siguen llegando eventos, que es otra cosa.
+        await latir();
       } catch (err) {
         deadChecks += 1;
         lastError = err instanceof Error ? err.message : String(err);
@@ -298,6 +361,25 @@ export async function startWhatsApp(): Promise<void> {
   // se protege el core (IdempotencyFilter + LoopGuardFilter).
   await client.onAnyMessage(async (message) => {
     lastEventAt = new Date();
+
+    // El latido vuelve por aquí. No se reenvía al core: es tráfico nuestro,
+    // y meterlo en la conversación del dueño sería ensuciar su historial con
+    // ruido de infraestructura.
+    if (latidoPendiente && message.body?.includes(latidoPendiente.marca)) {
+      const tardo = Date.now() - latidoPendiente.enviadoAt;
+      console.log(`[latido] ida y vuelta en ${tardo} ms`);
+      latidoPendiente = null;
+
+      // Se borra para no dejar rastro en el chat del dueño. Si no se puede,
+      // da igual: es un mensaje corto y el latido no depende de esto.
+      try {
+        await client?.deleteMessage(message.chatId, message.id, false);
+      } catch {
+        /* nada que hacer */
+      }
+      return;
+    }
+
     await forwardToCore(message);
   });
 
