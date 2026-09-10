@@ -9,7 +9,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import type { TicketState } from '@prisma/client';
+import type { Prisma, TicketState } from '@prisma/client';
 import { PrismaService } from '../../persistence/prisma.service';
 import { PanelAuthService, SESSION_COOKIE } from './panel-auth.service';
 import { PanelGuard, readCookie, type PanelRequest } from './panel.guard';
@@ -204,6 +204,54 @@ export class PanelApiController {
     });
   }
 
+  /**
+   * La bandeja: conversaciones ordenadas por quién debe mover ficha.
+   *
+   * Ordenar por fecha sin más pondría arriba lo que ya está contestado. Lo
+   * que necesita el operador es lo contrario: primero lo que nos espera a
+   * nosotros, y de eso, lo que lleva más tiempo esperando.
+   */
+  @UseGuards(PanelGuard)
+  @Get('bandeja')
+  async inbox(@Query('esperando') esperando?: string) {
+    const filtro: Prisma.ConversationWhereInput =
+      esperando === 'BOT' || esperando === 'CLIENTE' || esperando === 'AGENTE'
+        ? { awaiting: esperando }
+        : // Por defecto, solo lo que nos espera a nosotros: lo que espera al
+          // cliente no es tarea de nadie hasta que conteste.
+          { awaiting: { in: ['BOT', 'AGENTE'] } };
+
+    const rows = await this.prisma.conversation.findMany({
+      where: filtro,
+      orderBy: { lastInboundAt: 'asc' },
+      take: 100,
+      select: {
+        id: true,
+        chatId: true,
+        topic: true,
+        awaiting: true,
+        seenAt: true,
+        lastInboundAt: true,
+        lastOutboundAt: true,
+        contact: { select: { displayName: true, waId: true } },
+        tickets: {
+          where: { state: { not: 'CERRADO' } },
+          select: { number: true, state: true, priority: true },
+          take: 1,
+          orderBy: { createdAt: 'desc' },
+        },
+      },
+    });
+
+    return rows.map((row) => ({
+      ...row,
+      // El tiempo de espera se calcula aquí y no en el navegador: es el
+      // dato por el que se ordena, y dos relojes distintos darían dos
+      // ordenaciones distintas.
+      esperando: quietFor(row.lastInboundAt),
+    }));
+  }
+
   /** Últimos mensajes, para ver de qué habla la gente con el bot. */
   @UseGuards(PanelGuard)
   @Get('mensajes')
@@ -223,6 +271,19 @@ export class PanelApiController {
       },
     });
   }
+}
+
+/** Cuánto lleva esperando, en palabras. */
+function quietFor(since: Date | null): string {
+  if (!since) return 'sin actividad';
+
+  const minutos = Math.floor((Date.now() - since.getTime()) / 60000);
+  if (minutos < 60) return `${minutos} min`;
+
+  const horas = Math.floor(minutos / 60);
+  if (horas < 24) return `${horas} h`;
+
+  return `${Math.floor(horas / 24)} d`;
 }
 
 function toState(raw: string | undefined): TicketState | null {

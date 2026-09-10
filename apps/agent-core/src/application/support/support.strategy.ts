@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type { Document } from '@prisma/client';
+import type { Awaiting, DocCategory, Document } from '@prisma/client';
 import type { IncomingMessage } from '../../domain/message/incoming-message';
 import { LLM_PORT, type LlmPort } from '../ports/llm.port';
 import { AccessScopeService, type OrgScope } from './access-scope.service';
@@ -26,6 +26,20 @@ import { TicketService } from './ticket.service';
 
 const MAX_QUESTIONS = 3;
 
+/**
+ * Lo que la Strategy devuelve: el texto Y de quién queda el turno.
+ *
+ * La bandera no se puede deducir mirando el texto desde fuera, y es lo que
+ * ordena la bandeja del operador. Devolverla junto con la respuesta obliga
+ * a decidirla en el mismo sitio donde se decide qué contestar.
+ */
+export interface StrategyReply {
+  text: string;
+  awaiting: Awaiting;
+  /** Tema del hilo, cuando este turno lo resolvió. */
+  topic?: DocCategory | null;
+}
+
 export interface StrategyContext {
   contactId: string;
   conversationId: string;
@@ -49,7 +63,7 @@ export class SupportStrategy {
   async handle(
     message: IncomingMessage,
     ctx: StrategyContext,
-  ): Promise<string | null> {
+  ): Promise<StrategyReply | null> {
     const scope = await this.scope.resolve(message.senderId);
 
     // Sin membresía no hay conversación de soporte. Que conteste el eco o,
@@ -60,13 +74,19 @@ export class SupportStrategy {
     // en el flujo de documentos y provocaban un "¿qué documento necesitas?"
     // que no venía a cuento.
     if (message.kind !== 'TEXT' && message.body.trim() === '') {
-      return 'Recibí tu archivo, pero todavía no sé leerlo. Escríbeme qué documento necesitas y de qué mes.';
+      return {
+        text: 'Recibí tu archivo, pero todavía no sé leerlo. Escríbeme qué documento necesitas y de qué mes.',
+        awaiting: 'CLIENTE',
+      };
     }
 
     const extraction = await this.slots.extract(message.body);
 
     if (extraction.notADocumentRequest) {
-      return this.smallTalk(message.body, scope.scopes);
+      return {
+        text: await this.smallTalk(message.body, scope.scopes),
+        awaiting: 'NADIE',
+      };
     }
 
     const ticket = await this.tickets.openOrReattach({
@@ -103,10 +123,13 @@ export class SupportStrategy {
     // Presupuesto agotado: escala en vez de seguir preguntando.
     if (asked.total >= MAX_QUESTIONS) {
       await this.tickets.escalate(ticket.id, 'slots_incompletos', null);
-      return [
-        'Creo que no te estoy entendiendo bien, y no quiero hacerte dar más vueltas.',
-        `Ya le pasé tu caso al equipo con el folio #${ticket.number}; alguien te contacta.`,
-      ].join('\n');
+      return {
+        text: [
+          'Creo que no te estoy entendiendo bien, y no quiero hacerte dar más vueltas.',
+          `Ya le pasé tu caso al equipo con el folio #${ticket.number}; alguien te contacta.`,
+        ].join('\n'),
+        awaiting: 'AGENTE',
+      };
     }
 
     const organizationId = this.resolveCompany(extraction.companyHint, scope.scopes);
@@ -155,20 +178,28 @@ export class SupportStrategy {
 
       // Sin permiso y sin resultados dan la MISMA respuesta. Distinguirlas
       // permitiría mapear el Drive ajeno a base de preguntas.
-      return [
-        'No encontré ese documento.',
-        `Lo dejé anotado con el folio #${ticket.number} para que alguien del equipo lo revise.`,
-      ].join('\n');
+      return {
+        text: [
+          'No encontré ese documento.',
+          `Lo dejé anotado con el folio #${ticket.number} para que alguien del equipo lo revise.`,
+        ].join('\n'),
+        awaiting: 'AGENTE',
+        topic: query.category,
+      };
     }
 
     // Varios resultados NO es ambigüedad de la persona: preguntó bien y hay
     // más de un documento que encaja. Se listan con su folio para que pueda
     // señalar uno, y esta pregunta no cuenta contra el presupuesto.
     if (results.length > 1) {
-      return [
-        `Encontré ${results.length}. ¿Cuál necesitas?`,
-        ...results.map((doc) => `• ${describe(doc)}`),
-      ].join('\n');
+      return {
+        text: [
+          `Encontré ${results.length}. ¿Cuál necesitas?`,
+          ...results.map((doc) => `• ${describe(doc)}`),
+        ].join('\n'),
+        awaiting: 'CLIENTE',
+        topic: query.category,
+      };
     }
 
     const doc = results[0]!;
@@ -186,14 +217,22 @@ export class SupportStrategy {
 
     if (!sent.ok) {
       await this.tickets.escalate(ticket.id, 'sin_resultados', null);
-      return [
-        'Encontré tu documento pero no pude enviártelo por aquí.',
-        `Ya lo pasé al equipo con el folio #${ticket.number}.`,
-      ].join('\n');
+      return {
+        text: [
+          'Encontré tu documento pero no pude enviártelo por aquí.',
+          `Ya lo pasé al equipo con el folio #${ticket.number}.`,
+        ].join('\n'),
+        awaiting: 'AGENTE',
+        topic: query.category,
+      };
     }
 
     await this.tickets.close(ticket.id, 'resuelto');
-    return `Aquí está. Te dejo el folio #${ticket.number} por si necesitas darle seguimiento:`;
+    return {
+      text: `Aquí está. Te dejo el folio #${ticket.number} por si necesitas darle seguimiento:`,
+      awaiting: 'NADIE',
+      topic: doc.category,
+    };
   }
 
   /**
@@ -264,13 +303,16 @@ export class SupportStrategy {
     asked: AskedState,
     slot: AskableSlot,
     question: string,
-  ): Promise<string> {
+  ): Promise<StrategyReply> {
     if (asked.slots[slot]) {
       await this.tickets.escalate(ticket.id, 'slots_incompletos', null);
-      return [
-        'Ya te pregunté esto y sigo sin entenderlo bien; no quiero hacerte repetir.',
-        `Se lo pasé al equipo con el folio #${ticket.number}.`,
-      ].join('\n');
+      return {
+        text: [
+          'Ya te pregunté esto y sigo sin entenderlo bien; no quiero hacerte repetir.',
+          `Se lo pasé al equipo con el folio #${ticket.number}.`,
+        ].join('\n'),
+        awaiting: 'AGENTE',
+      };
     }
 
     await this.tickets.updateSlots(ticket.id, {
@@ -278,7 +320,8 @@ export class SupportStrategy {
       preguntado: { ...asked.slots, [slot]: true },
     });
 
-    return question;
+    // Preguntamos: el turno pasa al cliente.
+    return { text: question, awaiting: 'CLIENTE' };
   }
 }
 

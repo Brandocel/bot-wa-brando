@@ -20,6 +20,14 @@ enum Role {
   BLOCKED
 }
 
+/// De quién se espera el siguiente mensaje.
+enum Awaiting {
+  NADIE // nada pendiente
+  BOT // llegó algo y todavía no se responde
+  CLIENTE // se le preguntó y no ha contestado
+  AGENTE // escalado: espera a una persona
+}
+
 enum ConvState {
   IDLE
   COLLECTING_INFO
@@ -70,11 +78,30 @@ model Conversation {
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
+  /// De qué trata el hilo. Se hereda del último ticket con categoría
+  /// resuelta, para poder filtrar la bandeja por tema sin abrir cada
+  /// conversación una por una.
+  topic DocCategory?
+
+  /// De quién es el turno. Es la bandera que ordena la bandeja: lo que
+  /// espera al cliente no corre prisa, lo que nos espera a nosotros sí.
+  awaiting Awaiting @default(NADIE)
+
+  /// Cuándo el bot marcó como leído el último entrante. null = nunca se
+  /// acusó recibo, que es lo que el cliente percibe como "ni me leyeron".
+  seenAt DateTime?
+
+  lastInboundAt  DateTime?
+  lastOutboundAt DateTime?
+
   contact  Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
   messages Message[]
   tickets  Ticket[]
 
   @@index([contactId])
+  // La consulta de la bandeja: "qué está esperando por nosotros y desde
+  // cuándo". Sin este índice es un barrido completo en cada refresco.
+  @@index([awaiting, lastInboundAt])
 }
 
 model Message {

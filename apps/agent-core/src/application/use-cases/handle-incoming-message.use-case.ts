@@ -9,6 +9,7 @@ import { LoopGuardFilter } from '../pipeline/filters/loop-guard.filter';
 import { RateLimitFilter } from '../pipeline/filters/rate-limit.filter';
 import { OwnerCommandsService } from '../commands/owner-commands.service';
 import { SupportCommandsService } from '../support/support-commands.service';
+import { ConversationStateService } from '../support/conversation-state.service';
 import { SupportStrategy } from '../support/support.strategy';
 import { SourceFilter } from '../pipeline/filters/source.filter';
 import { runPipeline, type MessageFilter, type PipelineContext } from '../pipeline/pipeline';
@@ -25,6 +26,7 @@ export class HandleIncomingMessageUseCase {
     private readonly ownerCommands: OwnerCommandsService,
     private readonly supportCommands: SupportCommandsService,
     private readonly supportStrategy: SupportStrategy,
+    private readonly conversations: ConversationStateService,
     source: SourceFilter,
     idempotency: IdempotencyFilter,
     loopGuard: LoopGuardFilter,
@@ -104,6 +106,14 @@ export class HandleIncomingMessageUseCase {
         },
       });
 
+      // Acuse de recibo inmediato. Va aquí y no junto a la respuesta: el
+      // "visto" mientras el bot piensa es lo que evita la sensación de que
+      // nadie leyó el mensaje.
+      await this.conversations.onInbound({
+        conversationId: conversation.id,
+        chatId: message.chatId,
+      });
+
       // Fase 3: aqui entra el selector de Strategy. Por ahora, comandos
       // del dueno, comandos de soporte y eco para todo lo demas.
       //
@@ -142,7 +152,7 @@ export class HandleIncomingMessageUseCase {
       const reply =
         supportReply ??
         unknownCommand ??
-        strategyReply ??
+        strategyReply?.text ??
         `eco (${role?.toLowerCase()}): ${message.body}`;
 
       // No se envía aquí: se escribe al outbox dentro de la MISMA transacción.
@@ -150,6 +160,15 @@ export class HandleIncomingMessageUseCase {
       // un registro sin mensaje.
       await tx.outboxMessage.create({
         data: { chatId: message.chatId, payload: { kind: 'text', text: reply } },
+      });
+
+      // De quién queda el turno. Solo la Strategy sabe si lo que acaba de
+      // decir era una pregunta, una entrega o un escalado; un comando o un
+      // eco no dejan nada pendiente.
+      await this.conversations.onOutbound({
+        conversationId: conversation.id,
+        awaiting: strategyReply?.awaiting ?? 'NADIE',
+        topic: strategyReply?.topic ?? null,
       });
     });
 

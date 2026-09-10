@@ -66,7 +66,8 @@ export function panelPage(): string {
 <section class="cards" id="resumen"></section>
 
 <nav class="tabs">
-  <button data-view="tickets" class="active">Tickets</button>
+  <button data-view="bandeja" class="active">Bandeja</button>
+  <button data-view="tickets">Tickets</button>
   <button data-view="numeros">Números</button>
   <button data-view="empresas">Empresas</button>
   <button data-view="cuarentena">Cuarentena</button>
@@ -78,7 +79,7 @@ export function panelPage(): string {
 
 <script>
 const contenido = document.getElementById('contenido');
-let vistaActual = 'tickets';
+let vistaActual = 'bandeja';
 
 const api = async (ruta) => {
   const res = await fetch('/panel/api/' + ruta);
@@ -103,6 +104,29 @@ function tabla(columnas, filas, vacio) {
 }
 
 const VISTAS = {
+  async bandeja() {
+    const filas = await api('bandeja');
+    return '<p class="muted">Conversaciones que esperan por nosotros, la que ' +
+      'lleva más tiempo primero. Lo que espera al cliente no sale aquí.</p>' +
+      tabla(
+        ['Espera', 'Contacto', 'Tema', 'Estado', 'Ticket', 'Visto'],
+        filas.map((c) => '<tr>' +
+          '<td>' + esc(c.esperando) + '</td>' +
+          '<td>' + esc(c.contact?.displayName ?? c.contact?.waId ?? c.chatId) + '</td>' +
+          '<td>' + (c.topic
+            ? '<span class="pill">' + esc(c.topic) + '</span>'
+            : '<span class="muted">sin clasificar</span>') + '</td>' +
+          '<td><span class="pill ' + (c.awaiting === 'AGENTE' ? 'warn' : '') + '">' +
+            (c.awaiting === 'AGENTE' ? 'espera persona' : 'sin responder') + '</span></td>' +
+          '<td>' + (c.tickets[0]
+            ? '#' + c.tickets[0].number + ' ' + c.tickets[0].priority
+            : '—') + '</td>' +
+          '<td class="muted">' + (c.seenAt ? 'sí' : 'no') + '</td>' +
+        '</tr>'),
+        'Nada pendiente. Todo contestado.',
+      );
+  },
+
   async tickets() {
     const filas = await api('tickets');
     return tabla(
@@ -255,7 +279,7 @@ api('me').then((usuario) => {
 });
 
 pintarResumen();
-pintar('tickets');
+pintar('bandeja');
 
 // Refresco periódico. 30 segundos: esto es una consola de operación, no un
 // tablero en vivo, y cada pasada son siete consultas a Postgres.
