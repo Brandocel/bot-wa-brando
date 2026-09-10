@@ -68,7 +68,13 @@ async function main(): Promise<void> {
     return;
   }
 
-  const password = await askHidden('Contraseña: ');
+  // Dos líneas y no una: con solo "Contraseña:" y sin eco, la terminal
+  // parece colgada. Decir explícitamente que no se va a ver nada es la
+  // diferencia entre esperar y darle Ctrl+C.
+  console.log(`Creando cuenta ${role} para ${email}`);
+  console.log('Escribe la contraseña y pulsa Enter. No se verá nada al teclear.');
+
+  const password = await askHidden('> ');
 
   if (password.length < 10) {
     console.error('Muy corta. Mínimo 10 caracteres.');
