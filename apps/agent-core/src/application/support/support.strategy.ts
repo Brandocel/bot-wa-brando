@@ -386,23 +386,15 @@ export class SupportStrategy {
       return this.resolverResultados(turn, ticket, query, porNombre, slots);
     }
 
-    if (!query.category && !query.folio) {
-      return this.ask(
-        ticket,
-        asked,
-        'categoria',
-        '¿Qué documento necesitas? Puedo buscarte facturas, contratos, cotizaciones, reportes y pólizas.',
-      );
-    }
-
     /**
-     * Sin mes y sin folio, primero se mira cuántos hay.
+     * Con un solo dato (tipo o mes) se mira cuántos hay antes de preguntar.
      *
-     * Preguntar "¿de qué mes?" cuando solo existe una cotización es hacer
-     * dar una vuelta de más; enseñar dos o tres para que señale una es lo
-     * que haría alguien del equipo. Solo si hay demasiadas se pregunta.
+     * Preguntar "¿de qué mes?" cuando solo existe una cotización, o "¿qué
+     * documento?" cuando de febrero hay dos, es hacer dar una vuelta de
+     * más; enseñar dos o tres para que señale una es lo que haría alguien
+     * del equipo. Solo si hay demasiados se pregunta lo que falta.
      */
-    if (!query.period && !query.folio) {
+    if (!query.folio && (!query.category || !query.period)) {
       const candidatos = await this.search.search(
         scopes,
         { ...query, organizationId },
@@ -410,7 +402,26 @@ export class SupportStrategy {
       );
 
       if (candidatos.length > MAX_OPCIONES) {
-        return this.ask(ticket, asked, 'periodo', `¿De qué mes necesitas la ${nombre(query.category)}?`);
+        if (query.category) {
+          return this.ask(ticket, asked, 'periodo', `¿De qué mes necesitas la ${nombre(query.category)}?`);
+        }
+        return this.ask(
+          ticket,
+          asked,
+          'categoria',
+          query.period
+            ? `De ${mesEnPalabras(query.period)} tengo varios. ¿Qué documento necesitas: factura, contrato, cotización, reporte o póliza?`
+            : '¿Qué documento necesitas? Puedo buscarte facturas, contratos, cotizaciones, reportes y pólizas.',
+        );
+      }
+
+      if (candidatos.length === 0 && !query.category) {
+        return this.ask(
+          ticket,
+          asked,
+          'categoria',
+          '¿Qué documento necesitas? Puedo buscarte facturas, contratos, cotizaciones, reportes y pólizas.',
+        );
       }
 
       return this.resolverResultados(turn, ticket, query, candidatos, slots);
@@ -548,7 +559,37 @@ export class SupportStrategy {
         }
       }
 
-      // 2. Qué sí hay.
+      // 2. Qué sí hay. Si son pocos, numerados para que pueda pedir uno con
+      // "la 2" en vez de tener que describirlo otra vez.
+      const todos = await this.search.search(
+        scopes,
+        { category: null, period: null, folio: null, text: null, organizationId },
+        MAX_OPCIONES + 1,
+      );
+
+      if (todos.length > 0 && todos.length <= MAX_OPCIONES) {
+        await this.tickets.updateSlots(ticket.id, {
+          opciones: todos.map((doc, i) => ({
+            n: i + 1,
+            tipo: 'documento',
+            id: doc.id,
+            nombre: doc.name,
+          })),
+          opcionesAt: new Date().toISOString(),
+        });
+
+        return {
+          text: [
+            `No encontré ${pedido}. Lo que tengo${nombreEmpresa(scopes, organizationId) ? ` de ${nombreEmpresa(scopes, organizationId)}` : ''}:`,
+            ...todos.map((doc, i) => `${i + 1}. ${describe(doc)}`),
+            '',
+            '¿Te sirve alguno? Responde con el número.',
+          ].join('\n'),
+          awaiting: 'CLIENTE',
+          topic: query.category,
+        };
+      }
+
       const inventario = await this.search.inventario(scopes, organizationId);
       if (inventario.length > 0) {
         return {
@@ -1038,8 +1079,21 @@ function mergeSlots(stored: unknown, fresh: SearchQuery): SearchQuery {
       ? null
       : (previous.category as SearchQuery['category'] | undefined) ?? null;
 
+  /**
+   * Un folio que ya falló no se hereda si el mensaje trae otra cosa.
+   *
+   * "No encontré DEL0901; tengo 2 facturas" → "la de febrero cuál es": la
+   * persona ya cambió de estrategia, y arrastrar el folio fallido a la
+   * búsqueda de febrero garantiza el segundo fallo y el escalado.
+   */
+  const fallo = typeof previous.fallos === 'number' && previous.fallos > 0;
+  const traeAlgo =
+    fresh.category !== null || fresh.period !== null || fresh.folio !== null;
+
   const storedFolio =
-    typeof previous.folio === 'string' ? previous.folio : null;
+    typeof previous.folio === 'string' && !(fallo && traeAlgo)
+      ? previous.folio
+      : null;
 
   /**
    * Cambia de tipo si dice uno distinto al guardado, O si dice uno y la

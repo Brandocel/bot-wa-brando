@@ -39,6 +39,14 @@ const CATEGORY_WORDS: Record<string, DocCategory> = {
   reportes: 'REPORTE',
   poliza: 'POLIZA',
   polizas: 'POLIZA',
+  // Sinónimos que la gente usa de verdad. "invoice" por los que facturan
+  // en inglés; "recibo" y "comprobante" porque para el cliente es lo mismo.
+  invoice: 'FACTURA',
+  invoices: 'FACTURA',
+  recibo: 'FACTURA',
+  recibos: 'FACTURA',
+  comprobante: 'FACTURA',
+  comprobantes: 'FACTURA',
 };
 
 /** Sin acentos y en minúsculas: "Póliza" y "poliza" son la misma palabra. */
@@ -72,7 +80,9 @@ export function parseQuery(raw: string): SearchQuery {
   const parsedPeriod = parsePeriod(text);
 
   // Folio: patrón alfanumérico con dígito, tipo "A1234" o "F-2026-88".
-  const folioMatch = /\b(?:folio\s+)?([a-z]{1,3}-?\d{3,}[a-z0-9-]*)\b/.exec(text);
+  // "del0901" no es un folio: es "del" pegado a un número. Las palabras
+  // cortas de siempre no cuentan como prefijo.
+  const folioMatch = /\b(?:folio\s+)?(?!(?:del|los|las|con|por|una|uno|mes|dia|ano|los|sin)\d)([a-z]{1,3}-?\d{3,}[a-z0-9-]*)\b/.exec(text);
   // "documento 3001", "folio 3001", "el no. 3001": dígitos solos también
   // son folio si van detrás de una palabra que lo diga.
   const folioNumerico = /\b(?:folio|documento|doc|numero|no)\.?\s+(\d{3,})\b/.exec(text);
@@ -122,7 +132,9 @@ export function nombreDeArchivo(raw: string): string | null {
       (t) =>
         t.includes('_') ||
         /[a-z][A-Z]/.test(t) ||
-        (/[a-zA-Z]/.test(t) && /\d/.test(t) && !/^[a-zA-Z]{1,3}-?\d+$/.test(t)),
+        // Letras y dígitos, pero no un folio ("V3001", "F-2026-88"): eso
+        // ya lo lee el patrón de folio y se busca por su campo.
+        (/[a-zA-Z]/.test(t) && /\d/.test(t) && !/^[a-zA-Z]{1,3}-?\d{3,}[a-zA-Z0-9-]*$/.test(t)),
     );
 
   // El más largo: es el más específico, y un LIKE con dos palabras
