@@ -3,6 +3,8 @@ import { timingSafeEqual } from 'node:crypto';
 import { config } from './config';
 import {
   checkNumber,
+  diagnosticar,
+  probarEnvioReal,
   getQrPng,
   markSeen,
   sendFile,
@@ -189,6 +191,60 @@ export function buildServer() {
       }
 
       res.json(await checkNumber(number));
+    }),
+  );
+
+  /**
+   * Por qué no salen los archivos: las tres hipótesis, preguntadas de golpe.
+   *
+   * Devuelve lo que WhatsApp contesta sobre cada variante del número (con y
+   * sin el "1" mexicano), si existe un chat guardado bajo cada una, y lo que
+   * cuelga del chat LID. No manda nada: es seguro llamarlo.
+   */
+  app.get(
+    '/diag/destino',
+    requireApiKey,
+    wrap(async (req, res) => {
+      const to = String(req.query.to ?? '');
+      if (!to) {
+        res.status(400).json({ error: 'falta "to"' });
+        return;
+      }
+
+      res.json(await diagnosticar(to));
+    }),
+  );
+
+  /**
+   * La secuencia que open-wa pide: texto primero, archivo después, al MISMO
+   * id. Esto sí manda mensajes de verdad, así que el destino va explícito y
+   * no se deduce de nada — nadie debería recibir una prueba por accidente.
+   */
+  app.post(
+    '/diag/enviar',
+    requireApiKey,
+    wrap(async (req, res) => {
+      const { to, base64, filename } = req.body as {
+        to?: string;
+        base64?: string;
+        filename?: string;
+      };
+
+      if (!to) {
+        res.status(400).json({ error: 'falta "to"' });
+        return;
+      }
+
+      // Un PDF mínimo de verdad. Un base64 inventado lo rechazaría WhatsApp
+      // por el archivo y no por el destino, que es lo que se está probando.
+      const contenido =
+        base64 ??
+        'data:application/pdf;base64,JVBERi0xLjQKMSAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMiAwIFI+PgplbmRvYmoKMiAwIG9iago8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+PgplbmRvYmoKMyAwIG9iago8PC9UeXBlL1BhZ2UvUGFyZW50IDIgMCBSL01lZGlhQm94WzAgMCA5OSA5OV0+PgplbmRvYmoKdHJhaWxlcgo8PC9Sb290IDEgMCBSPj4K';
+
+      res.json({
+        destino: to,
+        pasos: await probarEnvioReal(to, contenido, filename ?? 'prueba.pdf'),
+      });
     }),
   );
 

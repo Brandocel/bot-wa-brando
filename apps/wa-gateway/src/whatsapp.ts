@@ -3,6 +3,12 @@ import { existsSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from './config';
 import { PendingQueue } from './pending-queue';
+import {
+  diagnosticarDestino,
+  probarEnvio,
+  type DiagnosticoDestino,
+  type PasoPrueba,
+} from './diagnostico';
 
 /**
  * Envoltorio delgado sobre open-wa.
@@ -750,4 +756,21 @@ export async function setTyping(to: string, on: boolean): Promise<void> {
 
 export async function markSeen(to: string): Promise<void> {
   await requireClient().sendSeen(to as never);
+}
+
+/**
+ * Diagnóstico y prueba de envío, para averiguar por qué los archivos no
+ * salen. Viven aquí porque `client` no sale de este módulo: quien lo tenga
+ * puede hacer cualquier cosa con la cuenta, así que se queda donde está.
+ */
+export async function diagnosticar(entrada: string): Promise<DiagnosticoDestino> {
+  return diagnosticarDestino(requireClient(), entrada);
+}
+
+export async function probarEnvioReal(
+  destino: string,
+  base64: string,
+  filename: string,
+): Promise<PasoPrueba[]> {
+  return probarEnvio(requireClient(), destino, base64, filename);
 }
