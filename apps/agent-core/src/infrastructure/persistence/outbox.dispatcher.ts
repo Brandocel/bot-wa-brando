@@ -204,11 +204,28 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     payload: OutboxFilePayload,
   ): Promise<SentMessage> {
+    /**
+     * Se cita el último mensaje que escribió la persona.
+     *
+     * No es un adorno de conversación: es lo que hace que el archivo salga.
+     * WhatsApp direcciona el hilo por LID y open-wa resuelve el contacto por
+     * teléfono, así que cada destino falla en una comprobación distinta —uno
+     * por "no existe ese chat", el otro por "no es un contacto"—. Citando, el
+     * chat se resuelve desde el mensaje citado y ninguna de las dos hace
+     * falta.
+     */
+    const ultimoEntrante = await this.prisma.message.findFirst({
+      where: { conversation: { chatId }, direction: 'IN' },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true },
+    });
+
     const id = await this.messaging.sendFile(chatId, {
       url: payload.url,
       base64: payload.base64,
       filename: payload.filename,
       caption: payload.caption,
+      quotedMsgId: ultimoEntrante?.id,
     });
     return { id, body: `[documento] ${payload.filename}`, kind: 'DOCUMENT' };
   }

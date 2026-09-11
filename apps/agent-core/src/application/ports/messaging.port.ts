@@ -13,6 +13,15 @@ export interface OutgoingFile {
   base64?: string;
   filename: string;
   caption?: string;
+  /**
+   * Mensaje del propio hilo al que responder.
+   *
+   * No es cosmetico: citar resuelve el chat desde el mensaje citado, y esa
+   * es la unica via que no depende de que open-wa encuentre el chat por su
+   * id ni el contacto por su telefono. Sin cita, un hilo direccionado por
+   * LID rechaza los archivos.
+   */
+  quotedMsgId?: string;
 }
 
 /** Lo que WhatsApp dice de un número. La verdad sobre su formato. */

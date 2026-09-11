@@ -148,12 +148,13 @@ export function buildServer() {
     '/messages/file',
     requireApiKey,
     wrap(async (req, res) => {
-      const { to, url, base64, filename, caption } = req.body as {
+      const { to, url, base64, filename, caption, quotedMsgId } = req.body as {
         to?: string;
         url?: string;
         base64?: string;
         filename?: string;
         caption?: string;
+        quotedMsgId?: string;
       };
 
       if (!to || !filename) {
@@ -165,7 +166,7 @@ export function buildServer() {
         return;
       }
 
-      const messageId = await sendFile({ to, url, base64, filename, caption });
+      const messageId = await sendFile({ to, url, base64, filename, caption, quotedMsgId });
       res.json({ messageId });
     }),
   );

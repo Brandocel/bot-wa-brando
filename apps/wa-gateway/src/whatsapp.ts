@@ -482,6 +482,16 @@ export async function whoAmI(): Promise<{
   return { hostNumber, me };
 }
 
+/**
+ * open-wa no lanza cuando falla: devuelve `false` o una CADENA que empieza
+ * por "ERROR:". Esa cadena pasaba por id de mensaje valido, asi que el envio
+ * se daba por bueno mientras el archivo no llegaba a ninguna parte. Un fallo
+ * que se reporta como exito es peor que un fallo: no se reintenta.
+ */
+function esErrorDeOpenWa(resultado: unknown): boolean {
+  return typeof resultado === 'string' && resultado.startsWith('ERROR');
+}
+
 export async function sendText(to: string, text: string): Promise<string> {
   // open-wa devuelve el messageId, o `false` si el envío falló. Ese `false`
   // silencioso es justo el tipo de cosa que el core no debe tener que conocer:
@@ -518,82 +528,90 @@ export async function sendFile(input: {
   base64?: string;
   filename: string;
   caption?: string;
+  /** Id de un mensaje del propio chat, para citar. Ver abajo por qué importa. */
+  quotedMsgId?: string;
 }): Promise<string> {
   const c = requireClient();
-  const { url, base64, filename, caption = '' } = input;
-
-  const to = await destinoParaArchivos(input.to);
-
-  // waitForId en true: sin él open-wa devuelve `true` en vez del id del
-  // mensaje, y sin id el core no puede reconocer el eco del archivo cuando
-  // WhatsApp lo devuelve por onAnyMessage.
-  const enviar = async (): Promise<unknown> =>
-    url
-      ? c.sendFileFromUrl(to as never, url, filename, caption, undefined, undefined, true)
-      : c.sendFile(to as never, base64 as string, filename, caption, undefined, true);
-
-  let result = await enviar();
+  const { url, base64, filename, caption = '', quotedMsgId } = input;
 
   /**
-   * "Start a chat with sendText with this contact before trying to send
-   * media."
+   * Por qué hay varios intentos y no uno.
    *
-   * open-wa exige que el chat esté cargado en su almacén interno antes de
-   * mandar un archivo, y tras reiniciar el gateway no lo está — aunque la
-   * conversación exista desde hace semanas. El síntoma es desconcertante:
-   * el texto sigue llegando y los documentos dejan de llegar.
+   * WhatsApp direcciona el chat por LID (`...@lid`) pero el contacto se
+   * resuelve por teléfono (`...@c.us`), y open-wa comprueba las dos cosas
+   * en sitios distintos:
    *
-   * Pedir el chat por su id lo carga, que es lo mismo que consigue mandar
-   * un texto, pero sin ensuciar la conversación con un mensaje que nadie
-   * pidió.
+   *   destino @c.us  -> "Start a chat with sendText with this contact"
+   *                     (no existe un chat guardado con ese id)
+   *   destino @lid   -> false, por "Not a contact"
+   *                     (el contacto no se resuelve desde un LID)
+   *
+   * Mandar un texto antes no arregla el primero: el texto se enruta al chat
+   * LID y nunca llega a crear un chat bajo el @c.us.
+   *
+   * Citar un mensaje del hilo sí sirve: el chat se resuelve desde el mensaje
+   * citado y ninguna de las dos búsquedas hace falta. Por eso el primer
+   * intento es con cita, y los demás quedan como red de seguridad para
+   * chats donde no haya un mensaje que citar.
    */
-  if (esErrorDeOpenWa(result) && String(result).includes('Start a chat')) {
-    console.warn(`[wa] chat ${to} sin cargar: mandando el pie antes del archivo`);
+  const telefono = await destinoParaArchivos(input.to).catch(() => null);
 
-    /**
-     * La guarda solo se levanta con un sendText de verdad: getChatById carga
-     * el chat en la API pero no en el almacén interno que sendFile consulta.
-     *
-     * Se manda el PIE del documento como texto, no un mensaje de relleno.
-     * Es el texto que iba a acompañar al archivo de todas formas, así que la
-     * conversación queda igual de limpia: una línea que anuncia el documento
-     * y el documento debajo. Por eso el reintento va sin caption — si no,
-     * saldría dos veces.
-     */
-    try {
-      await sendText(to, caption || `Documento: ${filename}`);
-    } catch (err) {
-      console.warn(`[wa] no se pudo abrir el chat ${to}: ${String(err)}`);
+  const intentos: { destino: string; citar: string | null; nota: string }[] = [];
+
+  if (quotedMsgId) {
+    intentos.push({ destino: input.to, citar: quotedMsgId, nota: 'chat original citando' });
+    if (telefono && telefono !== input.to) {
+      intentos.push({ destino: telefono, citar: quotedMsgId, nota: 'teléfono citando' });
     }
-
-    result = url
-      ? await c.sendFileFromUrl(to as never, url, filename, '', undefined, undefined, true)
-      : await c.sendFile(to as never, base64 as string, filename, '', undefined, true);
   }
 
-  // Se envió pero no llegó el id a tiempo. Es un envío correcto: reportarlo
-  // como fallo haría que el core lo reintentara y el archivo llegara repetido.
-  if (result === true) return `sent_${Date.now()}_${to}`;
-
-  if (esErrorDeOpenWa(result)) {
-    throw new Error(`WhatsApp rechazó ${filename} para ${to}: ${String(result)}`);
+  if (telefono) {
+    intentos.push({ destino: telefono, citar: null, nota: 'teléfono' });
   }
 
-  if (typeof result !== 'string') {
-    throw new Error(`WhatsApp rechazó el archivo ${filename} para ${to}`);
+  if (!intentos.some((i) => i.destino === input.to && !i.citar)) {
+    intentos.push({ destino: input.to, citar: null, nota: 'chat original' });
   }
 
-  return result;
-}
+  let ultimoMotivo = 'sin intentos';
 
-/**
- * open-wa no lanza cuando falla: devuelve `false` o una CADENA que empieza
- * por "ERROR:". Esa cadena pasaba por id de mensaje válido, así que el envío
- * se daba por bueno, el outbox lo marcaba SENT y el archivo no llegaba a
- * ninguna parte. Un fallo que se reporta como éxito es peor que un fallo.
- */
-function esErrorDeOpenWa(resultado: unknown): boolean {
-  return typeof resultado === 'string' && resultado.startsWith('ERROR');
+  for (const intento of intentos) {
+    // waitForId en true: sin él open-wa devuelve `true` en vez del id del
+    // mensaje, y sin id el core no puede reconocer el eco del archivo.
+    const result = url
+      ? await c.sendFileFromUrl(
+          intento.destino as never,
+          url,
+          filename,
+          caption,
+          (intento.citar ?? undefined) as never,
+          undefined,
+          true,
+        )
+      : await c.sendFile(
+          intento.destino as never,
+          base64 as string,
+          filename,
+          caption,
+          (intento.citar ?? undefined) as never,
+          true,
+        );
+
+    if (typeof result === 'string' && !result.startsWith('ERROR')) return result;
+
+    // Se envió pero no llegó el id a tiempo. Es un envío correcto: darlo por
+    // fallido haría que el core lo reintentara y el archivo llegara repetido.
+    if (result === true) return `sent_${Date.now()}_${intento.destino}`;
+
+    ultimoMotivo =
+      typeof result === 'string' ? result : 'rechazado sin explicación (false)';
+
+    console.warn(
+      `[wa] ${filename} por ${intento.nota} (${intento.destino}): ${ultimoMotivo}`,
+    );
+  }
+
+  throw new Error(`no se pudo enviar ${filename}: ${ultimoMotivo}`);
 }
 
 /**
