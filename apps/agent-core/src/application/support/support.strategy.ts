@@ -339,10 +339,10 @@ export class SupportStrategy {
       chatId,
       doc,
       `Aquí está: ${doc.name}. Te dejo el folio #${ticket.number} por si necesitas darle seguimiento.`,
-      [
-        `Encontré ${doc.name} pero no pude enviártelo por aquí.`,
-        `Ya lo pasé al equipo con el folio #${ticket.number} para que te lo hagan llegar.`,
-      ].join('\n'),
+      // Solo la coletilla: el enlace de descarga lo antepone la entrega, y
+      // decir "no pude enviártelo" antes del enlace que sí lo entrega dejaba
+      // a la persona creyendo que se había quedado sin documento.
+      `Cualquier cosa, quedó anotado con el folio #${ticket.number}.`,
     );
 
     await this.tickets.record(ticket.id, 'entrega', 'bot', {

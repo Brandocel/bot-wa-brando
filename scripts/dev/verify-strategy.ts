@@ -13,6 +13,7 @@ import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 import { AccessScopeService } from '../../apps/agent-core/src/application/support/access-scope.service';
 import { DocumentDeliveryService } from '../../apps/agent-core/src/application/support/document-delivery.service';
+import { DocumentLinkService } from '../../apps/agent-core/src/application/support/document-link.service';
 import { DocumentSearchService } from '../../apps/agent-core/src/application/support/document-search.service';
 import { SlotExtractorService } from '../../apps/agent-core/src/application/support/slot-extractor.service';
 import {
@@ -48,7 +49,7 @@ const delivery = new DocumentDeliveryService(prisma as never, {
   // Los documentos del seed son ficticios: no hay bytes que bajar. Se
   // simula la descarga para poder ejercitar el resto del camino.
   download: async () => Buffer.from('PDF de prueba'),
-});
+}, new DocumentLinkService());
 
 const strategy = new SupportStrategy(scope, slots, search, delivery, tickets, deadLlm);
 

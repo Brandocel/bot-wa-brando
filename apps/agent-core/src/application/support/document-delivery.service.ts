@@ -140,7 +140,13 @@ export class DocumentDeliveryService {
           // mandar archivos a los hilos que WhatsApp direcciona por LID, y
           // eso no se arregla desde aquí: es un límite de la librería. Un
           // enlace que caduca en media hora entrega el documento igual.
-          fallbackText: fallbackText ?? this.enlaceDeRespaldo(document),
+          //
+          // El enlace va SIEMPRE por delante de lo que diga quien llama: su
+          // texto explica que hubo un problema, pero el enlace lo resuelve.
+          // Anteponer la disculpa dejaba a la persona sin su documento.
+          fallbackText: [this.enlaceDeRespaldo(document), fallbackText]
+            .filter(Boolean)
+            .join('\n\n'),
         },
       },
     });
