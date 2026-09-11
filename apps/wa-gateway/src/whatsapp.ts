@@ -548,15 +548,27 @@ export async function sendFile(input: {
    * pidió.
    */
   if (esErrorDeOpenWa(result) && String(result).includes('Start a chat')) {
-    console.warn(`[wa] chat ${to} sin cargar: hidratando y reintentando`);
+    console.warn(`[wa] chat ${to} sin cargar: mandando el pie antes del archivo`);
 
+    /**
+     * La guarda solo se levanta con un sendText de verdad: getChatById carga
+     * el chat en la API pero no en el almacén interno que sendFile consulta.
+     *
+     * Se manda el PIE del documento como texto, no un mensaje de relleno.
+     * Es el texto que iba a acompañar al archivo de todas formas, así que la
+     * conversación queda igual de limpia: una línea que anuncia el documento
+     * y el documento debajo. Por eso el reintento va sin caption — si no,
+     * saldría dos veces.
+     */
     try {
-      await c.getChatById(to as never);
+      await sendText(to, caption || `Documento: ${filename}`);
     } catch (err) {
-      console.warn(`[wa] no se pudo cargar el chat ${to}: ${String(err)}`);
+      console.warn(`[wa] no se pudo abrir el chat ${to}: ${String(err)}`);
     }
 
-    result = await enviar();
+    result = url
+      ? await c.sendFileFromUrl(to as never, url, filename, '', undefined, undefined, true)
+      : await c.sendFile(to as never, base64 as string, filename, '', undefined, true);
   }
 
   // Se envió pero no llegó el id a tiempo. Es un envío correcto: reportarlo
