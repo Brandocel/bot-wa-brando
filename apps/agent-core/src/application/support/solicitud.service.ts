@@ -21,7 +21,7 @@ import { PrismaService } from '../../infrastructure/persistence/prisma.service';
 /** Media hora sin actividad y la solicitud se da por terminada. */
 const VIGENCIA_MS = 30 * 60 * 1000;
 
-export type SlotPendiente = 'categoria' | 'periodo' | 'empresa';
+export type SlotPendiente = 'categoria' | 'periodo' | 'empresa' | 'detalle';
 
 export interface Opcion {
   n: number;

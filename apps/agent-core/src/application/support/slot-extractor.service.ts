@@ -59,7 +59,7 @@ const SCHEMA = {
 };
 
 /** El dato que el bot acaba de pedir, si la respuesta viene a eso. */
-export type SlotPendiente = 'categoria' | 'periodo' | 'empresa';
+export type SlotPendiente = 'categoria' | 'periodo' | 'empresa' | 'detalle';
 
 export interface ExtractionResult {
   query: SearchQuery;
@@ -213,6 +213,8 @@ function systemPrompt(
       '- El bot acaba de preguntar DE QUÉ MES. El mensaje es esa respuesta (periodo); no es charla.',
     empresa:
       '- El bot acaba de preguntar DE QUÉ EMPRESA. El mensaje es esa respuesta (empresa, aunque traiga erratas); no es charla.',
+    detalle:
+      '- El bot acaba de pedir MÁS DATOS para ubicar el documento (folio, nombre del archivo o mes). El mensaje trae alguno de esos; no es charla.',
   };
 
   /**

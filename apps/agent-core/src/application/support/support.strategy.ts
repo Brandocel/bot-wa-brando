@@ -399,8 +399,20 @@ export class SupportStrategy {
   }
 
   /**
-   * No se encontró lo pedido. Primero se ofrece lo más parecido; escalar
-   * es el segundo intento, no el primero. Y solo entonces nace un ticket.
+   * No se encontró lo pedido. Nunca se contesta "no encontré" y una lista
+   * de todo: eso no escala (con cien documentos sería un rollo) y suena a
+   * que el bot se rindió. Se hace lo que haría alguien del equipo:
+   *
+   *  1. Buscar por parecido de nombre: "cotización" tiene que dar con
+   *     "Cotizacion_Vega_2026.pdf" aunque esté mal clasificado.
+   *  2. Si pidió un mes concreto y hay del mismo tipo en otros meses, se
+   *     enseñan si son pocos; si son muchos, se pide folio o nombre.
+   *  3. Si nada se parece, se pide un dato más concreto. Es una pregunta
+   *     y cuenta como tal: a la segunda vez sin dar con nada, nace el
+   *     ticket, porque con esa información no se puede resolver solo.
+   *
+   * Sin permiso y sin resultados siguen dando lo mismo: todo lo que se
+   * ofrece sale del alcance de quien pregunta.
    */
   private async sinResultados(
     turn: Turn,
@@ -415,45 +427,47 @@ export class SupportStrategy {
     await this.solicitudes.guardar(turn.ctx.conversationId, { fallos });
 
     const pedido = describirPedido(query);
-    const empresa = nombreEmpresa(scopes, organizationId);
 
-    if (fallos < 2) {
-      // 1. Sin el mes: lo más parecido.
-      if (query.period && !query.text) {
-        const parecidos = await this.search.search(
-          scopes,
-          { category: query.category, period: null, folio: query.folio, text: null, organizationId },
-          MAX_OPCIONES,
-        );
-
-        if (parecidos.length > 0) {
-          await this.guardarOpciones(turn, parecidos);
-          return {
-            text: [
-              voz.noEncontreParecidos(pedido),
-              ...parecidos.map((doc, i) => `${i + 1}. ${describe(doc)}`),
-              '',
-              voz.pieParecidos(),
-            ].join('\n'),
-            awaiting: 'CLIENTE',
-            topic: query.category,
-          };
-        }
-      }
-
-      // 2. Qué sí hay: numerado si son pocos, por tipo si son muchos.
-      const todos = await this.search.search(
+    // 1. Parecidos por nombre, sin importar cómo estén clasificados.
+    if (query.category && !query.folio) {
+      const porNombre = await this.search.search(
         scopes,
-        { category: null, period: null, folio: null, text: null, organizationId },
+        { category: null, period: null, folio: null, text: raizNombre(query.category), organizationId },
         MAX_OPCIONES + 1,
       );
 
-      if (todos.length > 0 && todos.length <= MAX_OPCIONES) {
-        await this.guardarOpciones(turn, todos);
+      if (porNombre.length === 1) {
+        return this.entregar(turn, porNombre[0]!, porNombre[0]!.name);
+      }
+      if (porNombre.length > 1 && porNombre.length <= MAX_OPCIONES) {
+        await this.guardarOpciones(turn, porNombre);
         return {
           text: [
-            voz.noEncontreListaTodo(pedido, empresa),
-            ...todos.map((doc, i) => `${i + 1}. ${describe(doc)}`),
+            voz.seParecen(pedido),
+            ...porNombre.map((doc, i) => `${i + 1}. ${describe(doc)}`),
+            '',
+            voz.pieParecidos(),
+          ].join('\n'),
+          awaiting: 'CLIENTE',
+          topic: query.category,
+        };
+      }
+    }
+
+    // 2. Con mes: del mismo tipo en otros meses.
+    if (query.period && query.category && !query.text) {
+      const otrosMeses = await this.search.search(
+        scopes,
+        { category: query.category, period: null, folio: query.folio, text: null, organizationId },
+        MAX_OPCIONES + 1,
+      );
+
+      if (otrosMeses.length > 0 && otrosMeses.length <= MAX_OPCIONES) {
+        await this.guardarOpciones(turn, otrosMeses);
+        return {
+          text: [
+            voz.noEncontreParecidos(pedido),
+            ...otrosMeses.map((doc, i) => `${i + 1}. ${describe(doc)}`),
             '',
             voz.pieParecidos(),
           ].join('\n'),
@@ -462,17 +476,22 @@ export class SupportStrategy {
         };
       }
 
-      const inventario = await this.search.inventario(scopes, organizationId);
-      if (inventario.length > 0) {
-        return {
-          text: voz.noEncontreInventario(pedido, describirInventario(inventario, empresa)),
-          awaiting: 'CLIENTE',
-          topic: query.category,
-        };
+      if (otrosMeses.length > MAX_OPCIONES) {
+        return this.ask(
+          turn,
+          readAsked(sol),
+          'detalle',
+          voz.muchosSinMes(otrosMeses.length, nombrePlural(query.category), mesEnPalabras(query.period)),
+        );
       }
     }
 
-    // 3. Escalar: aquí nace el ticket.
+    // 3. Falta información. Es una pregunta; repetirla es escalar.
+    const asked = readAsked(sol);
+    if (!asked.slots.detalle) {
+      return this.ask(turn, asked, 'detalle', voz.faltaInformacion(pedido));
+    }
+
     const denial = query.category
       ? this.scope.denialFor(scopes, query.category, query.period)
       : null;
@@ -493,7 +512,7 @@ export class SupportStrategy {
     );
 
     return {
-      text: voz.noEncontreEscalado(pedido, `#${ticket.number}`, agente),
+      text: voz.sinInformacionEscalado(pedido, `#${ticket.number}`, agente),
       awaiting: 'AGENTE',
       topic: query.category,
     };
@@ -507,7 +526,12 @@ export class SupportStrategy {
    * folio: entregar no es un caso de soporte. Y al entregar se cierra la
    * solicitud: lo siguiente que pida empieza limpio.
    */
-  private async entregar(turn: Turn, doc: Document): Promise<StrategyReply> {
+  private async entregar(
+    turn: Turn,
+    doc: Document,
+    /** Cómo nombrarlo en la leyenda; por defecto, tipo y mes. */
+    comoLlamarlo?: string,
+  ): Promise<StrategyReply> {
     const { conversationId } = turn.ctx;
 
     await this.scope.audit({
@@ -521,9 +545,9 @@ export class SupportStrategy {
     const yaEntregoAlgo = turn.history.some(
       (t) => t.role === 'bot' && t.text.startsWith('[documento]'),
     );
-    const que = `la ${nombre(doc.category)}${
-      doc.period ? ` de ${mesEnPalabras(doc.period)}` : ''
-    }`;
+    const que =
+      comoLlamarlo ??
+      `la ${nombre(doc.category)}${doc.period ? ` de ${mesEnPalabras(doc.period)}` : ''}`;
 
     const sent = await this.delivery.deliver(
       turn.message.chatId,
@@ -1226,7 +1250,7 @@ function parseQueryTieneDatos(limpio: string): boolean {
 }
 
 /** Los datos que el bot sabe pedir cuando faltan. */
-type AskableSlot = 'categoria' | 'periodo' | 'empresa';
+type AskableSlot = 'categoria' | 'periodo' | 'empresa' | 'detalle';
 
 interface AskedState {
   /** Cuántas preguntas se han hecho en este ticket. */
@@ -1368,3 +1392,20 @@ function pideHumano(texto: string): boolean {
   return alguien.test(limpio) && accion.test(limpio);
 }
 
+
+/**
+ * La raíz con la que se busca un tipo dentro de los NOMBRES de archivo:
+ * "cotizacion" da con "Cotizacion_Vega_2026.pdf" aunque esté clasificado
+ * como factura. Sin acentos, porque los nombres de archivo rara vez los
+ * llevan, y el contains es insensible a mayúsculas.
+ */
+function raizNombre(category: DocCategory): string {
+  return {
+    FACTURA: 'factura',
+    CONTRATO: 'contrato',
+    COTIZACION: 'cotizacion',
+    REPORTE: 'reporte',
+    POLIZA: 'poliza',
+    OTRO: 'documento',
+  }[category];
+}

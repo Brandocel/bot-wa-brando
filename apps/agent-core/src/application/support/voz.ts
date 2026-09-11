@@ -109,6 +109,7 @@ export const PREGUNTA_PENDIENTE = {
   categoria: '¿Qué documento necesitas?',
   periodo: '¿De qué mes lo necesitas?',
   empresa: '¿De qué empresa lo necesitas? Responde con el número de la lista.',
+  detalle: '¿Me das el folio, el nombre del archivo o el mes exacto?',
 } as const;
 
 // ── Listas ─────────────────────────────────────────────────────────────
@@ -257,4 +258,34 @@ export function yaPregunte(folio: string, agente: Agente | null): string {
 
 export function tocoElTecho(): string {
   return 'Llevamos muchos mensajes seguidos; dame un rato y te sigo atendiendo. Ya quedó marcado para que alguien del equipo lo vea por si es urgente.';
+}
+
+// ── Cuando falta información ───────────────────────────────────────────
+
+export function seParecen(pedido: string): string {
+  return una([
+    `No tengo exactamente ${pedido}, pero estos se le parecen:`,
+    `${pedido.charAt(0).toUpperCase() + pedido.slice(1)} tal cual no lo veo; mira si es alguno de estos:`,
+  ]);
+}
+
+export function muchosSinMes(cuantos: number, tipoPlural: string, mes: string): string {
+  return una([
+    `Tengo ${cuantos} ${tipoPlural}, pero ninguna de ${mes}. ¿Me das el folio o el nombre del archivo?`,
+    `De ${mes} no veo ${tipoPlural}; tengo ${cuantos} de otros meses. Si tienes el folio o el nombre, con eso la ubico.`,
+  ]);
+}
+
+export function faltaInformacion(pedido: string): string {
+  return una([
+    `Con eso no me alcanza para ubicar ${pedido}. ¿Tienes el folio, el nombre del archivo o el mes exacto?`,
+    `${pedido.charAt(0).toUpperCase() + pedido.slice(1)} así no lo encuentro; necesito un dato más: folio, nombre del archivo o mes.`,
+    `Para dar con ${pedido} me falta algo más concreto: el folio, el nombre del archivo o el mes.`,
+  ]);
+}
+
+export function sinInformacionEscalado(pedido: string, folio: string, agente: Agente | null): string {
+  return agente
+    ? `Con lo que tengo no logro ubicar ${pedido}. Se lo pasé a ${agente.name} con el folio ${folio}; te escribe por aquí para revisarlo contigo.`
+    : `Con lo que tengo no logro ubicar ${pedido}. Quedó con el folio ${folio} para que alguien del equipo lo revise contigo.`;
 }

@@ -440,7 +440,15 @@ export class PanelApiController {
      * era "no mandó nada".
      */
     const pendientes = await this.prisma.outboxMessage.findMany({
-      where: { chatId: { in: chatIds }, status: { in: ['PENDING', 'FAILED'] } },
+      // Lo pendiente siempre; lo fallido solo de la última hora. Un fallo
+      // de hace días no es "por salir": es ruido rojo encima de la charla.
+      where: {
+        chatId: { in: chatIds },
+        OR: [
+          { status: 'PENDING' },
+          { status: 'FAILED', createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) } },
+        ],
+      },
       orderBy: { createdAt: 'asc' },
       select: { id: true, payload: true, status: true, lastError: true, createdAt: true },
     });
