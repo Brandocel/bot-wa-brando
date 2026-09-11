@@ -64,7 +64,14 @@ export class DocumentSearchService {
     if (query.folio) {
       // "3001" tiene que encontrar "V3001": la gente omite el prefijo. Es
       // un contains y no un equals; si casa con varios, se listan.
-      filters.push({ folio: { contains: query.folio, mode: 'insensitive' } });
+      // Y también en el nombre: "factura 15904" tiene que dar con
+      // factura_15904_1778770514351.pdf aunque el folio se haya leído distinto.
+      filters.push({
+        OR: [
+          { folio: { contains: query.folio, mode: 'insensitive' } },
+          { name: { contains: query.folio, mode: 'insensitive' } },
+        ],
+      });
     }
     if (query.excludeIds && query.excludeIds.length > 0) {
       filters.push({ id: { notIn: [...query.excludeIds] } });

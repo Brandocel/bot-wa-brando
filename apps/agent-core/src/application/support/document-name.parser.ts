@@ -89,6 +89,18 @@ export function parseDocumentName(
 }
 
 function parsePeriod(text: string): Date | null {
+  // 20260901: fecha pegada, como la ponen los sistemas de facturación.
+  const compacta = /\b(20\d{2})(0[1-9]|1[0-2])([0-2]\d|3[01])\b/.exec(text);
+  if (compacta) return utcMonth(Number(compacta[1]), Number(compacta[2]));
+
+  // 1782860673094: marca de tiempo en milisegundos (2014–2036). Los CFDI
+  // descargados de los portales vienen así, sin mes legible.
+  const epoch = /\b(1[4-9]\d{11}|20\d{11})\b/.exec(text);
+  if (epoch) {
+    const d = new Date(Number(epoch[1]));
+    return utcMonth(d.getUTCFullYear(), d.getUTCMonth() + 1);
+  }
+
   // 2026-02 / 2026 02 (el normalize ya convirtió guiones y puntos en espacios)
   const iso = /\b(20\d{2})[ /](0?[1-9]|1[0-2])\b/.exec(text);
   if (iso) return utcMonth(Number(iso[1]), Number(iso[2]));
@@ -119,7 +131,18 @@ function parseFolio(text: string): string | null {
   // Letras + dígitos pegados: A1234, B2001, V3001. Se excluye lo que parezca
   // un año suelto para no confundir "2026" con un folio.
   const pattern = /\b([a-z]{1,3}\d{3,}[a-z0-9]*)\b/.exec(text);
-  return pattern ? pattern[1]!.toUpperCase() : null;
+  if (pattern) return pattern[1]!.toUpperCase();
+
+  // Un número suelto de 4 o más dígitos que no sea fecha ni marca de
+  // tiempo: "factura_15904_1778770514351" tiene folio 15904.
+  for (const m of text.matchAll(/\b(\d{4,})\b/g)) {
+    const n = m[1]!;
+    if (/^20\d{2}$/.test(n)) continue; // año
+    if (/^20\d{6}$/.test(n)) continue; // yyyymmdd
+    if (n.length === 13) continue; // epoch ms
+    return n;
+  }
+  return null;
 }
 
 function utcMonth(year: number, month: number): Date {

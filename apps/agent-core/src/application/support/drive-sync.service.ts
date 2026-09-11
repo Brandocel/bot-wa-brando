@@ -138,6 +138,11 @@ export class DriveSyncService implements OnModuleInit {
         await this.incremental(state.pageToken, organizations, report);
       }
 
+      // Y una segunda oportunidad a lo que quedó en cuarentena: las reglas
+      // de nombre mejoran con el tiempo, y un archivo que ayer no se
+      // entendía hoy puede entenderse sin que nadie lo vuelva a subir.
+      await this.recuperarCuarentena(report);
+
       return report;
     } finally {
       this.running = false;
@@ -276,8 +281,12 @@ export class DriveSyncService implements OnModuleInit {
     }
 
     const parsed = parseDocumentName(file.name, file.folderPath);
-    const status: DocStatus =
-      parsed.category && parsed.period ? 'INDEXED' : 'QUARANTINE';
+    // Con tipo basta para indexar. El mes ayuda a buscar, pero un CFDI
+    // descargado del portal ("FACTURA_1782860673094_365162...pdf") no lo
+    // trae legible, y dejarlo en cuarentena era dejar fuera justo las
+    // facturas reales. Sin mes, se encuentra por folio, por nombre o en la
+    // lista del tipo.
+    const status: DocStatus = parsed.category ? 'INDEXED' : 'QUARANTINE';
 
     await this.prisma.document.upsert({
       where: { driveFileId: file.id },
@@ -308,6 +317,38 @@ export class DriveSyncService implements OnModuleInit {
 
     if (status === 'INDEXED') report.indexed += 1;
     else report.quarantined += 1;
+  }
+
+  /**
+   * Reintenta clasificar lo que está en cuarentena con las reglas actuales.
+   *
+   * Solo por nombre (la ruta de carpetas no se guarda), y solo cambia de
+   * estado lo que ahora sí se entiende. Es lo que hace que subir un
+   * "FACTURA_1782860673094_365...pdf" no exija un /resync a mano después
+   * de cada mejora del clasificador.
+   */
+  private async recuperarCuarentena(report: SyncReport): Promise<void> {
+    const encuarentena = await this.prisma.document.findMany({
+      where: { status: 'QUARANTINE' },
+      select: { id: true, name: true },
+      take: 500,
+    });
+
+    for (const doc of encuarentena) {
+      const parsed = parseDocumentName(doc.name);
+      if (!parsed.category) continue;
+
+      await this.prisma.document.update({
+        where: { id: doc.id },
+        data: {
+          category: parsed.category,
+          period: parsed.period,
+          folio: parsed.folio,
+          status: 'INDEXED',
+        },
+      });
+      report.indexed += 1;
+    }
   }
 
   /** Fuerza un barrido completo: borra el cursor y vuelve a leer todo. */

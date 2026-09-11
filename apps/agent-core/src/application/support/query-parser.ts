@@ -86,7 +86,10 @@ export function parseQuery(raw: string): SearchQuery {
   // "documento 3001", "folio 3001", "el no. 3001": dígitos solos también
   // son folio si van detrás de una palabra que lo diga.
   const folioNumerico = /\b(?:folio|documento|doc|numero|no)\.?\s+(\d{3,})\b/.exec(text);
-  const folio = folioMatch?.[1] ?? folioNumerico?.[1] ?? null;
+  // Y un número suelto de 3+ dígitos que no sea año: "factura 277",
+  // "tienes la 15904". Se busca en folio y en nombre de archivo.
+  const suelto = /\b(?!20\d{2}\b)(\d{3,})\b/.exec(text);
+  const folio = folioMatch?.[1] ?? folioNumerico?.[1] ?? suelto?.[1] ?? null;
 
   /**
    * Un nombre de archivo, o algo que lo parece, vale más que cualquier

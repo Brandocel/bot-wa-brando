@@ -1493,7 +1493,7 @@ function esRechazo(texto: string): boolean {
   if (limpio.length === 0 || limpio.split(' ').length > 9) return false;
   if (parseQueryTieneDatos(limpio)) return false;
 
-  return /\b(no es (esa|ese|esta|este|ninguna|ninguno)|esa no( es)?|ese no( es)?|ningun[ao]( de (esas|esos|estas|estos|las dos|los dos))?|tampoco|no me sirve|no (es|era) (la|el) que|no son (esas|esos)|no es ninguna|nel|nop)\b/.test(
+  return /\b(no (es|son) (esa|ese|esta|este|esas|esos|estas|estos|ninguna|ninguno)|(esa|ese|esas|esos) no( es| son)?|ningun[ao]( de (esas|esos|estas|estos|las dos|los dos))?|tampoco|no me sirve|no (es|era) (la|el) que|no son (esas|esos)|no es ninguna|nel|nop)\b/.test(
     limpio,
   ) || /^(no|no no|que no)$/.test(limpio);
 }
