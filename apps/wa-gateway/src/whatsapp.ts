@@ -127,9 +127,54 @@ export function haciaBaileys(jid: string): string {
 }
 
 export function haciaCore(jid: string): string {
-  return jid.endsWith('@s.whatsapp.net')
-    ? jid.replace(/@s\.whatsapp\.net$/, '@c.us')
-    : jid;
+  // El sufijo de dispositivo (`...:6@s.whatsapp.net`) identifica CUÁL de los
+  // teléfonos o navegadores vinculados mandó el mensaje. Al core no le sirve
+  // de nada y le rompe todo: OWNER_WA_ID y los permisos del directorio están
+  // guardados sin él, así que un jid con `:6` no casa con ninguno.
+  const sinDispositivo = jid.replace(/:\d+(?=@)/, '');
+
+  return sinDispositivo.endsWith('@s.whatsapp.net')
+    ? sinDispositivo.replace(/@s\.whatsapp\.net$/, '@c.us')
+    : sinDispositivo;
+}
+
+/**
+ * El número de teléfono detrás de un LID.
+ *
+ * WhatsApp ya direcciona muchos chats por LID (`<id>@lid`), que es un
+ * identificador opaco: a propósito no contiene el teléfono. Pero el core
+ * tiene los permisos, el directorio y la auditoría escritos por número, y
+ * ese es justo el dato del que depende decidir si alguien puede ver una
+ * factura. Entregarle un LID equivale a entregarle a un desconocido.
+ *
+ * Dos fuentes, en orden de confianza:
+ *  1. `remoteJidAlt` / `participantAlt`, que WhatsApp manda en el propio
+ *     mensaje. Es gratis y viene del servidor.
+ *  2. La tabla de equivalencias que Baileys mantiene, para cuando el mensaje
+ *     no trae el alterno.
+ *
+ * Si no se puede resolver se devuelve el LID tal cual: el core lo tratará
+ * como un desconocido, que es exactamente lo que debe pasar cuando no se
+ * sabe quién es. Fallar hacia el lado que niega, nunca hacia el que concede.
+ */
+async function numeroDe(jid: string, alterno?: string): Promise<string> {
+  if (!jid.endsWith('@lid')) return jid;
+
+  if (alterno && !alterno.endsWith('@lid')) return alterno;
+
+  try {
+    const pn = await sock?.signalRepository?.lidMapping?.getPNForLID(jid);
+    if (pn) return pn;
+  } catch {
+    // Se avisa abajo, junto al caso de "no hay equivalencia".
+  }
+
+  // Merece un aviso en el log: el core va a tratar a esta persona como
+  // desconocida, y si resulta que sí tenía permiso, este renglón es lo único
+  // que explica por qué le dijimos que no.
+  console.warn(`[wa] no se pudo resolver el número de ${jid}`);
+
+  return jid;
 }
 
 /** Los dígitos del número, sin servidor y sin el sufijo de dispositivo. */
@@ -281,7 +326,7 @@ function textoDe(m: WAMessage): { body: string; caption: string } {
  * así que lo que importa es que los campos signifiquen lo mismo — no que
  * vengan de la misma librería.
  */
-function aPayload(m: WAMessage): PayloadParaCore | null {
+async function aPayload(m: WAMessage): Promise<PayloadParaCore | null> {
   const remoteJid = m.key.remoteJid;
   const id = m.key.id;
 
@@ -290,10 +335,14 @@ function aPayload(m: WAMessage): PayloadParaCore | null {
 
   const esGrupo = isJidGroup(remoteJid) ?? false;
   const fromMe = m.key.fromMe === true;
-  const chatId = haciaCore(remoteJid);
+
+  // El core trabaja con números, no con LIDs: ver numeroDe().
+  const chatId = haciaCore(await numeroDe(remoteJid, m.key.remoteJidAlt));
 
   const participante = m.key.participant ?? undefined;
-  const autor = participante ? haciaCore(participante) : null;
+  const autor = participante
+    ? haciaCore(await numeroDe(participante, m.key.participantAlt))
+    : null;
 
   const miJid = yo?.id ? haciaCore(yo.id) : '';
 
@@ -531,8 +580,9 @@ export async function startWhatsApp(): Promise<void> {
 
     lastEventAt = new Date();
 
+    void (async () => {
     for (const m of messages) {
-      const payload = aPayload(m);
+      const payload = await aPayload(m);
       if (!payload) continue;
 
       // El latido vuelve por aquí. No se reenvía al core: es tráfico
@@ -554,6 +604,7 @@ export async function startWhatsApp(): Promise<void> {
 
       void forwardToCore(payload);
     }
+    })();
   });
 
   startPendingDrain();
