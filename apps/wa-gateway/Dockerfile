@@ -1,15 +1,18 @@
-# wa-gateway — open-wa + Chromium sobre Render.
-# Render NO permite instalar paquetes de sistema en el runtime nativo de Node,
-# por eso este servicio va con runtime: docker.
+# wa-gateway — Baileys sobre Render.
+#
+# Antes esto traía Chromium entero porque open-wa automatiza WhatsApp Web con
+# Puppeteer. Baileys habla el protocolo directamente, así que se fueron el
+# navegador, sus veinte librerías de sistema y los sesenta segundos de
+# arranque. La imagen pasó de ~700 MB a ~150 MB.
+#
+# Sigue siendo docker y no el runtime nativo de Node porque el disco
+# persistente y el control de la imagen ya estaban montados así, y cambiarlo
+# ahora sería mover una pieza que funciona sin ganar nada.
 #
 # Construir desde la RAÍZ del repo:  docker build -f apps/wa-gateway/Dockerfile .
 
 # ─── Etapa 1: compilar ────────────────────────────────────────────────────
 FROM node:20-bookworm-slim AS build
-
-# Que puppeteer no se baje su propio Chromium: en runtime usamos el de apt.
-# Sin esto el build pesa ~300 MB de más y tarda el doble.
-ENV PUPPETEER_SKIP_DOWNLOAD=true
 
 WORKDIR /app
 
@@ -31,21 +34,15 @@ RUN npm prune --omit=dev --include-workspace-root --workspace=wa-gateway
 # ─── Etapa 2: runtime ─────────────────────────────────────────────────────
 FROM node:20-bookworm-slim
 
-# Deps de sistema de Chromium. Sin esto Puppeteer arranca y muere sin log útil.
+# dumb-init como PID 1 y los certificados para hablar con WhatsApp y con el
+# core. Nada más: Baileys no necesita navegador.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      chromium \
-      ca-certificates fonts-liberation dumb-init \
-      libnss3 libatk-bridge2.0-0 libatk1.0-0 libcups2 libdrm2 libxkbcommon0 \
-      libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 \
-      libpango-1.0-0 libcairo2 \
+      ca-certificates dumb-init \
  && rm -rf /var/lib/apt/lists/*
 
 ENV NODE_ENV=production \
-    PUPPETEER_SKIP_DOWNLOAD=true \
-    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
-    CHROME_PATH=/usr/bin/chromium \
     GATEWAY_PORT=10000 \
-    WA_SESSION_PATH=/data/session
+    WA_SESSION_PATH=/data/baileys
 
 WORKDIR /app
 
@@ -58,7 +55,5 @@ COPY --from=build /app/package.json ./
 # WhatsApp vive AHÍ y solo ahí; el resto del filesystem es efímero.
 EXPOSE 10000
 
-# dumb-init como PID 1: sin esto Chromium deja procesos zombie y el
-# contenedor se queda sin memoria en unos días.
 ENTRYPOINT ["dumb-init", "--"]
 CMD ["node", "apps/wa-gateway/dist/main.js"]

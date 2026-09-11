@@ -15,7 +15,7 @@ import {
 } from './whatsapp';
 
 /**
- * Contrato HTTP del gateway. ESTE es el contrato que importa, no el de open-wa.
+ * Contrato HTTP del gateway. ESTE es el contrato que importa, no el de Baileys.
  * Mientras estos endpoints se respeten, el core no sabe ni le importa qué hay
  * del otro lado.
  */
@@ -216,9 +216,9 @@ export function buildServer() {
   );
 
   /**
-   * La secuencia que open-wa pide: texto primero, archivo después, al MISMO
-   * id. Esto sí manda mensajes de verdad, así que el destino va explícito y
-   * no se deduce de nada — nadie debería recibir una prueba por accidente.
+   * Prueba de entrega completa: texto y archivo al mismo destino. Esto sí
+   * manda mensajes de verdad, así que el destino va explícito y no se deduce
+   * de nada — nadie debería recibir una prueba por accidente.
    */
   app.post(
     '/diag/enviar',

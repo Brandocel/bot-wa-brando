@@ -1,6 +1,15 @@
-import { create, ev, type Client, type Message } from '@open-wa/wa-automate';
-import { existsSync, readdirSync, rmSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import makeWASocket, {
+  Browsers,
+  DisconnectReason,
+  fetchLatestBaileysVersion,
+  isJidGroup,
+  useMultiFileAuthState,
+  type WAMessage,
+  type WASocket,
+} from 'baileys';
+import type { Boom } from '@hapi/boom';
+import pino from 'pino';
+import { toBuffer as qrToBuffer } from 'qrcode';
 import { config } from './config';
 import { PendingQueue } from './pending-queue';
 import {
@@ -11,11 +20,26 @@ import {
 } from './diagnostico';
 
 /**
- * Envoltorio delgado sobre open-wa.
+ * Envoltorio delgado sobre Baileys.
  *
  * Este archivo y el mapper del core son los ÚNICOS dos lugares del proyecto
- * que conocen la forma de open-wa. Si mañana esto se cambia por Baileys,
- * se reescribe este archivo y nada más.
+ * que conocen la forma de la librería de WhatsApp. Eso es lo que permitió
+ * cambiar open-wa por Baileys sin tocar el core: el contrato HTTP del
+ * gateway y la forma del payload que se manda al webhook siguen siendo
+ * exactamente los mismos.
+ *
+ * Por qué se cambió: open-wa 4.76 no puede mandar archivos a los chats que
+ * WhatsApp direcciona por LID (`...@lid`). El chat existe con un id y el
+ * contacto con otro, y su comprobación de media exige un chat guardado bajo
+ * el `@c.us`, que con LID no llega a existir nunca — ni mandando un texto
+ * antes, porque ese texto también se entrega en el chat LID. La comprobación
+ * vive en el paquete de parches que open-wa descarga al arrancar, así que
+ * tampoco se podía rodear. Baileys trata `lid` como un tipo de identificador
+ * más, igual que `s.whatsapp.net` o `g.us`.
+ *
+ * De regalo: Baileys habla el protocolo directamente, sin Chromium. Se
+ * acabaron los sesenta segundos de arranque, el medio giga de RAM del
+ * navegador y los cerrojos que Chromium dejaba al morir de mala manera.
  */
 
 type ConnectionState =
@@ -25,22 +49,23 @@ type ConnectionState =
   | 'DISCONNECTED'
   | 'CRASHED';
 
-let client: Client | null = null;
+let sock: WASocket | null = null;
 let state: ConnectionState = 'BOOTING';
 let lastQrPng: Buffer | null = null;
 let lastQrAt: Date | null = null;
 let lastError: string | null = null;
 
-/** Último resultado de la sonda contra el cliente real. */
+/** Identidad de la cuenta conectada, tal como la reporta WhatsApp. */
+let yo: { id: string; lid: string | null; name: string | null } | null = null;
+
+/** Último momento en que la conexión se comprobó viva. */
 let aliveAt: Date | null = null;
-let deadChecks = 0;
 
 /**
  * Cuándo WhatsApp nos entregó CUALQUIER evento por última vez.
  *
- * Es la única señal que prueba que el flujo de entrada sigue vivo. Una
- * sonda puede contestar con la página a medio morir; esto solo se actualiza
- * si de verdad llegó algo.
+ * Es la única señal que prueba que el flujo de entrada sigue vivo. Un socket
+ * abierto no prueba nada: puede seguir abierto y no entregar ya nada.
  */
 let lastEventAt: Date | null = null;
 
@@ -48,10 +73,8 @@ let lastEventAt: Date | null = null;
  * Marca del latido en vuelo. null = no hay ninguno esperando respuesta.
  *
  * El latido es la única prueba que no miente: se manda un mensaje y se
- * comprueba que vuelve por onAnyMessage. Eso ejercita el camino completo
- * —envío, WhatsApp, recepción— que es justo lo que se rompe cuando la
- * sesión queda zombi. Una sonda puede contestar con la página medio muerta;
- * un mensaje que da la vuelta, no.
+ * comprueba que vuelve. Eso ejercita el camino completo —envío, WhatsApp,
+ * recepción— que es justo lo que se rompe cuando la sesión queda zombi.
  */
 let latidoPendiente: { marca: string; enviadoAt: number } | null = null;
 
@@ -61,40 +84,60 @@ export const status = () => ({
   lastQrAt,
   lastError,
   /**
-   * Cuándo respondió por última vez el cliente de verdad.
+   * Cuándo respondió por última vez la conexión de verdad.
    *
    * `state` por sí solo miente: se pone en CONNECTED una vez al arrancar y
-   * solo cambia si open-wa avisa. Cuando la sesión se muere sin avisar —y
-   * pasa— el proceso se queda diciendo CONNECTED con WhatsApp caído, que es
-   * el peor estado posible: nadie sabe que hay que reiniciar.
+   * solo cambia si la librería avisa. Cuando la sesión se muere sin avisar
+   * —y pasa— el proceso se queda diciendo CONNECTED con WhatsApp caído, que
+   * es el peor estado posible: nadie sabe que hay que reiniciar.
    */
   aliveAt,
   /**
    * Silencio total desde el último evento entrante. Un rato largo aquí con
-   * el estado en CONNECTED es la firma de la sesión zombi: el proceso cree
-   * que todo va bien y WhatsApp ya no le entrega nada.
+   * el estado en CONNECTED es la firma de la sesión zombi.
    */
   lastEventAt,
 });
 
 export const getQrPng = () => lastQrPng;
 
-/**
- * El QR nunca se imprime en una terminal que puedas ver cuando esto corre en
- * Render, así que lo guardamos en memoria y lo servimos por HTTP (ver server.ts).
- * En memoria a propósito: un QR es una credencial de sesión, no va a disco.
- */
-ev.on('qr.**', (qrDataUrl: string) => {
-  lastQrPng = Buffer.from(
-    qrDataUrl.replace(/^data:image\/png;base64,/, ''),
-    'base64',
-  );
-  lastQrAt = new Date();
-  state = 'WAITING_QR';
-  console.log('[wa] QR nuevo disponible en GET /qr');
-});
-
 const pending = new PendingQueue(config.pendingPath);
+
+/**
+ * Baileys es ruidoso: a nivel info narra cada nodo del protocolo y eso
+ * entierra los logs de Render. A nivel error solo habla cuando algo pasa.
+ */
+const logger = pino({ level: process.env.BAILEYS_LOG_LEVEL ?? 'error' });
+
+// ───────────────────────────── Identificadores ────────────────────────────
+
+/**
+ * Traducción de identificadores en la frontera.
+ *
+ * El core lleva los números guardados como `<numero>@c.us`, que es lo que
+ * usaba open-wa, y hay permisos, contactos y auditoría escritos así en la
+ * base de datos. Baileys usa `<numero>@s.whatsapp.net` para lo mismo.
+ *
+ * Se traduce AQUÍ, en el borde, y no en el core: cambiar de librería no
+ * puede obligar a migrar los datos de nadie. `@lid` y `@g.us` pasan tal cual
+ * porque significan lo mismo en los dos mundos.
+ */
+export function haciaBaileys(jid: string): string {
+  return jid.endsWith('@c.us') ? jid.replace(/@c\.us$/, '@s.whatsapp.net') : jid;
+}
+
+export function haciaCore(jid: string): string {
+  return jid.endsWith('@s.whatsapp.net')
+    ? jid.replace(/@s\.whatsapp\.net$/, '@c.us')
+    : jid;
+}
+
+/** Los dígitos del número, sin servidor y sin el sufijo de dispositivo. */
+export function soloDigitos(jid: string): string {
+  return (jid.split('@')[0] ?? '').split(':')[0] ?? '';
+}
+
+// ─────────────────────────────── Entrega al core ──────────────────────────
 
 /** Un intento de entrega. true si el core lo aceptó. */
 async function deliver(payload: unknown): Promise<boolean> {
@@ -124,11 +167,11 @@ async function deliver(payload: unknown): Promise<boolean> {
  * normal. Y "se perdió tu mensaje" es el fallo que un bot de soporte no se
  * puede permitir: la persona no sabe que tiene que repetirlo.
  */
-async function forwardToCore(message: Message): Promise<void> {
-  if (await deliver(message)) return;
+async function forwardToCore(payload: PayloadParaCore): Promise<void> {
+  if (await deliver(payload)) return;
 
-  console.warn(`[wa] core no disponible: ${message.id} queda en cola`);
-  pending.save(message.id, message);
+  console.warn(`[wa] core no disponible: ${payload.id} queda en cola`);
+  pending.save(payload.id, payload);
 }
 
 /**
@@ -170,6 +213,141 @@ function startPendingDrain(): void {
   timer.unref();
 }
 
+// ──────────────────────────── Traducción de mensajes ──────────────────────
+
+interface PayloadParaCore {
+  id: string;
+  chatId: string;
+  from: string;
+  to: string;
+  author: string | null;
+  sender: { id: string; pushname: string | null; formattedName: string | null };
+  chat: { id: string; contact: { isMe: boolean } };
+  type: string;
+  body: string;
+  caption: string;
+  isGroupMsg: boolean;
+  fromMe: boolean;
+  isBroadcast: boolean;
+  notifyName: string | null;
+  mentionedJidList: string[];
+  t: number;
+}
+
+/**
+ * El tipo de mensaje, en el vocabulario que ya entiende el mapper del core.
+ *
+ * Los nombres ('chat', 'image', 'document', 'ptt') son los de open-wa a
+ * propósito: el core lleva ese vocabulario desde el principio y traducirlo
+ * aquí cuesta una función, mientras que cambiarlo allá tocaría el dominio.
+ */
+function tipoDeMensaje(m: WAMessage): string {
+  const contenido = m.message ?? {};
+
+  if (contenido.conversation || contenido.extendedTextMessage) return 'chat';
+  if (contenido.imageMessage) return 'image';
+  if (contenido.videoMessage) return 'video';
+  if (contenido.documentMessage || contenido.documentWithCaptionMessage) {
+    return 'document';
+  }
+  if (contenido.audioMessage) {
+    return contenido.audioMessage.ptt ? 'ptt' : 'audio';
+  }
+  if (contenido.stickerMessage) return 'sticker';
+
+  return 'unknown';
+}
+
+/** El texto que escribió la persona, venga suelto o como pie de un archivo. */
+function textoDe(m: WAMessage): { body: string; caption: string } {
+  const c = m.message ?? {};
+
+  const body = c.conversation ?? c.extendedTextMessage?.text ?? '';
+  const caption =
+    c.imageMessage?.caption ??
+    c.videoMessage?.caption ??
+    c.documentMessage?.caption ??
+    c.documentWithCaptionMessage?.message?.documentMessage?.caption ??
+    '';
+
+  return { body: body ?? '', caption: caption ?? '' };
+}
+
+/**
+ * De mensaje de Baileys al payload que el core lleva esperando desde
+ * siempre.
+ *
+ * El core valida este objeto en su capa anticorrupción y no confía en él,
+ * así que lo que importa es que los campos signifiquen lo mismo — no que
+ * vengan de la misma librería.
+ */
+function aPayload(m: WAMessage): PayloadParaCore | null {
+  const remoteJid = m.key.remoteJid;
+  const id = m.key.id;
+
+  // Sin id no hay idempotencia y sin chat no hay a quién responder.
+  if (!remoteJid || !id) return null;
+
+  const esGrupo = isJidGroup(remoteJid) ?? false;
+  const fromMe = m.key.fromMe === true;
+  const chatId = haciaCore(remoteJid);
+
+  const participante = m.key.participant ?? undefined;
+  const autor = participante ? haciaCore(participante) : null;
+
+  const miJid = yo?.id ? haciaCore(yo.id) : '';
+
+  const { body, caption } = textoDe(m);
+
+  /**
+   * El chat conmigo mismo.
+   *
+   * WhatsApp lo direcciona por LID, así que compararlo contra el número no
+   * sirve. Lo que sí se cumple siempre es que el chat es mi propia cuenta, y
+   * Baileys da los dos identificadores de la cuenta al conectar: el número y
+   * su LID. Se comparan los dígitos porque el jid propio trae además el
+   * número de dispositivo (`...:12@s.whatsapp.net`).
+   */
+  const digitosDelChat = soloDigitos(remoteJid);
+  const esChatPropio =
+    !esGrupo &&
+    digitosDelChat.length > 0 &&
+    (digitosDelChat === soloDigitos(yo?.id ?? '') ||
+      digitosDelChat === soloDigitos(yo?.lid ?? ''));
+
+  const menciones =
+    m.message?.extendedTextMessage?.contextInfo?.mentionedJid ?? [];
+
+  return {
+    // El id que ve el core lleva el chat dentro: el id de Baileys solo es
+    // único dentro de su conversación, y el core lo usa de llave de
+    // idempotencia global.
+    id: `${fromMe ? 'true' : 'false'}_${chatId}_${id}`,
+    chatId,
+    from: fromMe ? miJid : (autor ?? chatId),
+    to: fromMe ? chatId : miJid,
+    author: esGrupo ? autor : null,
+    sender: {
+      id: fromMe ? miJid : (autor ?? chatId),
+      pushname: m.pushName ?? null,
+      formattedName: m.pushName ?? null,
+    },
+    chat: { id: chatId, contact: { isMe: esChatPropio } },
+    type: tipoDeMensaje(m),
+    body,
+    caption,
+    isGroupMsg: esGrupo,
+    fromMe,
+    isBroadcast: remoteJid === 'status@broadcast',
+    notifyName: m.pushName ?? null,
+    mentionedJidList: menciones.map(haciaCore),
+    // El core espera segundos, que es como los daba open-wa.
+    t: Number(m.messageTimestamp ?? Math.floor(Date.now() / 1000)),
+  };
+}
+
+// ─────────────────────────────── Salud ────────────────────────────────────
+
 /** Silencio a partir del cual se prueba el camino completo. */
 const SILENCIO_MS = 10 * 60 * 1000;
 
@@ -179,10 +357,10 @@ const LATIDO_TIMEOUT_MS = 90 * 1000;
 /**
  * Latido de ida y vuelta.
  *
- * Se manda un mensaje al propio número y se espera a que vuelva por
- * onAnyMessage. Si vuelve, el camino completo funciona: el envío llega a
- * WhatsApp y WhatsApp nos sigue entregando eventos. Si no vuelve, algo de
- * ese camino está roto por mucho que las sondas digan que sí.
+ * Se manda un mensaje al propio número y se espera a que vuelva. Si vuelve,
+ * el camino completo funciona: el envío llega a WhatsApp y WhatsApp nos
+ * sigue entregando eventos. Si no vuelve, algo de ese camino está roto por
+ * mucho que el socket siga pareciendo abierto.
  *
  * Solo se lanza tras un rato de silencio. Con tráfico real no hace falta:
  * cada mensaje de un cliente ya prueba lo mismo y gratis.
@@ -202,16 +380,16 @@ async function latir(): Promise<void> {
   const silencio = Date.now() - (lastEventAt?.getTime() ?? 0);
   if (silencio < SILENCIO_MS) return;
 
-  try {
-    const numero = await client?.getHostNumber();
-    if (!numero) return;
+  const destino = yo?.id;
+  if (!destino) return;
 
+  try {
     const marca = `hb-${Date.now().toString(36)}`;
     latidoPendiente = { marca, enviadoAt: Date.now() };
 
     // El punto invisible de delante hace que el mensaje casi no se vea en
     // la lista de chats mientras da la vuelta.
-    await sendText(`${numero}@c.us`, `\u200b${marca}`);
+    await sendText(haciaCore(destino), `​${marca}`);
   } catch (err) {
     latidoPendiente = null;
     console.error(`[latido] no se pudo enviar: ${String(err)}`);
@@ -221,526 +399,318 @@ async function latir(): Promise<void> {
 /**
  * Vigilante de la conexión.
  *
- * Cada minuto le pregunta el número a WhatsApp. Es la llamada más barata
- * que atraviesa de verdad hasta el navegador: si contesta, hay sesión.
- *
- * A los tres fallos seguidos el proceso se sale con código 1 y Render lo
- * vuelve a levantar. Tres y no uno porque un fallo aislado es normal
- * —Chromium se pone lento, la red parpadea— y reiniciar por eso sería peor
- * que el problema.
- *
- * Salir del proceso es la reparación correcta aquí: la sesión vive en el
- * disco persistente, así que el arranque nuevo la recupera sin QR. Lo que
- * no se puede es dejar el proceso vivo fingiendo que todo va bien.
+ * Sin Chromium de por medio la sonda es mucho más directa: o hay un socket
+ * abierto y autenticado, o no lo hay. Lo que no cambia es la regla de
+ * reparación — si el camino está muerto, salir del proceso y dejar que
+ * Render levante otro. La sesión vive en el disco persistente, así que el
+ * arranque nuevo la recupera sin QR.
  */
 function startWatchdog(): void {
   const timer = setInterval(() => {
     void (async () => {
-      try {
-        // getConnectionState pregunta a los internos de WhatsApp Web, no a
-        // un dato cacheado. getHostNumber contestaba aunque la página
-        // estuviera rota, que es justo el caso que hay que cazar.
-        const conexion = await client?.getConnectionState();
-
-        if (conexion !== 'CONNECTED') {
-          throw new Error(`WhatsApp reporta ${String(conexion)}`);
-        }
-
+      if (state === 'CONNECTED') {
         aliveAt = new Date();
-        deadChecks = 0;
-        if (state === 'CRASHED') state = 'CONNECTED';
-
-        // La sonda dice que hay sesión. El latido comprueba si además
+        // El socket dice que hay sesión. El latido comprueba si además
         // siguen llegando eventos, que es otra cosa.
         await latir();
-      } catch (err) {
-        deadChecks += 1;
-        lastError = err instanceof Error ? err.message : String(err);
-        console.error(`[wa] sonda fallida (${deadChecks}/3): ${lastError}`);
-
-        if (deadChecks >= 3) {
-          state = 'CRASHED';
-          console.error('[wa] sesión muerta: saliendo para que Render reinicie');
-          // Un momento para que el log llegue antes de morir.
-          setTimeout(() => process.exit(1), 1000);
-        }
+        return;
       }
+
+      console.error(`[wa] estado ${state}: ${lastError ?? 'sin detalle'}`);
     })();
   }, 60_000);
 
   timer.unref();
 }
 
-/**
- * User-Agent moderno. Verificado contra web.whatsapp.com: con este UA la
- * página renderiza el QR; con el que trae open-wa por defecto (Chrome/104)
- * responde "actualiza tu navegador" y el QR nunca existe.
- */
-const MODERN_UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-  '(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
-
-/**
- * PARCHE a un bug de open-wa 4.76.0.
- *
- * En `dist/controllers/initializer.js` la opción `customUserAgent` solo se
- * lee dentro de `if (config.inDocker)`. Fuera de Docker se ignora en silencio
- * y siempre gana el UA hardcodeado de Chrome/104 — con el que WhatsApp Web
- * sirve la página de "navegador no soportado" y el arranque muere con un
- * timeout de 30s esperando un QR que nunca se dibuja.
- *
- * `browser.js` lee `puppeteer_config.useragent` en el momento de la llamada,
- * así que basta con sobreescribir esa propiedad del módulo antes de create().
- * Se hace aquí y no editando node_modules para que sobreviva a `npm install`
- * y funcione igual en Render.
- *
- * Revisar si una versión futura de open-wa mueve el `customUserAgent` fuera
- * del bloque de Docker; entonces esto se puede borrar.
- */
-function patchOpenWaUserAgent(): void {
-  const ua = config.userAgent ?? MODERN_UA;
-
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const puppeteerConfig = require('@open-wa/wa-automate/dist/config/puppeteer.config') as {
-      useragent: string;
-    };
-    puppeteerConfig.useragent = ua;
-    console.log('[wa] User-Agent parchado');
-  } catch (err) {
-    console.error('[wa] no se pudo parchar el User-Agent:', err);
-  }
-}
-
-/**
- * Limpia los cerrojos que Chromium deja al morir de mala manera.
- *
- * El vigilante mata el proceso con process.exit para que Render reinicie, y
- * eso no le da a Chromium ocasión de cerrar su perfil. Quedan SingletonLock
- * y compañía en el directorio de sesión, y al siguiente arranque el
- * navegador se niega a abrir ese perfil: el servicio queda en BOOTING para
- * siempre.
- *
- * Son enlaces y ficheros de control, no la sesión. Borrarlos NO desvincula
- * WhatsApp — eso vive en otros archivos del mismo directorio.
- */
-function limpiarCerrojos(): void {
-  const dir = config.session.path;
-  if (!existsSync(dir)) return;
-
-  const cerrojos = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
-
-  const barrer = (carpeta: string, profundidad: number): void => {
-    if (profundidad > 3) return;
-
-    for (const entrada of readdirSync(carpeta)) {
-      const ruta = join(carpeta, entrada);
-
-      if (cerrojos.includes(entrada)) {
-        try {
-          rmSync(ruta, { force: true });
-          console.log(`[wa] cerrojo suelto borrado: ${entrada}`);
-        } catch {
-          /* si no se puede, el arranque dirá lo suyo */
-        }
-        continue;
-      }
-
-      try {
-        if (statSync(ruta).isDirectory()) barrer(ruta, profundidad + 1);
-      } catch {
-        /* enlaces rotos: justo los que estamos limpiando */
-      }
-    }
-  };
-
-  try {
-    barrer(dir, 0);
-  } catch (err) {
-    console.warn(`[wa] no se pudieron revisar los cerrojos: ${String(err)}`);
-  }
-}
+// ─────────────────────────────── Arranque ─────────────────────────────────
 
 export async function startWhatsApp(): Promise<void> {
-  console.log('[wa] arrancando open-wa...');
+  console.log('[wa] arrancando Baileys...');
 
-  if (!config.headless) {
-    // En Render no hay pantalla: un Chromium con ventana muere con
-    // "Can't open display" y el servicio se queda en BOOTING sin explicar
-    // por qué. Mejor decirlo aquí que dejarlo deducir del log de puppeteer.
-    console.warn(
-      '[wa] WA_HEADLESS=false: Chromium intentará abrir una ventana. ' +
-        'Eso solo funciona en una máquina con pantalla, nunca en Render.',
-    );
-  }
+  const { state: auth, saveCreds } = await useMultiFileAuthState(
+    config.session.path,
+  );
 
-  limpiarCerrojos();
-  patchOpenWaUserAgent();
+  // La versión del protocolo la dice WhatsApp, no nosotros. Fijarla a mano
+  // es garantizar que un día deje de funcionar sin avisar.
+  const { version } = await fetchLatestBaileysVersion();
+  console.log(`[wa] protocolo ${version.join('.')}`);
 
-  client = await create({
-    sessionId: config.session.id,
-    sessionDataPath: config.session.path,
-    multiDevice: true,
-    headless: config.headless,
-
-    // Ambas vienen apagadas por defecto en open-wa y son justo lo que hace
-    // falta para que WhatsApp acepte vincular el dispositivo:
-    //  - useStealth oculta las huellas de automatizacion (navigator.webdriver
-    //    y compania) que delatan a Puppeteer.
-    //  - ensureHeadfulIntegrity, en palabras de la propia libreria, 'hace que
-    //    la sesion headless sea usable incluso en el primer login'; sin esto
-    //    el primer vinculo suele necesitar un navegador visible.
-    useStealth: true,
-
-    // ensureHeadfulIntegrity: NO activar. Dispara la rutina 'Refreshing session'
-    // de Client.js, que llama a WAPI.getUseHereString() -> lee 'localeStrings'
-    // de los internos de WhatsApp Web, modulo que ya no existe, y revienta
-    // JUSTO despues de que el QR fue aceptado. Sintoma: escaneas bien y el
-    // proceso muere solo.
-    qrTimeout: 0, // 0 = no se rinde esperando el escaneo
-    authTimeout: 0,
-    disableSpins: true, // los spinners ensucian los logs de Render
-    logConsole: false,
-    popup: false,
-    blockCrashLogs: true,
-    killProcessOnBrowserClose: true,
-    executablePath: config.chromiumPath,
-    useChrome: config.useChrome,
-    customUserAgent: config.userAgent,
-    chromiumArgs: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      // Sin esto Chromium se cae en contenedores: /dev/shm es de 64 MB.
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-    ],
+  sock = makeWASocket({
+    version,
+    auth,
+    logger,
+    // Es lo que sale en "Dispositivos vinculados" del teléfono.
+    browser: Browsers.ubuntu('Chrome'),
+    // El historial completo son megas de mensajes viejos que no vamos a
+    // mirar: el bot solo atiende lo que llega a partir de ahora.
+    syncFullHistory: false,
+    // Aparecer siempre en línea delata que hay un robot y, peor, hace que
+    // WhatsApp deje de mandar notificaciones al teléfono del dueño.
+    markOnlineOnConnect: false,
   });
 
-  state = 'CONNECTED';
-  aliveAt = new Date();
-  lastEventAt = new Date();
-  startPendingDrain();
-  startWatchdog();
-  lastQrPng = null; // ya no sirve y no queremos credenciales colgando en RAM
-  console.log('[wa] conectado');
+  sock.ev.on('creds.update', () => {
+    void saveCreds();
+  });
 
-  // onAnyMessage, no onMessage: `onMessage` omite los mensajes propios, y el
-  // asistente personal vive justo ahí — en el chat "Mensajes contigo mismo".
-  // El costo es que también nos reenvía lo que el bot acaba de mandar; de eso
-  // se protege el core (IdempotencyFilter + LoopGuardFilter).
-  await client.onAnyMessage(async (message) => {
-    lastEventAt = new Date();
+  sock.ev.on('connection.update', (update) => {
+    const { connection, lastDisconnect, qr } = update;
 
-    // El latido vuelve por aquí. No se reenvía al core: es tráfico nuestro,
-    // y meterlo en la conversación del dueño sería ensuciar su historial con
-    // ruido de infraestructura.
-    if (latidoPendiente && message.body?.includes(latidoPendiente.marca)) {
-      const tardo = Date.now() - latidoPendiente.enviadoAt;
-      console.log(`[latido] ida y vuelta en ${tardo} ms`);
-      latidoPendiente = null;
+    if (qr) {
+      // El QR nunca se imprime en una terminal que puedas ver cuando esto
+      // corre en Render, así que se guarda en memoria y se sirve por HTTP.
+      // En memoria a propósito: un QR es una credencial, no va a disco.
+      void qrToBuffer(qr, { width: 400 })
+        .then((png) => {
+          lastQrPng = png;
+          lastQrAt = new Date();
+          state = 'WAITING_QR';
+          console.log('[wa] QR nuevo disponible en GET /qr');
+        })
+        .catch((err: unknown) => {
+          console.error(`[wa] no se pudo dibujar el QR: ${String(err)}`);
+        });
+    }
 
-      // Se borra para no dejar rastro en el chat del dueño. Si no se puede,
-      // da igual: es un mensaje corto y el latido no depende de esto.
-      try {
-        await client?.deleteMessage(message.chatId, message.id, false);
-      } catch {
-        /* nada que hacer */
-      }
+    if (connection === 'open') {
+      state = 'CONNECTED';
+      aliveAt = new Date();
+      lastEventAt = new Date();
+      lastQrPng = null; // ya no sirve y no queremos credenciales en RAM
+      lastError = null;
+
+      yo = {
+        id: sock?.user?.id ?? '',
+        lid: sock?.user?.lid ?? null,
+        name: sock?.user?.name ?? null,
+      };
+
+      console.log(
+        `[wa] conectado como ${yo.id}${yo.lid ? ` (lid ${yo.lid})` : ''}`,
+      );
       return;
     }
 
-    await forwardToCore(message);
+    if (connection === 'close') {
+      const motivo = (lastDisconnect?.error as Boom | undefined)?.output
+        ?.statusCode;
+
+      // Sesión cerrada desde el teléfono: reconectar no sirve de nada, hace
+      // falta un QR nuevo. Se dice claro en vez de reintentar en bucle.
+      if (motivo === DisconnectReason.loggedOut) {
+        state = 'DISCONNECTED';
+        lastError = 'Sesión desvinculada: hay que reescanear el QR';
+        console.error(`[wa] ${lastError}`);
+        return;
+      }
+
+      lastError = `conexión cerrada (${String(motivo)})`;
+      console.warn(`[wa] ${lastError}: reconectando`);
+      state = 'BOOTING';
+
+      // Reconectar es reconstruir el socket: las credenciales ya están en
+      // disco, así que no hay QR de por medio.
+      setTimeout(() => {
+        void startWhatsApp().catch((err: unknown) => {
+          state = 'CRASHED';
+          lastError = String(err);
+          console.error(`[wa] no se pudo reconectar: ${lastError}`);
+        });
+      }, 3000);
+    }
   });
 
-  await client.onStateChanged((newState) => {
-    console.log(`[wa] estado: ${newState}`);
-    if (newState === 'CONFLICT' || newState === 'UNLAUNCHED') {
-      // CONFLICT = abriste WhatsApp Web en otro lado y nos sacó.
-      void client?.forceRefocus();
-    }
-    if (newState === 'UNPAIRED' || newState === 'UNPAIRED_IDLE') {
-      state = 'DISCONNECTED';
-      lastError = 'Sesión desvinculada: hay que reescanear el QR';
-      console.error(`[wa] ${lastError}`);
+  // 'messages.upsert' con notify son los mensajes que llegan en vivo. Incluye
+  // los propios, y el asistente personal vive justo ahí: en el chat "Mensajes
+  // contigo mismo". El costo es que también nos devuelve lo que el bot acaba
+  // de mandar; de eso se protege el core (IdempotencyFilter + LoopGuard).
+  sock.ev.on('messages.upsert', ({ messages, type }) => {
+    if (type !== 'notify') return;
+
+    lastEventAt = new Date();
+
+    for (const m of messages) {
+      const payload = aPayload(m);
+      if (!payload) continue;
+
+      // El latido vuelve por aquí. No se reenvía al core: es tráfico
+      // nuestro, y meterlo en la conversación del dueño sería ensuciar su
+      // historial con ruido de infraestructura.
+      if (latidoPendiente && payload.body.includes(latidoPendiente.marca)) {
+        console.log(
+          `[latido] ida y vuelta en ${Date.now() - latidoPendiente.enviadoAt} ms`,
+        );
+        latidoPendiente = null;
+
+        // Se borra para no dejar rastro en el chat del dueño. Si no se
+        // puede, da igual: es un mensaje corto.
+        void sock
+          ?.sendMessage(m.key.remoteJid as string, { delete: m.key })
+          .catch(() => undefined);
+        continue;
+      }
+
+      void forwardToCore(payload);
     }
   });
+
+  startPendingDrain();
+  startWatchdog();
 }
 
-function requireClient(): Client {
-  if (!client || state !== 'CONNECTED') {
+function requireSock(): WASocket {
+  if (!sock || state !== 'CONNECTED') {
     throw new Error(`WhatsApp no está conectado (estado: ${state})`);
   }
-  return client;
+  return sock;
 }
 
 /**
  * Identidad de la cuenta anfitriona.
  *
- * WhatsApp ya direcciona chats con LID (`<id>@lid`) y no solo con el número
+ * WhatsApp direcciona chats con LID (`<id>@lid`) y también con el número
  * (`<numero>@c.us`), así que el core no puede asumir el formato: lo pregunta.
  */
 export async function whoAmI(): Promise<{
   hostNumber: string;
   me: unknown;
 }> {
-  const c = requireClient();
-  const [hostNumber, me] = await Promise.all([c.getHostNumber(), c.getMe()]);
-  return { hostNumber, me };
+  requireSock();
+
+  return {
+    hostNumber: soloDigitos(yo?.id ?? ''),
+    me: {
+      id: haciaCore(yo?.id ?? ''),
+      lid: yo?.lid ?? null,
+      name: yo?.name ?? null,
+    },
+  };
 }
 
-/**
- * open-wa no lanza cuando falla: devuelve `false` o una CADENA que empieza
- * por "ERROR:". Esa cadena pasaba por id de mensaje valido, asi que el envio
- * se daba por bueno mientras el archivo no llegaba a ninguna parte. Un fallo
- * que se reporta como exito es peor que un fallo: no se reintenta.
- */
-function esErrorDeOpenWa(resultado: unknown): boolean {
-  return typeof resultado === 'string' && resultado.startsWith('ERROR');
-}
+// ─────────────────────────────── Envío ────────────────────────────────────
 
 export async function sendText(to: string, text: string): Promise<string> {
-  // open-wa devuelve el messageId, o `false` si el envío falló. Ese `false`
-  // silencioso es justo el tipo de cosa que el core no debe tener que conocer:
-  // aquí se convierte en un error HTTP y el outbox lo reintenta.
-  const result = await requireClient().sendText(to as never, text);
+  const resultado = await requireSock().sendMessage(haciaBaileys(to), { text });
 
-  // Mismo cuidado que con los archivos: una cadena que empieza por "ERROR"
-  // no es un id de mensaje, es un fallo disfrazado.
-  if (esErrorDeOpenWa(result)) {
-    throw new Error(`WhatsApp rechazó el texto para ${to}: ${String(result)}`);
+  // Baileys lanza cuando falla de verdad; un undefined aquí sería un envío
+  // que no llegó a existir, y darlo por bueno dejaría al outbox creyendo que
+  // ya entregó. Un fallo que se reporta como éxito no se reintenta nunca.
+  if (!resultado?.key?.id) {
+    throw new Error(`WhatsApp rechazó el texto para ${to}`);
   }
 
-  if (typeof result !== 'string') {
-    throw new Error(`WhatsApp rechazó el envío a ${to}`);
-  }
+  return resultado.key.id;
+}
 
-  return result;
+/** Tipo de archivo según la extensión, para los que WhatsApp trata aparte. */
+const MIMES: Record<string, string> = {
+  pdf: 'application/pdf',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+  gif: 'image/gif',
+  txt: 'text/plain',
+  csv: 'text/csv',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  mp3: 'audio/mpeg',
+  mp4: 'video/mp4',
+};
+
+function mimeDe(filename: string, dataUri: string | undefined): string {
+  // El data URI trae el tipo que dijo Drive, que es más fiable que adivinar
+  // por el nombre — en Drive la gente sube archivos sin extensión a diario.
+  const delUri = dataUri?.match(/^data:([^;]+);base64,/)?.[1];
+  if (delUri) return delUri;
+
+  const extension = filename.split('.').pop()?.toLowerCase() ?? '';
+  return MIMES[extension] ?? 'application/octet-stream';
 }
 
 /**
  * Envía un archivo. Dos orígenes posibles y una regla: el core NUNCA manda
  * una ruta de disco, porque el disco del gateway no es el del core.
  *
- *  - `url`: el gateway lo descarga. Es el camino normal para Drive, que da
- *    URLs de descarga temporales.
- *  - `base64`: data URI completo. Para archivos que el core ya tiene en RAM.
+ *  - `url`: el gateway lo descarga. Para archivos de acceso público.
+ *  - `base64`: data URI completo. Para archivos que el core ya tiene en RAM,
+ *    que es lo que pasa con Drive: los baja el core con sus credenciales.
  *
  * `filename` importa más de lo que parece: WhatsApp lo usa para decidir el
  * icono y el visor. Un PDF sin extensión .pdf llega como archivo genérico.
  */
-/**
- * Ejecuta algo capturando lo que open-wa escriba en console.error.
- *
- * Cuando sendImage recibe uno de sus errores conocidos, lo IMPRIME y luego
- * devuelve `false`. Ese `false` es lo unico que nos llegaba, asi que el
- * motivo real —"Not a contact", "Number not linked to WhatsApp Account"—
- * se quedaba en los logs del gateway mientras el core reportaba un generico
- * "rechazado sin explicacion".
- *
- * Interceptar console.error es intrusivo, pero los envios los serializa el
- * outbox de uno en uno, asi que no hay dos capturas solapadas. Se restaura
- * siempre en el finally.
- */
-async function capturandoMotivo<T>(
-  fn: () => Promise<T>,
-): Promise<{ valor: T; motivos: string[] }> {
-  const original = console.error;
-  const motivos: string[] = [];
-
-  console.error = (...args: unknown[]): void => {
-    motivos.push(args.map((a) => String(a)).join(" "));
-    original(...(args as []));
-  };
-
-  try {
-    return { valor: await fn(), motivos };
-  } finally {
-    console.error = original;
-  }
-}
-
 export async function sendFile(input: {
   to: string;
   url?: string;
   base64?: string;
   filename: string;
   caption?: string;
-  /** Id de un mensaje del propio chat, para citar. Ver abajo por qué importa. */
+  /** Id de un mensaje del propio chat, para citar. Opcional. */
   quotedMsgId?: string;
 }): Promise<string> {
-  const c = requireClient();
-  const { url, base64, filename, caption = '', quotedMsgId } = input;
+  const { url, base64, filename, caption = '' } = input;
+  const destino = haciaBaileys(input.to);
+  const mimetype = mimeDe(filename, base64);
 
-  /**
-   * Por qué hay varios intentos y no uno.
-   *
-   * WhatsApp direcciona el chat por LID (`...@lid`) pero el contacto se
-   * resuelve por teléfono (`...@c.us`), y open-wa comprueba las dos cosas
-   * en sitios distintos:
-   *
-   *   destino @c.us  -> "Start a chat with sendText with this contact"
-   *                     (no existe un chat guardado con ese id)
-   *   destino @lid   -> false, por "Not a contact"
-   *                     (el contacto no se resuelve desde un LID)
-   *
-   * Mandar un texto antes no arregla el primero: el texto se enruta al chat
-   * LID y nunca llega a crear un chat bajo el @c.us.
-   *
-   * Citar un mensaje del hilo sí sirve: el chat se resuelve desde el mensaje
-   * citado y ninguna de las dos búsquedas hace falta. Por eso el primer
-   * intento es con cita, y los demás quedan como red de seguridad para
-   * chats donde no haya un mensaje que citar.
-   */
-  const telefono = await destinoParaArchivos(input.to).catch(() => null);
+  let bytes: Buffer;
 
-  const intentos: { destino: string; citar: string | null; nota: string }[] = [];
-
-  if (quotedMsgId) {
-    intentos.push({ destino: input.to, citar: quotedMsgId, nota: 'chat original citando' });
-    if (telefono && telefono !== input.to) {
-      intentos.push({ destino: telefono, citar: quotedMsgId, nota: 'teléfono citando' });
+  if (base64) {
+    bytes = Buffer.from(base64.replace(/^data:[^;]+;base64,/, ''), 'base64');
+  } else if (url) {
+    const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+    if (!res.ok) {
+      throw new Error(`no se pudo descargar ${url}: HTTP ${res.status}`);
     }
+    bytes = Buffer.from(await res.arrayBuffer());
+  } else {
+    throw new Error('se requiere "url" o "base64"');
   }
 
-  if (telefono) {
-    intentos.push({ destino: telefono, citar: null, nota: 'teléfono' });
+  // Las imágenes van como imagen y no como documento: mandarlas como
+  // documento las entrega dentro de una tarjeta de archivo, sin vista
+  // previa, y quien las recibe tiene que abrirlas para ver qué son.
+  const contenido = mimetype.startsWith('image/')
+    ? { image: bytes, caption, mimetype }
+    : { document: bytes, fileName: filename, mimetype, caption };
+
+  const resultado = await requireSock().sendMessage(destino, contenido);
+
+  if (!resultado?.key?.id) {
+    throw new Error(`no se pudo enviar ${filename} a ${input.to}`);
   }
 
-  if (!intentos.some((i) => i.destino === input.to && !i.citar)) {
-    intentos.push({ destino: input.to, citar: null, nota: 'chat original' });
-  }
-
-  let ultimoMotivo = 'sin intentos';
-
-  for (const intento of intentos) {
-    // waitForId en true: sin él open-wa devuelve `true` en vez del id del
-    // mensaje, y sin id el core no puede reconocer el eco del archivo.
-    const { valor: result, motivos } = await capturandoMotivo(() =>
-      url
-        ? c.sendFileFromUrl(
-            intento.destino as never,
-            url,
-            filename,
-            caption,
-            (intento.citar ?? undefined) as never,
-            undefined,
-            true,
-          )
-        : c.sendFile(
-            intento.destino as never,
-            base64 as string,
-            filename,
-            caption,
-            (intento.citar ?? undefined) as never,
-            true,
-          ),
-    );
-
-    if (typeof result === 'string' && !result.startsWith('ERROR')) return result;
-
-    // Se envió pero no llegó el id a tiempo. Es un envío correcto: darlo por
-    // fallido haría que el core lo reintentara y el archivo llegara repetido.
-    if (result === true) return `sent_${Date.now()}_${intento.destino}`;
-
-    ultimoMotivo =
-      typeof result === 'string'
-        ? result
-        : // El `false` de open-wa no dice nada, pero lo que imprimió justo
-          // antes sí: "Not a contact", "Number not linked to WhatsApp
-          // Account" y compañía.
-          motivos.join(' | ') || 'rechazado sin explicación (false)';
-
-    console.warn(
-      `[wa] ${filename} por ${intento.nota} (${intento.destino}): ${ultimoMotivo}`,
-    );
-  }
-
-  throw new Error(`no se pudo enviar ${filename}: ${ultimoMotivo}`);
-}
-
-/**
- * El id al que sí se le pueden mandar archivos.
- *
- * WhatsApp ya direcciona los chats por LID (`...@lid`) y el texto llega bien
- * a esos ids. Los archivos no: open-wa los rechaza de plano si el destino no
- * es `@c.us` ni `@g.us`, sin más explicación que un `false`. El chat sigue
- * siendo el mismo, así que basta con mandar el archivo al número de teléfono
- * del contacto, que WhatsApp asocia al mismo hilo.
- *
- * El número se pregunta a WhatsApp, no se deduce: el LID no contiene el
- * teléfono y no hay forma de calcularlo.
- */
-async function destinoParaArchivos(to: string): Promise<string> {
-  if (!to.endsWith('@lid')) return to;
-
-  const c = requireClient();
-
-  const candidatos: unknown[] = [];
-  try {
-    const chat = (await c.getChatById(to as never)) as unknown as {
-      contact?: { phoneNumber?: unknown; id?: unknown };
-    } | null;
-    candidatos.push(chat?.contact?.phoneNumber, chat?.contact?.id);
-  } catch {
-    // Se intenta por el contacto directamente.
-  }
-  try {
-    const contact = (await c.getContact(to as never)) as unknown as {
-      phoneNumber?: unknown;
-      id?: unknown;
-    } | null;
-    candidatos.push(contact?.phoneNumber, contact?.id);
-  } catch {
-    // Sin contacto tampoco; se decide abajo.
-  }
-
-  for (const candidato of candidatos) {
-    const id = jidTelefono(candidato);
-    if (id) return id;
-  }
-
-  throw new Error(`no se pudo resolver el número de teléfono de ${to}`);
-}
-
-/** `xxx@c.us` si el valor lo trae, en forma de string o de Wid serializado. */
-function jidTelefono(value: unknown): string | null {
-  const raw =
-    typeof value === 'string'
-      ? value
-      : typeof value === 'object' && value !== null
-        ? (value as { _serialized?: unknown })._serialized
-        : null;
-
-  return typeof raw === 'string' && raw.endsWith('@c.us') ? raw : null;
+  return resultado.key.id;
 }
 
 /**
  * ¿Existe este número en WhatsApp, y con qué identificador exacto?
  *
  * Es la única fuente de verdad sobre el formato. La heurística del core
- * (el "1" mexicano y compañía) acierta casi siempre, pero "casi siempre"
- * en un sistema de permisos significa que de vez en cuando alguien con
- * acceso recibe un "no encontré" que nadie sabe explicar.
+ * (el "1" mexicano y compañía) acierta casi siempre, pero "casi siempre" en
+ * un sistema de permisos significa que de vez en cuando alguien con acceso
+ * recibe un "no encontré" que nadie sabe explicar.
  *
  * Devuelve el id canónico o null si el número no está en WhatsApp.
  */
 export async function checkNumber(
   candidate: string,
 ): Promise<{ exists: boolean; waId: string | null }> {
-  const c = requireClient();
+  const numero = soloDigitos(candidate);
 
   try {
-    const result = (await c.checkNumberStatus(candidate as never)) as {
-      numberExists?: boolean;
-      id?: { _serialized?: string } | string;
-    } | null;
+    // onWhatsApp devuelve undefined si WhatsApp no contesta nada, que no es
+    // lo mismo que "no existe": por eso se separa de la lista vacía.
+    const encontrados = await requireSock().onWhatsApp(numero);
+    const resultado = encontrados?.[0];
 
-    if (!result?.numberExists) return { exists: false, waId: null };
+    if (!resultado?.exists) return { exists: false, waId: null };
 
-    const id =
-      typeof result.id === 'string' ? result.id : result.id?._serialized;
-
-    return { exists: true, waId: id ?? candidate };
+    return { exists: true, waId: haciaCore(resultado.jid) };
   } catch (err) {
     // Que WhatsApp no conteste no es lo mismo que el número no exista, y
     // confundirlos daría de baja a gente válida. Se propaga.
@@ -751,20 +721,26 @@ export async function checkNumber(
 }
 
 export async function setTyping(to: string, on: boolean): Promise<void> {
-  await requireClient().simulateTyping(to as never, on);
+  await requireSock().sendPresenceUpdate(
+    on ? 'composing' : 'paused',
+    haciaBaileys(to),
+  );
 }
 
 export async function markSeen(to: string): Promise<void> {
-  await requireClient().sendSeen(to as never);
+  // Baileys marca leído por mensaje concreto, no por chat, y aquí solo
+  // tenemos el chat. Queda como no-op deliberado en vez de fingir que hace
+  // algo: el core lo llama por cortesía y no depende del resultado.
+  void to;
 }
 
 /**
- * Diagnóstico y prueba de envío, para averiguar por qué los archivos no
- * salen. Viven aquí porque `client` no sale de este módulo: quien lo tenga
- * puede hacer cualquier cosa con la cuenta, así que se queda donde está.
+ * Diagnóstico y prueba de envío. Viven aquí porque el socket no sale de este
+ * módulo: quien lo tenga puede hacer cualquier cosa con la cuenta, así que
+ * se queda donde está.
  */
 export async function diagnosticar(entrada: string): Promise<DiagnosticoDestino> {
-  return diagnosticarDestino(requireClient(), entrada);
+  return diagnosticarDestino(requireSock(), entrada, yo);
 }
 
 export async function probarEnvioReal(
@@ -772,5 +748,5 @@ export async function probarEnvioReal(
   base64: string,
   filename: string,
 ): Promise<PasoPrueba[]> {
-  return probarEnvio(requireClient(), destino, base64, filename);
+  return probarEnvio(requireSock(), destino, base64, filename);
 }

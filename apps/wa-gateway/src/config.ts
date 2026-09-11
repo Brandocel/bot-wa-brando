@@ -26,7 +26,7 @@ export const config = {
 
   session: {
     id: process.env.WA_SESSION_ID ?? 'brando',
-    path: process.env.WA_SESSION_PATH ?? './data/session',
+    path: process.env.WA_SESSION_PATH ?? './data/baileys',
   },
 
   /**
@@ -37,29 +37,4 @@ export const config = {
   pendingPath: process.env.WA_PENDING_PATH ?? './data/pending',
 
   coreWebhookUrl: normalizeBaseUrl(required('CORE_WEBHOOK_URL')),
-
-  /**
-   * Vacío en local: open-wa descarga su propio Chromium.
-   * En Docker/Render apunta al chromium de apt (ver Dockerfile).
-   */
-  chromiumPath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-
-  /**
-   * El Chromium que trae Puppeteer suele ser viejo y WhatsApp Web le sirve
-   * una pagina de 'navegador no soportado' en vez del QR. Con Chrome real
-   * eso no pasa.
-   */
-  useChrome: process.env.WA_USE_CHROME === 'true',
-
-  /**
-   * open-wa manda por defecto un UA que dice Chrome/104 y WhatsApp Web ya
-   * responde con la pagina de 'navegador no soportado', asi que el QR nunca
-   * aparece. Se puede sobreescribir.
-   */
-  userAgent: process.env.WA_USER_AGENT || undefined,
-
-  /** WA_HEADLESS=false abre una ventana de Chrome visible. Ultimo recurso
-   *  si WhatsApp sigue rechazando el vinculo: un navegador de verdad es
-   *  mucho mas dificil de detectar. En Render no sirve (no hay pantalla). */
-  headless: process.env.WA_HEADLESS !== 'false',
 } as const;

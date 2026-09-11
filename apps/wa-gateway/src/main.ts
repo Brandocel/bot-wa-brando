@@ -3,9 +3,11 @@ import { buildServer } from './server';
 import { startWhatsApp } from './whatsapp';
 
 async function bootstrap(): Promise<void> {
-  // El HTTP arranca PRIMERO y a propósito: open-wa tarda 30-60s en levantar
-  // Chromium, y si Render no ve el health check en ese rato mata el deploy.
-  // Además necesitas /qr disponible justo mientras open-wa espera el escaneo.
+  // El HTTP arranca PRIMERO y a propósito. Con Baileys la conexión tarda
+  // segundos, no el minuto largo que costaba levantar Chromium, pero el
+  // orden sigue importando: la primera vez —y cada vez que haya que
+  // revincular— /qr tiene que estar sirviendo mientras WhatsApp espera el
+  // escaneo, y Render tiene que ver el health check desde el principio.
   const app = buildServer();
 
   app.listen(config.port, () => {

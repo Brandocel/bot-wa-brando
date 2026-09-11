@@ -1,7 +1,7 @@
 # Arquitectura — bot-wa-brando
 
 Agente personal de WhatsApp. Stack: **NestJS + TypeScript**, **Postgres + Prisma**,
-transporte **open-wa / wa-automate**, desplegado en **Render**.
+transporte **Baileys**, desplegado en **Render**.
 
 **Dos productos, una sola plataforma:**
 
@@ -19,16 +19,48 @@ No son dos bots. Son dos `Strategy` sobre el mismo núcleo (§4.3, §5).
 
 | Restricción | Consecuencia arquitectónica |
 |---|---|
-| open-wa levanta **Chromium headless** (~700MB–1GB RAM, deps de sistema) | Va en su **propio servicio con Dockerfile**, nunca dentro del proceso NestJS |
+| La sesión de WhatsApp es **un socket de larga vida con estado** | Va en su **propio servicio**, nunca dentro del proceso NestJS |
 | La sesión de WhatsApp es **estado en disco** | Necesita **Persistent Disk** en Render → ese servicio queda a **1 sola instancia**, sin zero-downtime deploy |
-| open-wa **no es API oficial** → puede romperse o banear | El dominio **no puede conocer open-wa**. Anti-Corruption Layer obligatoria |
+| Baileys **no es API oficial** → puede romperse o banear | El dominio **no puede conocer la librería de transporte**. Anti-Corruption Layer obligatoria |
 | El webhook de WhatsApp debe responder **rápido** | Procesamiento **asíncrono por cola**; el handler HTTP solo encola |
 | Un chat no puede recibir 2 respuestas cruzadas | Cola con **concurrencia 1 por `chatId`** (FIFO por conversación) |
 | El LLM cuesta y falla | Reintentos, timeouts, circuit breaker y presupuesto por conversación |
 
-> **La decisión más importante de todo el documento:** open-wa es la pieza más frágil
-> y la más probable de reemplazar (por Baileys o por Cloud API). Todo el diseño existe
-> para que ese cambio sea **un adaptador nuevo y cero líneas de dominio tocadas**.
+> **La decisión más importante de todo el documento:** el transporte de WhatsApp es
+> la pieza más frágil y la más probable de reemplazar. Todo el diseño existe para que
+> ese cambio sea **un adaptador nuevo y cero líneas de dominio tocadas**.
+>
+> **Y se cobró: en septiembre de 2026 se cambió open-wa por Baileys y el core no se
+> tocó.** Ver §1.1.
+
+### 1.1 Por qué se dejó open-wa (septiembre 2026)
+
+WhatsApp migró el direccionamiento de chats a **LID** (`<id>@lid`) en vez del número
+(`<numero>@c.us`). open-wa 4.76 —la última versión estable— no lo entiende: el chat
+existe con un identificador y el contacto con otro, y su comprobación previa a mandar
+media exige un chat guardado bajo el `@c.us`, que con LID no llega a existir nunca.
+
+Se descartó, con evidencia y en este orden:
+
+1. **Mandar un texto antes del archivo**, que es lo que la propia librería pide en su
+   error. El texto se entrega, pero WhatsApp lo enruta al chat LID: el chat bajo
+   `@c.us` sigue sin existir y el archivo sigue rechazado.
+2. **Parchear la comprobación.** No está en el paquete de npm: open-wa la descarga al
+   arrancar desde su CDN.
+3. **Comprar una licencia.** La documentación de open-wa no lista `sendFile` entre las
+   funciones que requieren licencia.
+4. **Subir a open-wa 5.0.0-alpha.** No es una actualización sino otra librería
+   —`createClient` en vez de `create`, driver y plugins obligatorios, `sendFile` sin
+   `quotedMsgId` ni `waitForId`— y sin documentación. Mismo costo que migrar a
+   Baileys, apostando a ciegas.
+
+Baileys trata `lid` como un tipo de identificador más, igual que `s.whatsapp.net`. De
+paso habla el protocolo directamente, sin Chromium: la imagen bajó de ~700 MB a
+~150 MB y el arranque de un minuto a segundos.
+
+La traducción entre `@c.us` (lo que el core lleva guardado en la base de datos) y
+`@s.whatsapp.net` (lo que usa Baileys) se hace **en el gateway**, en el borde. Cambiar
+de librería no puede obligar a migrar los datos de nadie.
 
 ---
 
@@ -39,7 +71,7 @@ flowchart LR
     WA[WhatsApp] <-->|WebSocket / Chromium| GW
 
     subgraph Render
-        GW["wa-gateway<br/>Docker + open-wa<br/>Persistent Disk<br/>1 instancia"]
+        GW["wa-gateway<br/>Docker + Baileys<br/>Persistent Disk<br/>1 instancia"]
         CORE["agent-core<br/>NestJS<br/>escalable"]
         Q[(Redis / BullMQ)]
         DB[(Postgres)]
