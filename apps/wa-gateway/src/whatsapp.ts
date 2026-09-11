@@ -488,6 +488,12 @@ export async function sendText(to: string, text: string): Promise<string> {
   // aquí se convierte en un error HTTP y el outbox lo reintenta.
   const result = await requireClient().sendText(to as never, text);
 
+  // Mismo cuidado que con los archivos: una cadena que empieza por "ERROR"
+  // no es un id de mensaje, es un fallo disfrazado.
+  if (esErrorDeOpenWa(result)) {
+    throw new Error(`WhatsApp rechazó el texto para ${to}: ${String(result)}`);
+  }
+
   if (typeof result !== 'string') {
     throw new Error(`WhatsApp rechazó el envío a ${to}`);
   }
@@ -521,17 +527,61 @@ export async function sendFile(input: {
   // waitForId en true: sin él open-wa devuelve `true` en vez del id del
   // mensaje, y sin id el core no puede reconocer el eco del archivo cuando
   // WhatsApp lo devuelve por onAnyMessage.
-  const result = url
-    ? await c.sendFileFromUrl(to as never, url, filename, caption, undefined, undefined, true)
-    : await c.sendFile(to as never, base64 as string, filename, caption, undefined, true);
+  const enviar = async (): Promise<unknown> =>
+    url
+      ? c.sendFileFromUrl(to as never, url, filename, caption, undefined, undefined, true)
+      : c.sendFile(to as never, base64 as string, filename, caption, undefined, true);
 
-  if (typeof result === 'string') return result;
+  let result = await enviar();
+
+  /**
+   * "Start a chat with sendText with this contact before trying to send
+   * media."
+   *
+   * open-wa exige que el chat esté cargado en su almacén interno antes de
+   * mandar un archivo, y tras reiniciar el gateway no lo está — aunque la
+   * conversación exista desde hace semanas. El síntoma es desconcertante:
+   * el texto sigue llegando y los documentos dejan de llegar.
+   *
+   * Pedir el chat por su id lo carga, que es lo mismo que consigue mandar
+   * un texto, pero sin ensuciar la conversación con un mensaje que nadie
+   * pidió.
+   */
+  if (esErrorDeOpenWa(result) && String(result).includes('Start a chat')) {
+    console.warn(`[wa] chat ${to} sin cargar: hidratando y reintentando`);
+
+    try {
+      await c.getChatById(to as never);
+    } catch (err) {
+      console.warn(`[wa] no se pudo cargar el chat ${to}: ${String(err)}`);
+    }
+
+    result = await enviar();
+  }
 
   // Se envió pero no llegó el id a tiempo. Es un envío correcto: reportarlo
   // como fallo haría que el core lo reintentara y el archivo llegara repetido.
   if (result === true) return `sent_${Date.now()}_${to}`;
 
-  throw new Error(`WhatsApp rechazó el archivo ${filename} para ${to}`);
+  if (esErrorDeOpenWa(result)) {
+    throw new Error(`WhatsApp rechazó ${filename} para ${to}: ${String(result)}`);
+  }
+
+  if (typeof result !== 'string') {
+    throw new Error(`WhatsApp rechazó el archivo ${filename} para ${to}`);
+  }
+
+  return result;
+}
+
+/**
+ * open-wa no lanza cuando falla: devuelve `false` o una CADENA que empieza
+ * por "ERROR:". Esa cadena pasaba por id de mensaje válido, así que el envío
+ * se daba por bueno, el outbox lo marcaba SENT y el archivo no llegaba a
+ * ninguna parte. Un fallo que se reporta como éxito es peor que un fallo.
+ */
+function esErrorDeOpenWa(resultado: unknown): boolean {
+  return typeof resultado === 'string' && resultado.startsWith('ERROR');
 }
 
 /**
