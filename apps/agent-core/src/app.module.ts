@@ -16,6 +16,8 @@ import { DocumentLinkService } from './application/support/document-link.service
 import { DocumentDeliveryService } from './application/support/document-delivery.service';
 import { DriveSyncService } from './application/support/drive-sync.service';
 import { SlotExtractorService } from './application/support/slot-extractor.service';
+import { ConversationHistoryService } from './application/support/conversation-history.service';
+import { ReplyWriterService } from './application/support/reply-writer.service';
 import { SupportStrategy } from './application/support/support.strategy';
 import { DocumentSearchService } from './application/support/document-search.service';
 import { SupportCommandsService } from './application/support/support-commands.service';
@@ -86,6 +88,8 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     DocumentDeliveryService,
     DriveSyncService,
     SlotExtractorService,
+    ConversationHistoryService,
+    ReplyWriterService,
     SupportStrategy,
     ConversationStateService,
     DirectoryService,

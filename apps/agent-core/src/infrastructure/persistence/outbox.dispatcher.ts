@@ -227,7 +227,12 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
       caption: payload.caption,
       quotedMsgId: ultimoEntrante?.id,
     });
-    return { id, body: `[documento] ${payload.filename}`, kind: 'DOCUMENT' };
+    // La leyenda va en el cuerpo: es lo que el bot "dijo" al entregar, y el
+    // historial que lee el modelo tiene que verlo para no repetirlo.
+    const body = payload.caption
+      ? `[documento] ${payload.filename}\n${payload.caption}`
+      : `[documento] ${payload.filename}`;
+    return { id, body, kind: 'DOCUMENT' };
   }
 
   /**

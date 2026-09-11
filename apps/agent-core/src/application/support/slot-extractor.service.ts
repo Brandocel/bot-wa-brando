@@ -3,6 +3,7 @@ import type { DocCategory } from '@prisma/client';
 import { z } from 'zod';
 import { LLM_PORT, type LlmPort } from '../ports/llm.port';
 import type { SearchQuery } from './document-search.service';
+import { formatHistory, type HistoryTurn } from './conversation-history.service';
 import { parseQuery } from './query-parser';
 
 /**
@@ -76,17 +77,54 @@ export class SlotExtractorService {
 
   async extract(
     text: string,
-    options: { pendiente?: SlotPendiente | null; today?: Date } = {},
+    options: {
+      pendiente?: SlotPendiente | null;
+      today?: Date;
+      /** Mensajes anteriores del hilo. Solo contexto: no se extrae de ahí. */
+      history?: readonly HistoryTurn[];
+      /** Lo que la solicitud en curso ya tiene resuelto, en texto. */
+      known?: readonly string[];
+      /** Hay una solicitud a medias (tipo, mes o folio ya dichos). */
+      enCurso?: boolean;
+      /** La empresa ya se reconoció en el texto por reglas (sin modelo). */
+      companyKnown?: boolean;
+    } = {},
   ): Promise<ExtractionResult> {
     const today = options.today ?? new Date();
     const pendiente = options.pendiente ?? null;
     const byRules = parseQuery(text);
 
-    // Con categoría Y periodo el parser ya resolvió: no se llama al modelo.
-    // Esta rama es la que hace que el bot sea barato en el caso común.
-    if (byRules.category && byRules.period) {
+    /**
+     * Cuándo las reglas bastan y NO se llama al modelo.
+     *
+     * Es la rama que hace barato al bot: cada llamada al modelo cuesta
+     * tokens y segundos de "escribiendo...". Se evita siempre que el texto
+     * ya diga algo que el flujo puede usar tal cual:
+     *
+     *  - Un tipo de documento o un folio: con eso ya se busca. Lo que
+     *    falte (el mes) se resuelve enseñando lo que hay o preguntando.
+     *  - Un mes, si hay una solicitud en curso: "y la de marzo" es la
+     *    misma factura de otro mes, no hace falta que nadie lo interprete.
+     *  - La respuesta a lo que el bot acaba de preguntar, cuando las
+     *    reglas ya la leyeron: "febrero" tras "¿de qué mes?", o el nombre
+     *    de una empresa tras "¿de cuál?".
+     *
+     * El modelo queda para lo que de verdad necesita comprensión: "la de
+     * la luz del mes pasado", "lo del contrato que firmamos", y para
+     * distinguir charla de petición.
+     */
+    const enCurso = options.enCurso === true;
+
+    const resueltoPorReglas =
+      byRules.category !== null ||
+      byRules.folio !== null ||
+      (byRules.period !== null && (enCurso || pendiente === 'periodo')) ||
+      (pendiente === 'empresa' && options.companyKnown === true);
+
+    if (resueltoPorReglas) {
       return {
-        query: byRules,
+        // El nombre de la empresa no es texto para filtrar archivos.
+        query: { ...byRules, text: pendiente === 'empresa' ? null : byRules.text },
         companyHint: null,
         notADocumentRequest: false,
         source: 'reglas',
@@ -94,7 +132,12 @@ export class SlotExtractorService {
     }
 
     const extracted = await this.llm.extract({
-      system: systemPrompt(today, pendiente),
+      system: systemPrompt(
+        today,
+        pendiente,
+        options.history ?? [],
+        options.known ?? [],
+      ),
       user: text,
       schema: SCHEMA,
       validate: (value) => {
@@ -135,30 +178,40 @@ export class SlotExtractorService {
  * sueltos no parezcan pedir ningún documento. Sin ese contexto el modelo
  * los marcaba como charla y la conversación volvía a empezar.
  */
-function systemPrompt(today: Date, pendiente: SlotPendiente | null): string {
+function systemPrompt(
+  today: Date,
+  pendiente: SlotPendiente | null,
+  history: readonly HistoryTurn[],
+  known: readonly string[],
+): string {
   const iso = today.toISOString().slice(0, 10);
 
   const contexto = {
     categoria:
-      '- El bot acaba de preguntar QUÉ TIPO de documento necesita. Interpreta el mensaje como esa respuesta (categoria), y no lo marques como no_es_documento.',
+      '- El bot acaba de preguntar QUÉ TIPO de documento. El mensaje es esa respuesta (categoria); no es charla.',
     periodo:
-      '- El bot acaba de preguntar DE QUÉ MES lo necesita. Interpreta el mensaje como esa respuesta (periodo), y no lo marques como no_es_documento.',
+      '- El bot acaba de preguntar DE QUÉ MES. El mensaje es esa respuesta (periodo); no es charla.',
     empresa:
-      '- El bot acaba de preguntar DE QUÉ EMPRESA lo necesita. Interpreta el mensaje como esa respuesta (empresa, aunque venga con erratas), y no lo marques como no_es_documento.',
+      '- El bot acaba de preguntar DE QUÉ EMPRESA. El mensaje es esa respuesta (empresa, aunque traiga erratas); no es charla.',
   };
 
+  /**
+   * Corto a propósito: cada línea se paga en cada mensaje que llega al
+   * modelo. La conversación va como contexto, no como fuente: "y la de
+   * marzo" tras pedir una factura es una FACTURA de marzo, y "mejor la
+   * cotización" cambia de tipo; sin ver el hilo el modelo no lo distingue.
+   * Pero solo se extrae del último mensaje: lo que ya se sabía vive en el
+   * ticket y se fusiona después, no aquí.
+   */
   return [
-    'Extraes datos de mensajes de WhatsApp que piden documentos a una empresa.',
-    `Hoy es ${iso}.`,
-    '',
-    'Reglas:',
-    '- "el mes pasado", "este mes" y similares se resuelven contra la fecha de hoy.',
-    '- Si el mes no lleva año, usa el más reciente que ya haya ocurrido.',
-    '- No inventes: lo que el mensaje no diga, va como NINGUNO o NINGUNA.',
-    '- "recibo", "nota" y "comprobante" cuentan como FACTURA.',
-    '- Un saludo, una queja o una pregunta general llevan no_es_documento en true.',
-    '- "documento", "archivo" o "papel" a secas NO son un tipo: eso es NINGUNA.',
+    `Extraes datos del último mensaje de un cliente que pide documentos por WhatsApp. Hoy es ${iso}.`,
+    '- Fechas relativas ("mes pasado") contra hoy; mes sin año = el más reciente ya ocurrido.',
+    '- Lo que el mensaje no diga: NINGUNO/NINGUNA. No inventes.',
+    '- recibo, nota, comprobante = FACTURA. "documento"/"archivo" a secas = NINGUNA.',
+    '- Saludo, queja o pregunta general: no_es_documento true. Seguir con la misma solicitud ("y la de marzo", "sí, esa"): false.',
     ...(pendiente ? [contexto[pendiente]] : []),
+    ...(history.length > 0 ? ['', 'Conversación previa (solo contexto):', formatHistory(history)] : []),
+    ...(known.length > 0 ? ['', 'Ya se sabe (no lo repitas si el mensaje no lo dice):', ...known.map((k) => `- ${k}`)] : []),
   ].join('\n');
 }
 

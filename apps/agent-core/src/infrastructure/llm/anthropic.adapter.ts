@@ -4,6 +4,17 @@ import { config } from '../../config';
 import type { LlmPort } from '../../application/ports/llm.port';
 
 /**
+ * Esfuerzo bajo en todas las llamadas.
+ *
+ * Extraer tres campos o redactar dos frases no requiere razonar, y en los
+ * modelos que piensan por defecto (Opus 5) el razonamiento también se
+ * paga. Haiku 4.5 no acepta el parámetro: ahí no se manda.
+ */
+const ESFUERZO: { effort?: 'low' } = /haiku/i.test(config.llm.model)
+  ? {}
+  : { effort: 'low' };
+
+/**
  * ADAPTER del LlmPort contra la API de Anthropic.
  *
  * Un fallo del modelo NUNCA tumba el turno: todo devuelve null y quien llama
@@ -37,7 +48,7 @@ export class AnthropicAdapter implements LlmPort {
       try {
         const response = await client.messages.create({
           model: config.llm.model,
-          max_tokens: 1024,
+          max_tokens: 512,
           system: input.system,
           messages: [{ role: 'user', content: input.user }],
           output_config: {
@@ -47,7 +58,7 @@ export class AnthropicAdapter implements LlmPort {
             // Esfuerzo bajo a propósito: sacar tres campos de una frase corta
             // no es un problema difícil, y del otro lado hay una persona
             // mirando "escribiendo..." en WhatsApp.
-            effort: 'low',
+            ...ESFUERZO,
           },
         });
 
@@ -80,6 +91,9 @@ export class AnthropicAdapter implements LlmPort {
         max_tokens: input.maxTokens ?? 512,
         system: input.system,
         messages: [{ role: 'user', content: input.user }],
+        // Esfuerzo bajo: redactar dos frases no requiere pensar, y en los
+        // modelos que piensan por defecto el razonamiento también se paga.
+        ...(Object.keys(ESFUERZO).length > 0 ? { output_config: ESFUERZO } : {}),
       });
 
       return firstText(response);

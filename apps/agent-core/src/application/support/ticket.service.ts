@@ -269,6 +269,27 @@ export class TicketService {
     });
   }
 
+  /**
+   * Los slots que el siguiente ticket va a heredar, si hay algo que heredar.
+   *
+   * Es la misma ventana de continuidad que usa `openOrReattach`: lo que se
+   * pidió hace un rato sigue contando aunque ese ticket ya se cerró. Se
+   * expone para que quien lee el mensaje sepa que "y la de marzo" viene
+   * detrás de una factura, ANTES de abrir el ticket nuevo.
+   */
+  async slotsVigentes(conversationId: string): Promise<unknown> {
+    const reciente = await this.prisma.ticket.findFirst({
+      where: {
+        conversationId,
+        createdAt: { gte: new Date(Date.now() - CONTINUIDAD_MS) },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { slots: true },
+    });
+
+    return reciente ? soloDatos(reciente.slots as Record<string, unknown>) : null;
+  }
+
   /** El ticket más reciente de la conversación, escalado o no. */
   async ultimoTicket(conversationId: string) {
     return this.prisma.ticket.findFirst({

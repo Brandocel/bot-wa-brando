@@ -1,11 +1,15 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import type { Awaiting, DocCategory, Document } from '@prisma/client';
 import type { IncomingMessage } from '../../domain/message/incoming-message';
-import { LLM_PORT, type LlmPort } from '../ports/llm.port';
 import { AccessScopeService, type OrgScope } from './access-scope.service';
+import {
+  ConversationHistoryService,
+  type HistoryTurn,
+} from './conversation-history.service';
 import { DocumentDeliveryService } from './document-delivery.service';
 import { DocumentSearchService } from './document-search.service';
 import type { SearchQuery } from './document-search.service';
+import { ReplyWriterService } from './reply-writer.service';
 import { SlotExtractorService, type SlotPendiente } from './slot-extractor.service';
 import { TicketService } from './ticket.service';
 
@@ -22,9 +26,23 @@ import { TicketService } from './ticket.service';
  *    cinco veces ya perdió al cliente.
  *  - 0 resultados escala, más de 1 pregunta, exactamente 1 entrega.
  *    Nunca "creo que te refieres a...".
+ *
+ * Dos memorias distintas, a propósito:
+ *  - Los slots del ticket son la VERDAD sobre la solicitud (qué, de qué
+ *    mes, de qué empresa). Los escribe el código.
+ *  - El historial de mensajes es CONTEXTO para el modelo: para entender
+ *    "y la de marzo", para no saludar dos veces, para no preguntar lo que
+ *    la persona ya dijo. El modelo lo lee; nunca decide nada con él.
  */
 
 const MAX_QUESTIONS = 3;
+
+/**
+ * Sin mes, cuántos documentos del tipo pedido se enseñan antes de preguntar
+ * el mes. "¿Tienes la cotización?" con dos cotizaciones en el Drive se
+ * contesta enseñando las dos, no preguntando "¿de qué mes?".
+ */
+const MAX_OPCIONES = 5;
 
 /**
  * Lo que la Strategy devuelve: el texto Y de quién queda el turno.
@@ -45,6 +63,20 @@ export interface StrategyContext {
   conversationId: string;
 }
 
+/**
+ * Todo lo que un turno necesita para decidir Y para redactar.
+ *
+ * Se resuelve una vez al principio de `handle` y se pasa entero: así ni la
+ * elección numerada ni la entrega tienen que volver a cargar el alcance o
+ * el historial, y todas las respuestas del turno se redactan viendo la
+ * misma conversación.
+ */
+interface Turn {
+  message: IncomingMessage;
+  scopes: readonly OrgScope[];
+  history: readonly HistoryTurn[];
+}
+
 @Injectable()
 export class SupportStrategy {
   constructor(
@@ -53,7 +85,8 @@ export class SupportStrategy {
     private readonly search: DocumentSearchService,
     private readonly delivery: DocumentDeliveryService,
     private readonly tickets: TicketService,
-    @Inject(LLM_PORT) private readonly llm: LlmPort,
+    private readonly history: ConversationHistoryService,
+    private readonly writer: ReplyWriterService,
   ) {}
 
   /**
@@ -69,6 +102,16 @@ export class SupportStrategy {
     // Sin membresía no hay conversación de soporte. Que conteste el eco o,
     // más adelante, la Strategy de ventas.
     if (scope.decision !== 'ALLOW') return null;
+
+    // El mensaje actual ya está guardado (fase 1 del caso de uso); se
+    // excluye para que no aparezca dos veces en el prompt.
+    const turn: Turn = {
+      message,
+      scopes: scope.scopes,
+      history: await this.history.recent(ctx.conversationId, {
+        excludeId: message.id,
+      }),
+    };
 
     // Una foto o un audio sin texto no traen nada que extraer. Antes caían
     // en el flujo de documentos y provocaban un "¿qué documento necesitas?"
@@ -90,7 +133,7 @@ export class SupportStrategy {
      */
     const eleccion = leerNumero(message.body);
     if (eleccion !== null) {
-      const resuelto = await this.resolverOpcion(eleccion, message, ctx);
+      const resuelto = await this.resolverOpcion(eleccion, turn, ctx);
       if (resuelto) return resuelto;
     }
 
@@ -119,13 +162,49 @@ export class SupportStrategy {
     const abierto = await this.tickets.ticketAbierto(ctx.conversationId);
     const pendiente = abierto ? ultimaPregunta(abierto.slots) : null;
 
-    const extraction = await this.slots.extract(message.body, { pendiente });
+    /**
+     * Lo que la solicitud ya tiene resuelto, en palabras.
+     *
+     * Se le enseña al modelo tanto al extraer como al redactar: es lo que
+     * evita que pregunte el mes que la persona dijo hace dos mensajes, y lo
+     * que le permite entender "y la de marzo" como "la factura de marzo".
+     */
+    const vigentes =
+      abierto?.slots ?? (await this.tickets.slotsVigentes(ctx.conversationId));
+    const conocido = describirSlots(vigentes, scope.scopes);
+    const enCurso = tieneDatos(vigentes);
 
-    // La empresa se busca en lo que dijo el modelo Y en el texto crudo: el
-    // modelo puede no devolverla, y un nombre con erratas también cuenta.
+    /**
+     * Saludos, gracias y "ok" se contestan sin modelo.
+     *
+     * Son la mitad de los mensajes de un chat y no hay nada que
+     * interpretar. Un "gracias" después de una entrega recibe un "de nada";
+     * un "ok" no recibe nada, que es lo que haría una persona. Solo si no
+     * hay una pregunta en el aire: "ok" contestando a "¿de qué mes?" sí
+     * tiene que pasar por el flujo normal.
+     */
+    if (pendiente === null) {
+      const rapida = respuestaRapida(message.body, turn);
+      if (rapida !== null) return { text: rapida, awaiting: 'NADIE' };
+    }
+
+    // La empresa se busca primero en el texto crudo, por reglas: un nombre
+    // con erratas también cuenta, y si se reconoce aquí el extractor puede
+    // ahorrarse la llamada al modelo.
+    const empresaEnTexto = this.resolveCompany(message.body, scope.scopes);
+
+    const extraction = await this.slots.extract(message.body, {
+      pendiente,
+      history: turn.history,
+      known: conocido,
+      enCurso,
+      companyKnown: empresaEnTexto !== null,
+    });
+
+    // ...y después en lo que dijo el modelo, por si lo nombró de otra forma.
     const empresaMencionada =
-      this.resolveCompany(extraction.companyHint, scope.scopes) ??
-      this.resolveCompany(message.body, scope.scopes);
+      empresaEnTexto ??
+      this.resolveCompany(extraction.companyHint, scope.scopes);
 
     const aporta =
       extraction.query.category !== null ||
@@ -138,7 +217,7 @@ export class SupportStrategy {
     // pregunta del bot, sigue por el camino de los documentos.
     if (extraction.notADocumentRequest && !aporta && pendiente === null) {
       return {
-        text: await this.smallTalk(message.body, scope.scopes),
+        text: await this.smallTalk(turn, conocido),
         awaiting: 'NADIE',
       };
     }
@@ -177,7 +256,7 @@ export class SupportStrategy {
 
     await this.tickets.updateSlots(ticket.id, guardar);
 
-    return this.avanzar(message, scope.scopes, ticket, query, {
+    return this.avanzar(turn, ticket, query, {
       ...(ticket.slots as Record<string, unknown>),
       ...guardar,
     });
@@ -187,32 +266,25 @@ export class SupportStrategy {
    * Con lo que el ticket ya sabe, da el siguiente paso: pregunta lo que
    * falta, busca, entrega o escala.
    *
-   * Separado de `handle` a propósito: aquí no se lee el mensaje ni se llama
-   * al modelo. Solo se mira el estado. Es lo que permite reanudar después de
-   * elegir una opción numerada sin volver a interpretar nada.
+   * Separado de `handle` a propósito: aquí no se lee el mensaje ni se
+   * extrae nada. Solo se mira el estado. Es lo que permite reanudar después
+   * de elegir una opción numerada sin volver a interpretar nada.
    *
    * `slots` es el estado del ticket tal como queda DESPUÉS de guardar lo de
    * este mensaje; el objeto `ticket` puede traer una foto anterior.
    */
   private async avanzar(
-    message: IncomingMessage,
-    scopes: readonly OrgScope[],
+    turn: Turn,
     ticket: { id: string; number: number },
     query: SearchQuery,
     slots: unknown,
   ): Promise<StrategyReply> {
+    const { scopes } = turn;
     const asked = readAsked(slots);
 
     // Presupuesto agotado: escala en vez de seguir preguntando.
     if (asked.total >= MAX_QUESTIONS) {
-      await this.tickets.escalate(ticket.id, 'slots_incompletos', null);
-      return {
-        text: [
-          'Creo que no te estoy entendiendo bien, y no quiero hacerte dar más vueltas.',
-          `Ya le pasé tu caso al equipo con el folio #${ticket.number}; alguien te contacta.`,
-        ].join('\n'),
-        awaiting: 'AGENTE',
-      };
+      return this.escalarPorNoEntender(ticket);
     }
 
     /**
@@ -239,16 +311,14 @@ export class SupportStrategy {
         })),
       });
 
+      const lista = scopes.map((s, i) => `${i + 1}. ${s.organizationName}`);
+
       return this.ask(
         ticket,
         asked,
         'empresa',
-        [
-          'Tienes acceso a varias empresas. ¿De cuál lo necesitas?',
-          ...scopes.map((s, i) => `${i + 1}. ${s.organizationName}`),
-          '',
-          'Responde con el número.',
-        ].join('\n'),
+        'Tienes acceso a varias empresas. ¿De cuál lo necesitas?',
+        lista,
       );
     }
 
@@ -261,8 +331,25 @@ export class SupportStrategy {
       );
     }
 
+    /**
+     * Sin mes y sin folio, primero se mira cuántos hay.
+     *
+     * Preguntar "¿de qué mes?" cuando solo existe una cotización es hacer
+     * dar una vuelta de más; enseñar dos o tres para que señale una es lo
+     * que haría alguien del equipo. Solo si hay demasiadas se pregunta.
+     */
     if (!query.period && !query.folio) {
-      return this.ask(ticket, asked, 'periodo', '¿De qué mes lo necesitas?');
+      const candidatos = await this.search.search(
+        scopes,
+        { ...query, organizationId },
+        MAX_OPCIONES + 1,
+      );
+
+      if (candidatos.length > MAX_OPCIONES) {
+        return this.ask(ticket, asked, 'periodo', `¿De qué mes necesitas la ${nombre(query.category)}?`);
+      }
+
+      return this.resolverResultados(turn, ticket, query, candidatos);
     }
 
     const results = await this.search.search(scopes, {
@@ -270,9 +357,25 @@ export class SupportStrategy {
       organizationId,
     });
 
+    return this.resolverResultados(turn, ticket, query, results);
+  }
+
+  /**
+   * 0 resultados escala, 1 entrega, varios se enseñan numerados.
+   *
+   * Varios resultados NO es ambigüedad de la persona: preguntó bien y hay
+   * más de un documento que encaja. Se listan con su folio para que pueda
+   * señalar uno, y esta lista no cuenta contra el presupuesto de preguntas.
+   */
+  private async resolverResultados(
+    turn: Turn,
+    ticket: { id: string; number: number },
+    query: SearchQuery,
+    results: Document[],
+  ): Promise<StrategyReply> {
     if (results.length === 0) {
       const denial = query.category
-        ? this.scope.denialFor(scopes, query.category, query.period)
+        ? this.scope.denialFor(turn.scopes, query.category, query.period)
         : null;
 
       await this.tickets.escalate(
@@ -281,21 +384,24 @@ export class SupportStrategy {
         null,
       );
 
+      const folio = `#${ticket.number}`;
+
       // Sin permiso y sin resultados dan la MISMA respuesta. Distinguirlas
       // permitiría mapear el Drive ajeno a base de preguntas.
+      //
+      // Plantilla, sin modelo: es un mensaje informativo que sale una vez
+      // por solicitud, y ya nombra lo que se buscó. No hay nada que ganar
+      // redactándolo cada vez.
       return {
         text: [
-          'No encontré ese documento.',
-          `Lo dejé anotado con el folio #${ticket.number} para que alguien del equipo lo revise.`,
+          `No encontré ${describirPedido(query)}.`,
+          `Lo dejé anotado con el folio ${folio} para que alguien del equipo lo revise.`,
         ].join('\n'),
         awaiting: 'AGENTE',
         topic: query.category,
       };
     }
 
-    // Varios resultados NO es ambigüedad de la persona: preguntó bien y hay
-    // más de un documento que encaja. Se listan con su folio para que pueda
-    // señalar uno, y esta pregunta no cuenta contra el presupuesto.
     if (results.length > 1) {
       await this.tickets.updateSlots(ticket.id, {
         opciones: results.map((doc, i) => ({
@@ -306,9 +412,15 @@ export class SupportStrategy {
         })),
       });
 
+      // Plantilla con el tipo y el mes en palabras: dice lo mismo que
+      // diría una persona y no cuesta una llamada.
+      const que = query.period
+        ? `${nombrePlural(query.category)} de ${mesEnPalabras(query.period)}`
+        : nombrePlural(query.category);
+
       return {
         text: [
-          `Encontré ${results.length}. ¿Cuál necesitas?`,
+          `Tengo ${results.length} ${que}. ¿Cuál necesitas?`,
           ...results.map((doc, i) => `${i + 1}. ${describe(doc)}`),
           '',
           'Responde con el número.',
@@ -318,7 +430,7 @@ export class SupportStrategy {
       };
     }
 
-    return this.entregar(message.chatId, ticket, results[0]!);
+    return this.entregar(turn, ticket, results[0]!);
   }
 
   /**
@@ -331,18 +443,38 @@ export class SupportStrategy {
    * que se deja preparada en `fallbackText`.
    */
   private async entregar(
-    chatId: string,
+    turn: Turn,
     ticket: { id: string; number: number },
     doc: Document,
   ): Promise<StrategyReply> {
+    const folio = `#${ticket.number}`;
+
+    /**
+     * Leyenda por plantilla, sin modelo.
+     *
+     * Lo que la hace sonar a persona no es la redacción variable, sino
+     * que sepa dónde está en la conversación: la segunda entrega del hilo
+     * es "aquí va también", no otro "aquí está". Eso se sabe mirando el
+     * historial, y no cuesta tokens.
+     */
+    const yaEntregoAlgo = turn.history.some(
+      (t) => t.role === 'bot' && t.text.startsWith('[documento]'),
+    );
+    const que = `la ${nombre(doc.category)}${
+      doc.period ? ` de ${mesEnPalabras(doc.period)}` : ''
+    }`;
+    const caption = yaEntregoAlgo
+      ? `Aquí va también ${que}. Folio ${folio} por si algo.`
+      : `Aquí está ${que}. Te dejo el folio ${folio} por si necesitas darle seguimiento.`;
+
     const sent = await this.delivery.deliver(
-      chatId,
+      turn.message.chatId,
       doc,
-      `Aquí está: ${doc.name}. Te dejo el folio #${ticket.number} por si necesitas darle seguimiento.`,
+      caption,
       // Solo la coletilla: el enlace de descarga lo antepone la entrega, y
       // decir "no pude enviártelo" antes del enlace que sí lo entrega dejaba
       // a la persona creyendo que se había quedado sin documento.
-      `Cualquier cosa, quedó anotado con el folio #${ticket.number}.`,
+      `Cualquier cosa, quedó anotado con el folio ${folio}.`,
     );
 
     await this.tickets.record(ticket.id, 'entrega', 'bot', {
@@ -356,7 +488,7 @@ export class SupportStrategy {
       return {
         text: [
           'Encontré tu documento pero no pude enviártelo por aquí.',
-          `Ya lo pasé al equipo con el folio #${ticket.number}.`,
+          `Ya lo pasé al equipo con el folio ${folio}.`,
         ].join('\n'),
         awaiting: 'AGENTE',
         topic: doc.category,
@@ -377,7 +509,7 @@ export class SupportStrategy {
    */
   private async resolverOpcion(
     numero: number,
-    message: IncomingMessage,
+    turn: Turn,
     ctx: StrategyContext,
   ): Promise<StrategyReply | null> {
     const ticket = await this.tickets.ultimoTicket(ctx.conversationId);
@@ -400,15 +532,11 @@ export class SupportStrategy {
       // volver a interpretar nada: los demás slots ya están ahí. Reprocesar
       // un texto inventado ("de Constructora Vega") pasaba por el modelo,
       // que lo tomaba por charla, y la conversación se perdía otra vez.
-      const scope = await this.scope.resolve(message.senderId);
-      if (scope.decision !== 'ALLOW') return null;
-
       const actual = await this.tickets.ultimoTicket(ctx.conversationId);
       if (!actual || actual.id !== ticket.id) return null;
 
       return this.avanzar(
-        message,
-        scope.scopes,
+        turn,
         actual,
         mergeSlots(actual.slots, VACIA),
         actual.slots,
@@ -418,7 +546,7 @@ export class SupportStrategy {
     const documento = await this.search.byId(elegida.id);
     if (!documento) return null;
 
-    return this.entregar(message.chatId, ticket, documento);
+    return this.entregar(turn, ticket, documento);
   }
 
   /**
@@ -470,33 +598,50 @@ export class SupportStrategy {
   /**
    * Saludos, agradecimientos y preguntas generales.
    *
-   * El modelo redacta, pero solo con lo que ya está resuelto: qué empresas
-   * puede consultar quien escribe. No recibe historial ni documentos.
+   * El modelo redacta viendo la conversación: un "hola" a mitad del hilo
+   * no se contesta igual que el primero, y un "gracias" después de una
+   * entrega no merece un "¿qué documento necesitas?".
    */
   private async smallTalk(
-    text: string,
-    scopes: readonly OrgScope[],
+    turn: Turn,
+    conocido: readonly string[],
   ): Promise<string> {
-    const companies = scopes.map((s) => s.organizationName).join(', ');
+    const companies = turn.scopes.map((s) => s.organizationName).join(', ');
 
-    const drafted = await this.llm.draft({
-      system: [
-        'Eres el asistente de documentos de una empresa, por WhatsApp.',
-        'Respondes en español, en tono cercano y directo, máximo dos frases.',
-        'Tuteas. No usas emojis ni saludos largos.',
-        `Quien escribe puede consultar documentos de: ${companies}.`,
-        'Puedes buscar facturas, contratos, cotizaciones, reportes y pólizas.',
-        'Si te preguntan algo que no sea sobre documentos, dilo y ofrece buscar uno.',
-        'Nunca prometas nada que no sea entregar un documento.',
-      ].join('\n'),
-      user: text,
-      maxTokens: 200,
-    });
-
-    return (
-      drafted ??
-      `Puedo buscarte documentos de ${companies}. Dime cuál necesitas y de qué mes.`
+    return this.writer.write(
+      {
+        intent: 'charla',
+        facts: [
+          'El mensaje no pide ningún documento.',
+          'Si te preguntan algo que no sea sobre documentos, dilo y ofrece buscar uno.',
+        ],
+        fallback: `Puedo buscarte documentos de ${companies}. Dime cuál necesitas y de qué mes.`,
+      },
+      this.replyContext(turn, conocido),
     );
+  }
+
+  /** Escalado por no entender, con el mismo texto venga de donde venga. */
+  private async escalarPorNoEntender(ticket: { id: string; number: number }): Promise<StrategyReply> {
+    await this.tickets.escalate(ticket.id, 'slots_incompletos', null);
+
+    // Plantilla: sale una vez por solicitud y siempre dice lo mismo.
+    return {
+      text: [
+        'Creo que no te estoy entendiendo bien, y no quiero hacerte dar más vueltas.',
+        `Ya le pasé tu caso al equipo con el folio #${ticket.number}; alguien te contacta.`,
+      ].join('\n'),
+      awaiting: 'AGENTE',
+    };
+  }
+
+  private replyContext(turn: Turn, conocido: readonly string[]) {
+    return {
+      history: turn.history,
+      incoming: turn.message.body,
+      scopes: turn.scopes,
+      known: conocido,
+    };
   }
 
   /**
@@ -538,12 +683,17 @@ export class SupportStrategy {
    * Qué se preguntó vive en los slots del ticket, no en memoria: entre un
    * mensaje y el siguiente el core puede reiniciarse o atender desde otra
    * instancia.
+   *
+   * Las preguntas son plantillas, sin modelo: ya nombran el tipo de
+   * documento y llegan como mucho tres veces por solicitud. `lista` son
+   * las opciones numeradas que van después, cuando hay que elegir.
    */
   private async ask(
     ticket: { id: string; number: number },
     asked: AskedState,
     slot: AskableSlot,
     question: string,
+    lista: readonly string[] = [],
   ): Promise<StrategyReply> {
     if (asked.slots[slot]) {
       await this.tickets.escalate(ticket.id, 'slots_incompletos', null);
@@ -564,8 +714,13 @@ export class SupportStrategy {
       ultimaPregunta: slot,
     });
 
+    const text =
+      lista.length > 0
+        ? [question, ...lista, '', 'Responde con el número.'].join('\n')
+        : question;
+
     // Preguntamos: el turno pasa al cliente.
-    return { text: question, awaiting: 'CLIENTE' };
+    return { text, awaiting: 'CLIENTE' };
   }
 }
 
@@ -574,6 +729,18 @@ export class SupportStrategy {
  *
  * Un campo nuevo gana. Un campo vacío se ignora: "de este mes" no puede
  * borrar el "factura" que la persona dijo hace dos mensajes.
+ *
+ * PERO un dato nuevo que contradice al viejo abre otra solicitud, y lo que
+ * identificaba a la anterior deja de valer:
+ *
+ *  - Otro tipo de documento ("¿y tienes la cotización?") suelta el folio Y
+ *    el mes. El folio apuntaba a la factura; heredarlo era exactamente lo
+ *    que hacía que el bot mandara la misma factura tres veces. El mes
+ *    tampoco se hereda: la cotización no tiene por qué ser del mismo mes,
+ *    y con el tipo solo ya se puede buscar y enseñar lo que hay.
+ *  - Otro mes ("y la de marzo") suelta el folio, pero conserva el tipo.
+ *  - Otro folio suelta tipo y mes: un folio identifica UN documento, y un
+ *    mes heredado de otra petición solo puede hacer que no aparezca.
  */
 function mergeSlots(stored: unknown, fresh: SearchQuery): SearchQuery {
   const previous = (typeof stored === 'object' && stored !== null
@@ -592,15 +759,45 @@ function mergeSlots(stored: unknown, fresh: SearchQuery): SearchQuery {
    * extractor porque los tickets ya creados lo llevan dentro y se hereda
    * durante media hora.
    */
-  const categoriaGuardada =
+  const storedCategory =
     previous.category === 'OTRO'
       ? null
       : (previous.category as SearchQuery['category'] | undefined) ?? null;
 
-  const category = fresh.category ?? categoriaGuardada;
-  const period = fresh.period ?? storedPeriod;
-  const folio =
-    fresh.folio ?? (typeof previous.folio === 'string' ? previous.folio : null);
+  const storedFolio =
+    typeof previous.folio === 'string' ? previous.folio : null;
+
+  /**
+   * Cambia de tipo si dice uno distinto al guardado, O si dice uno y la
+   * solicitud anterior se identificaba solo por folio ("me das el v3001"
+   * y luego "¿y la cotización?"): ahí no había tipo que comparar, pero el
+   * folio sigue apuntando al documento de antes. Si solo había un mes
+   * guardado, no es cambio: es la respuesta a "¿qué documento?".
+   */
+  const cambiaTipo =
+    fresh.category !== null &&
+    fresh.category !== storedCategory &&
+    (storedCategory !== null || storedFolio !== null);
+
+  const cambiaMes =
+    fresh.period !== null &&
+    storedPeriod !== null &&
+    fresh.period.getTime() !== storedPeriod.getTime();
+
+
+  let category = fresh.category ?? storedCategory;
+  let period = fresh.period ?? storedPeriod;
+  let folio = fresh.folio ?? storedFolio;
+
+  if (cambiaTipo) {
+    period = fresh.period;
+    folio = fresh.folio;
+  }
+  if (cambiaMes) folio = fresh.folio;
+  if (fresh.folio !== null && fresh.folio !== storedFolio) {
+    category = fresh.category;
+    period = fresh.period;
+  }
 
   // El texto libre solo sirve cuando no hay NINGÚN dato: la misma regla que
   // aplica el parser dentro de un mensaje, pero a lo largo de la
@@ -614,6 +811,79 @@ function mergeSlots(stored: unknown, fresh: SearchQuery): SearchQuery {
 
 /** Una consulta sin nada: para reanudar desde lo que el ticket ya guarda. */
 const VACIA: SearchQuery = { category: null, period: null, folio: null, text: null };
+
+/** Cómo se llama cada tipo de documento cuando se le habla a una persona. */
+const NOMBRES: Record<DocCategory, [string, string]> = {
+  FACTURA: ['factura', 'facturas'],
+  CONTRATO: ['contrato', 'contratos'],
+  COTIZACION: ['cotización', 'cotizaciones'],
+  REPORTE: ['reporte', 'reportes'],
+  POLIZA: ['póliza', 'pólizas'],
+  OTRO: ['documento', 'documentos'],
+};
+
+function nombre(category: DocCategory | null): string {
+  return category ? NOMBRES[category][0] : 'documento';
+}
+
+function nombrePlural(category: DocCategory | null): string {
+  return category ? NOMBRES[category][1] : 'documentos';
+}
+
+const MESES = [
+  'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+  'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre',
+];
+
+function mesEnPalabras(period: Date): string {
+  return `${MESES[period.getUTCMonth()]} de ${period.getUTCFullYear()}`;
+}
+
+/** "la factura de febrero de 2026", "el documento con folio V3001". */
+function describirPedido(query: SearchQuery): string {
+  if (query.folio) return `el documento con folio ${query.folio}`;
+
+  const base = `la ${nombre(query.category)}`;
+  return query.period ? `${base} de ${mesEnPalabras(query.period)}` : base;
+}
+
+/**
+ * Los slots del ticket en palabras, para enseñárselos al modelo.
+ *
+ * Es la parte de la memoria que NO está en el historial de mensajes: lo
+ * que el código ya resolvió. Decírselo es lo que evita que pregunte por
+ * un mes que ya se sabe, o que redacte "¿qué documento?" cuando el tipo ya
+ * quedó claro dos mensajes atrás.
+ */
+function describirSlots(
+  slots: unknown,
+  scopes: readonly OrgScope[],
+): string[] {
+  const raw = (typeof slots === 'object' && slots !== null
+    ? slots
+    : {}) as Record<string, unknown>;
+
+  const out: string[] = [];
+
+  if (typeof raw.category === 'string' && raw.category !== 'OTRO') {
+    out.push(`Tipo de documento: ${nombre(raw.category as DocCategory)}`);
+  }
+  if (typeof raw.period === 'string') {
+    const fecha = new Date(raw.period);
+    if (!Number.isNaN(fecha.getTime())) out.push(`Mes: ${mesEnPalabras(fecha)}`);
+  }
+  if (typeof raw.folio === 'string') out.push(`Folio del documento: ${raw.folio}`);
+
+  const empresa =
+    scopes.length === 1
+      ? scopes[0]!.organizationName
+      : scopes.find((s) => s.organizationId === raw.organizationId)
+          ?.organizationName;
+  if (empresa) out.push(`Empresa: ${empresa}`);
+
+  return out;
+}
+
 
 /** La pregunta que el bot dejó en el aire en este ticket, si hay alguna. */
 function ultimaPregunta(slots: unknown): SlotPendiente | null {
@@ -728,6 +998,54 @@ function esQuejaDeNoRecibido(texto: string): boolean {
   );
 }
 
+/**
+ * Respuesta a saludos, agradecimientos y acuses, sin modelo.
+ *
+ * Devuelve el texto, '' para no contestar nada, o null si el mensaje no es
+ * ninguna de esas cosas y tiene que seguir el flujo normal.
+ *
+ * Solo mensajes cortos que sean SOLO eso: "hola, me pasas la factura" no
+ * entra aquí. Y el saludo mira el historial: la segunda vez no se saluda
+ * igual que la primera, que es la diferencia entre alguien que sigue el
+ * hilo y un contestador.
+ */
+function respuestaRapida(texto: string, turn: Turn): string | null {
+  const limpio = texto
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9ñ\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (limpio.length === 0 || limpio.length > 40) return null;
+
+  const saludo =
+    /^(hola|holi|buenas|buenos dias|buen dia|buenas tardes|buenas noches|que tal|hey|que onda|como estas|como andas)( (buenas|que tal|como estas|como andas|buen dia|buenos dias|buenas tardes))?$/;
+  const gracias = /^(muchas |mil |muchisimas )?gracias( por todo| por la ayuda| por el apoyo)?$/;
+  const acuse =
+    /^(ok|okay|okey|oki|va|vale|sale|listo|perfecto|excelente|genial|de acuerdo|entendido|enterado|recibido|ya|si|dale|orale|ah ok|ok gracias|va gracias|sale gracias|listo gracias)$/;
+
+  if (saludo.test(limpio)) {
+    const yaSaludo = turn.history.some(
+      (t) => t.role === 'bot' && /\bhola\b/i.test(t.text),
+    );
+    if (yaSaludo) return 'Aquí sigo. ¿Qué documento necesitas?';
+
+    return turn.scopes.length === 1
+      ? `¡Hola! Dime qué documento necesitas de ${turn.scopes[0]!.organizationName} y lo busco.`
+      : '¡Hola! Dime qué documento necesitas y de qué empresa, y lo busco.';
+  }
+
+  if (gracias.test(limpio)) return 'De nada. Cualquier otro documento, aquí estoy.';
+
+  // Un "ok" no se contesta: ya quedó marcado como leído, y responderle a
+  // cada acuse es justo lo que hace que un bot se sienta como bot.
+  if (acuse.test(limpio)) return '';
+
+  return null;
+}
+
 /** Los datos que el bot sabe pedir cuando faltan. */
 type AskableSlot = 'categoria' | 'periodo' | 'empresa';
 
@@ -765,4 +1083,17 @@ function readAsked(slots: unknown): AskedState {
 function describe(doc: Document): string {
   const period = doc.period ? doc.period.toISOString().slice(0, 7) : 'sin fecha';
   return `${doc.name} (${period}${doc.folio ? `, folio ${doc.folio}` : ''})`;
+}
+
+/** ¿Hay una solicitud a medias: tipo, mes o folio ya dichos? */
+function tieneDatos(slots: unknown): boolean {
+  const raw = (typeof slots === 'object' && slots !== null
+    ? slots
+    : {}) as Record<string, unknown>;
+
+  return (
+    (typeof raw.category === 'string' && raw.category !== 'OTRO') ||
+    typeof raw.period === 'string' ||
+    typeof raw.folio === 'string'
+  );
 }
