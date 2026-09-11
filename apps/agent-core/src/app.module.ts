@@ -11,6 +11,7 @@ import { OwnerCommandsService } from './application/commands/owner-commands.serv
 import { AgentCommandsService } from './application/commands/agent-commands.service';
 import { AgentAdminCommandsService } from './application/commands/agent-admin-commands.service';
 import { TicketAssignmentService } from './application/support/ticket-assignment.service';
+import { SolicitudService } from './application/support/solicitud.service';
 import { SourceFilter } from './application/pipeline/filters/source.filter';
 import { AccessScopeService } from './application/support/access-scope.service';
 import { ConversationStateService } from './application/support/conversation-state.service';
@@ -88,6 +89,7 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     DocumentSearchService,
     TicketService,
     TicketAssignmentService,
+    SolicitudService,
     SupportCommandsService,
     DocumentDeliveryService,
     DriveSyncService,

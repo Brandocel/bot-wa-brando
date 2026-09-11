@@ -135,24 +135,24 @@ export function pieInventario(): string {
 
 // ── Entregas ───────────────────────────────────────────────────────────
 
-export function entrega(que: string, folio: string, esOtraMas: boolean): string {
+export function entrega(que: string, esOtraMas: boolean): string {
   return esOtraMas
     ? una([
-        `Aquí va también ${que}. Folio ${folio} por si algo.`,
-        `Listo, te mando también ${que}. Te dejo el folio ${folio}.`,
-        `Va ${que} también. Folio ${folio} por cualquier cosa.`,
+        `Aquí va también ${que}.`,
+        `Listo, te mando también ${que}.`,
+        `Va ${que} también. Cualquier cosa me dices.`,
       ])
     : una([
-        `Listo, aquí tienes ${que}. Te dejo el folio ${folio} por si necesitas darle seguimiento.`,
-        `Aquí está ${que}. Cualquier cosa, tu folio es el ${folio}.`,
-        `Te mando ${que}. Guarda el folio ${folio} por si necesitas seguimiento.`,
+        `Listo, aquí tienes ${que}. Si necesitas algo más, aquí ando.`,
+        `Aquí está ${que}. Cualquier otra cosa, me dices.`,
+        `Te mando ${que}. Avísame si necesitas otro.`,
       ]);
 }
 
-export function reenvio(nombre: string, folio: string): string {
+export function reenvio(nombre: string): string {
   return una([
-    `Perdón, te lo mando otra vez: ${nombre} (folio ${folio}).`,
-    `Va de nuevo: ${nombre}. Es el folio ${folio}.`,
+    `Perdón, te lo mando otra vez: ${nombre}.`,
+    `Va de nuevo: ${nombre}. Avísame si ahora sí lo ves.`,
   ]);
 }
 

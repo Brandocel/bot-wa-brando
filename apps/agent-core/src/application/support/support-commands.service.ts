@@ -1,12 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
-import type { Document } from '@prisma/client';
+import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../infrastructure/persistence/prisma.service';
 import type { IncomingMessage } from '../../domain/message/incoming-message';
-import { AccessScopeService, type OrgScope } from './access-scope.service';
-import { DocumentSearchService } from './document-search.service';
-import { parseQuery } from './query-parser';
-import { DocumentDeliveryService } from './document-delivery.service';
-import { TicketService } from './ticket.service';
+import { AccessScopeService } from './access-scope.service';
+import { SupportStrategy } from './support.strategy';
 
 /**
  * Comandos de soporte, sin LLM de por medio.
@@ -25,14 +21,10 @@ export interface SupportContext {
 
 @Injectable()
 export class SupportCommandsService {
-  private readonly logger = new Logger(SupportCommandsService.name);
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly scope: AccessScopeService,
-    private readonly search: DocumentSearchService,
-    private readonly tickets: TicketService,
-    private readonly delivery: DocumentDeliveryService,
+    private readonly strategy: SupportStrategy,
   ) {}
 
   async tryHandle(
@@ -81,120 +73,13 @@ export class SupportCommandsService {
   ): Promise<string> {
     if (!args) return 'Uso: /buscar factura febrero 2026';
 
-    const scope = await this.scope.resolve(message.senderId);
-    const query = parseQuery(args);
-
-    if (scope.decision !== 'ALLOW') {
-      await this.audit(message.senderId, args, null, scope.decision, scope.decidedBy);
-      return 'No encontré ningún documento con esos datos.';
-    }
-
-    const ticket = await this.tickets.openOrReattach({
-      conversationId: ctx.conversationId,
-      contactId: ctx.contactId,
-      organizationId:
-        scope.scopes.length === 1 ? scope.scopes[0]!.organizationId : null,
-      subject: args,
-      priority: this.tickets.priorityFor(query),
-      slots: {
-        category: query.category,
-        period: query.period?.toISOString() ?? null,
-        folio: query.folio,
-      },
-    });
-
-    // Varias organizaciones y la consulta no dice cuál: se pregunta. Elegir
-    // la primera es cómo se entrega la factura de la empresa equivocada.
-    if (scope.scopes.length > 1 && !this.mentionsOrg(args, scope.scopes)) {
-      return [
-        `Ticket #${ticket.number}. Tienes acceso a varias empresas:`,
-        ...scope.scopes.map((s) => `• ${s.organizationName}`),
-        '',
-        'Dime de cuál lo necesitas.',
-      ].join('\n');
-    }
-
-    const organizationId = this.mentionsOrg(args, scope.scopes);
-    const results = await this.search.search(scope.scopes, {
-      ...query,
-      organizationId,
-    });
-
-    if (results.length === 0) {
-      const denial = query.category
-        ? this.scope.denialFor(scope.scopes, query.category, query.period)
-        : null;
-
-      await this.audit(
-        message.senderId,
-        args,
-        null,
-        denial ?? 'NOT_FOUND',
-        denial ? 'fuera del alcance' : 'sin coincidencias en el índice',
-      );
-
-      await this.tickets.escalate(
-        ticket.id,
-        denial ? 'sin_permiso' : 'sin_resultados',
-        null,
-      );
-
-      return [
-        'No encontré ningún documento con esos datos.',
-        `Lo pasé a revisión con el folio #${ticket.number}; alguien del equipo lo revisa.`,
-      ].join('\n');
-    }
-
-    if (results.length > 1) {
-      return [
-        `Ticket #${ticket.number}. Encontré ${results.length} documentos:`,
-        ...results.map((doc, i) => `${i + 1}. ${this.describe(doc)}`),
-        '',
-        'Dime cuál con su folio.',
-      ].join('\n');
-    }
-
-    const doc = results[0]!;
-    await this.audit(message.senderId, args, doc.id, 'ALLOW', 'dentro del alcance');
-
-    const sent = await this.delivery.deliver(
-      message.chatId,
-      doc,
-      `Ticket #${ticket.number} — aquí está tu ${doc.name}.`,
-      [
-        `Ticket #${ticket.number} — encontré ${doc.name} pero no pude enviártelo por aquí.`,
-        'Ya lo pasé al equipo para que te lo hagan llegar.',
-      ].join('\n'),
-    );
-
-    await this.tickets.record(ticket.id, 'entrega', 'bot', {
-      documentId: doc.id,
-      name: doc.name,
-      entregado: sent.ok,
-      motivo: sent.ok ? null : sent.reason,
-    });
-
-    // Solo se cierra si el documento salió. Un ticket cerrado con el archivo
-    // sin entregar es justo el caso que nadie vuelve a revisar.
-    if (sent.ok) {
-      await this.tickets.close(ticket.id, 'resuelto');
-      // El texto va como leyenda del archivo; sin mensaje aparte que
-      // prometa algo que después pueda no salir.
-      return '';
-    }
-
-    await this.tickets.escalate(ticket.id, 'sin_resultados', null);
-
-    const excuse =
-      sent.reason === 'too_big'
-        ? 'El archivo pesa más de lo que WhatsApp acepta.'
-        : 'No pude recuperar el archivo del repositorio.';
-
-    return [
-      `Ticket #${ticket.number} — encontré el documento pero no pude enviártelo.`,
-      excuse,
-      'Ya lo pasé a revisión con el equipo.',
-    ].join('\n');
+    /**
+     * Mismo camino que la conversación normal: alcance, solicitud, búsqueda,
+     * entrega, y ticket solo si hace falta una persona. Antes /buscar abría
+     * un ticket por cada búsqueda; un ticket es soporte, no bitácora.
+     */
+    const reply = await this.strategy.handle({ ...message, body: args }, ctx);
+    return reply?.text ?? 'No encontré ningún documento con esos datos.';
   }
 
   /** Para que el operador pueda verificar el alcance real de un número. */
@@ -239,40 +124,5 @@ export class SupportCommandsService {
           (t.level > 0 ? ` (nivel ${t.level})` : ''),
       )
       .join('\n');
-  }
-
-  /** Devuelve el id de la organización mencionada en el texto, si alguna. */
-  private mentionsOrg(text: string, scopes: readonly OrgScope[]): string | null {
-    const haystack = text.toLowerCase();
-    const hit = scopes.find((s) =>
-      haystack.includes(s.organizationName.toLowerCase()),
-    );
-    return hit?.organizationId ?? null;
-  }
-
-  private describe(doc: Document): string {
-    const period = doc.period ? doc.period.toISOString().slice(0, 7) : 's/f';
-    return `${doc.name} — ${doc.category} ${period}${doc.folio ? ` folio ${doc.folio}` : ''}`;
-  }
-
-  /**
-   * Toda decisión de acceso queda escrita, permitida o no. Falla en silencio
-   * a propósito: perder una línea de auditoría es malo, pero tumbar la
-   * respuesta por no poder escribirla es peor.
-   */
-  private async audit(
-    waId: string,
-    query: string,
-    documentId: string | null,
-    decision: string,
-    decidedBy: string,
-  ): Promise<void> {
-    try {
-      await this.prisma.accessAudit.create({
-        data: { waId, query, documentId, decision, decidedBy },
-      });
-    } catch (err) {
-      this.logger.warn(`no se pudo auditar el acceso: ${String(err)}`);
-    }
   }
 }

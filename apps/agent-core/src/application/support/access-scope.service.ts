@@ -55,6 +55,28 @@ export class AccessScopeService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
+   * Toda decisión de acceso queda escrita, permitida o no. Es lo que el
+   * panel enseña como "entregas" y "negados", y lo único que explica
+   * después por qué a alguien se le contestó "no encontré".
+   *
+   * Falla en silencio a propósito: perder una línea de auditoría es malo,
+   * pero tumbar la respuesta por no poder escribirla es peor.
+   */
+  async audit(input: {
+    waId: string;
+    query: string;
+    documentId: string | null;
+    decision: string;
+    decidedBy: string;
+  }): Promise<void> {
+    try {
+      await this.prisma.accessAudit.create({ data: input });
+    } catch {
+      // Sin log: quien llama está en medio de contestarle a una persona.
+    }
+  }
+
+  /**
    * Alcance completo de un número. El resultado es lo ÚNICO que entra al WHERE
    * de la búsqueda: nadie más abajo vuelve a ver el waId, así que no se puede
    * escribir por accidente una consulta que se olvide de filtrar.

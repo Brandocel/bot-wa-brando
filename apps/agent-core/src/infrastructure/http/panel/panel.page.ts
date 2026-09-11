@@ -15,6 +15,31 @@
  * compartido y componentes de verdad, ese es el momento de separarlo.
  */
 
+/**
+ * Iconos en línea (trazos de Lucide, MIT). Sin CDN: el panel no depende
+ * de que un tercero esté arriba para dibujar un menú.
+ */
+const TRAZOS: Record<string, string> = {
+  chat: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  ticket: '<path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="M13 5v2"/><path d="M13 17v2"/><path d="M13 11v2"/>',
+  usuarios: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  empresa: '<path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"/><path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/><path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"/><path d="M10 6h4"/><path d="M10 10h4"/><path d="M10 14h4"/><path d="M10 18h4"/>',
+  carpeta: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><path d="m9.5 10.5 5 5"/><path d="m14.5 10.5-5 5"/>',
+  escudo: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/>',
+  salir: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/>',
+  menu: '<line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/>',
+  refrescar: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
+  enviar: '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
+  cerrar: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  atras: '<path d="m15 18-6-6 6-6"/>',
+  plegar: '<path d="m11 17-5-5 5-5"/><path d="m18 17-5-5 5-5"/>',
+  bot: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>',
+};
+
+function icono(nombre: keyof typeof TRAZOS, clase = 'ico'): string {
+  return `<svg class="${clase}" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${TRAZOS[nombre]}</svg>`;
+}
+
 export function loginPage(error = false): string {
   return `<!doctype html>
 <html lang="es"><head>
@@ -63,21 +88,21 @@ export function panelPage(): string {
   <!-- Menú lateral -->
   <aside class="nav" id="nav">
     <div class="nav-brand">
-      <span class="logo">◔</span>
+      <span class="logo">${icono('bot', '')}</span>
       <span class="nav-text"><strong>Panel</strong><small>operación</small></span>
-      <button class="icon nav-text" id="nav-plegar" title="Plegar menú">‹</button>
+      <button class="icon nav-text" id="nav-plegar" title="Plegar menú">${icono('plegar')}</button>
     </div>
     <nav class="nav-items">
-      <button data-view="bandeja" class="active" title="Conversaciones"><span class="ico">💬</span><span class="nav-text">Conversaciones</span><span class="badge nav-text" id="badge-persona" hidden></span></button>
-      <button data-view="tickets" title="Tickets"><span class="ico">🎫</span><span class="nav-text">Tickets</span></button>
-      <button data-view="directorio" title="Directorio"><span class="ico">👤</span><span class="nav-text">Directorio</span></button>
-      <button data-view="empresas" title="Empresas"><span class="ico">🏢</span><span class="nav-text">Empresas</span></button>
-      <button data-view="cuarentena" title="Cuarentena"><span class="ico">📁</span><span class="nav-text">Cuarentena</span><span class="badge nav-text" id="badge-cuarentena" hidden></span></button>
-      <button data-view="auditoria" title="Auditoría"><span class="ico">🔍</span><span class="nav-text">Auditoría</span></button>
+      <button data-view="bandeja" class="active" title="Conversaciones">${icono('chat')}<span class="nav-text">Conversaciones</span><span class="badge nav-text" id="badge-persona" hidden></span></button>
+      <button data-view="tickets" title="Tickets">${icono('ticket')}<span class="nav-text">Tickets</span></button>
+      <button data-view="directorio" title="Directorio">${icono('usuarios')}<span class="nav-text">Directorio</span></button>
+      <button data-view="empresas" title="Empresas">${icono('empresa')}<span class="nav-text">Empresas</span></button>
+      <button data-view="cuarentena" title="Cuarentena">${icono('carpeta')}<span class="nav-text">Cuarentena</span><span class="badge nav-text" id="badge-cuarentena" hidden></span></button>
+      <button data-view="auditoria" title="Auditoría">${icono('escudo')}<span class="nav-text">Auditoría</span></button>
     </nav>
     <div class="nav-foot">
       <div class="nav-text"><div id="whoami" class="muted small"></div></div>
-      <button class="ghost" id="logout" title="Salir"><span class="ico">⏻</span><span class="nav-text">Salir</span></button>
+      <button class="ghost" id="logout" title="Salir">${icono('salir')}<span class="nav-text">Salir</span></button>
     </div>
   </aside>
   <div id="nav-velo" hidden></div>
@@ -85,11 +110,11 @@ export function panelPage(): string {
   <!-- Centro -->
   <div class="main">
     <header class="top">
-      <button class="icon" id="nav-abrir" title="Menú">☰</button>
+      <button class="icon" id="nav-abrir" title="Menú">${icono('menu')}</button>
       <strong id="titulo">Conversaciones</strong>
       <span class="spacer"></span>
       <span class="muted small" id="reloj"></span>
-      <button class="icon" id="refrescar" title="Actualizar">↻</button>
+      <button class="icon" id="refrescar" title="Actualizar">${icono('refrescar')}</button>
     </header>
     <section class="cards" id="resumen"></section>
     <main id="contenido"><p class="muted">Cargando…</p></main>
@@ -98,21 +123,25 @@ export function panelPage(): string {
   <!-- Hilo -->
   <aside id="hilo" hidden>
     <div class="hilo-head">
-      <button class="icon solo-movil" id="hilo-volver" title="Volver">‹</button>
+      <button class="icon solo-movil" id="hilo-volver" title="Volver">${icono('atras')}</button>
       <div class="hilo-quien">
         <strong id="hilo-nombre"></strong>
         <div class="muted mono small" id="hilo-numero"></div>
       </div>
+      <button class="ghost small" id="hilo-tickets-btn" title="Tickets de esta persona">${icono('ticket')}<span id="hilo-tickets-n"></span></button>
       <button class="ghost small" id="hilo-atender"></button>
-      <button class="icon no-movil" id="hilo-cerrar" title="Cerrar">×</button>
+      <button class="icon no-movil" id="hilo-cerrar" title="Cerrar">${icono('cerrar')}</button>
     </div>
     <div id="hilo-estado" class="hilo-estado"></div>
     <div id="hilo-meta" class="hilo-meta"></div>
-    <div id="hilo-tickets" class="hilo-tickets"></div>
+    <div id="hilo-tickets" class="hilo-drawer" hidden>
+      <div class="drawer-head"><strong>Tickets</strong><span class="spacer"></span><button class="icon" id="hilo-tickets-cerrar" title="Cerrar">${icono('cerrar')}</button></div>
+      <div id="hilo-tickets-lista" class="drawer-lista"></div>
+    </div>
     <div id="hilo-mensajes" class="chat"></div>
     <form id="hilo-form" class="hilo-form">
       <textarea id="hilo-texto" rows="1" placeholder="Escribe un mensaje… (Enter envía, Shift+Enter salto)"></textarea>
-      <button type="submit" title="Enviar">➤</button>
+      <button type="submit" title="Enviar">${icono('enviar')}</button>
     </form>
   </aside>
 </div>
@@ -290,17 +319,25 @@ async function abrirHilo(chatId, silencioso) {
       ).join(' ')
     : '<span class="pill warn">sin acceso a ninguna empresa</span>';
 
+  // Los tickets van en un cajón lateral, no encima del chat: son casos de
+  // soporte, y la mayoría de las conversaciones no tienen ninguno.
   const abiertos = datos.tickets.filter((t) => t.state !== 'CERRADO');
-  document.getElementById('hilo-tickets').innerHTML = abiertos.length
-    ? abiertos.map((t) =>
-        '<div class="ticket-mini">' +
-          '<span class="pill ' + t.state + '">#' + t.number + '</span> ' +
-          '<span class="recorte">' + esc(t.subject) + '</span>' +
-          ' <button class="mini" data-cerrar="' + t.id + '">Cerrar</button>' +
+  const contador = document.getElementById('hilo-tickets-n');
+  contador.textContent = abiertos.length ? String(abiertos.length) : '';
+  document.getElementById('hilo-tickets-btn').classList.toggle('con-abiertos', abiertos.length > 0);
+
+  document.getElementById('hilo-tickets-lista').innerHTML = datos.tickets.length
+    ? datos.tickets.map((t) =>
+        '<div class="ticket-fila' + (t.state === 'CERRADO' ? ' cerrado' : '') + '">' +
+          '<div class="ticket-fila-arriba"><span class="pill ' + t.state + '">#' + t.number + ' · ' + t.state.replace('_', ' ').toLowerCase() + '</span>' +
+            '<span class="muted small">' + fecha(t.createdAt) + '</span></div>' +
+          '<div class="ticket-fila-asunto">' + esc(t.subject) + '</div>' +
+          (t.state !== 'CERRADO'
+            ? '<div><button class="mini" data-cerrar="' + t.id + '">Marcar resuelto</button></div>'
+            : '<div class="muted small">' + esc(t.closeReason ?? 'cerrado') + '</div>') +
         '</div>',
       ).join('')
-    : '<span class="muted small">Sin tickets abiertos' +
-      (datos.tickets.length ? ' · ' + datos.tickets.length + ' cerrados' : '') + '</span>';
+    : '<p class="muted centro">Esta persona no ha necesitado soporte.</p>';
 
   pintarMensajes(datos);
   ultimoHilo = datos;
@@ -324,6 +361,13 @@ function cerrarHilo() {
 }
 
 document.getElementById('hilo-cerrar').addEventListener('click', cerrarHilo);
+document.getElementById('hilo-tickets-btn').addEventListener('click', () => {
+  const cajon = document.getElementById('hilo-tickets');
+  cajon.hidden = !cajon.hidden;
+});
+document.getElementById('hilo-tickets-cerrar').addEventListener('click', () => {
+  document.getElementById('hilo-tickets').hidden = true;
+});
 document.getElementById('hilo-volver').addEventListener('click', cerrarHilo);
 
 document.getElementById('hilo-atender').addEventListener('click', async () => {
@@ -963,9 +1007,24 @@ const STYLES = `<style>
   .hilo-quien strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .hilo-estado { padding: 8px 14px; border-bottom: 1px solid var(--borde); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .hilo-meta { padding: 8px 14px; display: flex; gap: 6px; flex-wrap: wrap; border-bottom: 1px solid var(--borde); }
-  .hilo-tickets { padding: 8px 14px; border-bottom: 1px solid var(--borde); max-height: 120px; overflow-y: auto; }
-  .ticket-mini { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; font-size: 13px; }
-  .ticket-mini .recorte { flex: 1; }
+  #hilo { position: relative; }
+  .hilo-drawer {
+    position: absolute; top: 0; right: 0; bottom: 0; width: min(100%, 360px); z-index: 5;
+    background: var(--caja); border-left: 1px solid var(--borde); box-shadow: -12px 0 32px rgba(0,0,0,.45);
+    display: flex; flex-direction: column;
+  }
+  .drawer-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--borde); }
+  .drawer-lista { overflow-y: auto; padding: 10px 14px; display: flex; flex-direction: column; gap: 10px; }
+  .ticket-fila { background: var(--caja2); border: 1px solid var(--borde); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+  .ticket-fila.cerrado { opacity: .6; }
+  .ticket-fila-arriba { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .ticket-fila-asunto { font-size: 13px; }
+  #hilo-tickets-btn { display: inline-flex; align-items: center; gap: 5px; }
+  #hilo-tickets-btn.con-abiertos { border-color: rgba(232,185,90,.45); color: var(--ambar); }
+  .ico { width: 18px; height: 18px; flex-shrink: 0; }
+  .logo svg { width: 16px; height: 16px; }
+  .icon svg { width: 18px; height: 18px; vertical-align: middle; }
+  .nav-items button.active .ico { color: var(--azul); }
   .chat { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 8px; background: var(--fondo); }
   .burbuja {
     max-width: 84%; padding: 8px 11px; border-radius: 10px; font-size: 13px;

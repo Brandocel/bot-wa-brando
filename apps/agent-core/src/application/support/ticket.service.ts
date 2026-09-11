@@ -152,6 +152,39 @@ export class TicketService {
   }
 
   /**
+   * Abre un ticket YA escalado: es la única forma en que la conversación
+   * crea tickets.
+   *
+   * Un ticket es un caso para una persona. Mientras el bot resuelve solo
+   * —pregunta, busca, entrega— no hay ticket; la solicitud vive en la
+   * conversación. En el momento en que hace falta alguien, nace el folio
+   * con lo que se sabía, y se reparte.
+   */
+  async abrirEscalado(input: {
+    conversationId: string;
+    contactId: string;
+    organizationId: string | null;
+    subject: string;
+    slots: Record<string, unknown>;
+    reason: EscalationReason;
+  }): Promise<{ ticket: Ticket; agente: AssignedAgent | null }> {
+    const ticket = await this.prisma.ticket.create({
+      data: {
+        conversationId: input.conversationId,
+        contactId: input.contactId,
+        organizationId: input.organizationId,
+        subject: input.subject.slice(0, 120),
+        priority: input.reason === 'pidio_humano' ? 'ALTA' : 'MEDIA',
+        slots: input.slots as Prisma.InputJsonValue,
+        slaDueAt: new Date(Date.now() + TTL_MS),
+      },
+    });
+
+    await this.record(ticket.id, 'creado', 'bot', { subject: ticket.subject });
+    return this.escalate(ticket.id, input.reason, null);
+  }
+
+  /**
    * Escalar es UNA operación: cambia estado, sube nivel, asigna y deja rastro.
    * Nunca se avisa a un humano sin mover el estado; un aviso suelto es un
    * ticket que nadie sabe que existe.
