@@ -3,13 +3,13 @@ import { PrismaService } from '../../../infrastructure/persistence/prisma.servic
 import { type MessageFilter, type Next, type PipelineContext, stop } from '../pipeline';
 
 const WINDOW_MS = 60 * 60 * 1000; // 1 hora
-const MAX_REPLIES_PER_CHAT = 20;
+const MAX_REPLIES_PER_CHAT = 30;
 const MAX_REPLIES_GLOBAL = 120;
 
 /**
  * Techo de mensajes salientes. Dos defensas distintas:
  *
- *  - Por chat: nadie recibe más de 20 respuestas por hora. Protege contra un
+ *  - Por chat: nadie recibe más de 30 respuestas por hora. Protege contra un
  *    contacto que se obsesiona con el bot y contra bucles lentos que el
  *    LoopGuardFilter (5 por minuto) deja pasar.
  *  - Global: si por un bug el bot empieza a contestarle a medio mundo, se
@@ -62,6 +62,29 @@ export class RateLimitFilter implements MessageFilter {
         this.logger.warn(
           `${ctx.message.chatId} llegó a ${perChat} respuestas en 1h`,
         );
+
+        // Un solo aviso, justo al tocar el techo; después, silencio. Sin
+        // esto la persona escribía y no pasaba nada, que desde fuera es
+        // "el bot se murió" — y lo siguiente que hace es escribir más.
+        if (perChat === MAX_REPLIES_PER_CHAT) {
+          await this.prisma.outboxMessage.create({
+            data: {
+              chatId: ctx.message.chatId,
+              payload: {
+                kind: 'text',
+                text: 'Llevamos muchos mensajes seguidos; dame un rato y te sigo atendiendo. Ya quedó marcado para que alguien del equipo lo vea por si es urgente.',
+              },
+            },
+          });
+
+          // Y que el panel lo enseñe como pendiente de una persona: un chat
+          // que toca el techo es un chat que un humano tiene que mirar.
+          await this.prisma.conversation.update({
+            where: { id: conversation.id },
+            data: { awaiting: 'AGENTE' },
+          });
+        }
+
         return stop(ctx, this.name, 'techo por chat');
       }
     }

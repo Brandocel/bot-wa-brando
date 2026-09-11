@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { DocCategory, Prisma, Ticket, TicketPriority } from '@prisma/client';
 import { PrismaService } from '../../infrastructure/persistence/prisma.service';
-import { TicketAssignmentService } from './ticket-assignment.service';
+import { TicketAssignmentService, type AssignedAgent } from './ticket-assignment.service';
 
 /**
  * Ciclo de vida del ticket: ABIERTO → EN_REVISION → CERRADO.
@@ -160,7 +160,7 @@ export class TicketService {
     ticketId: string,
     reason: EscalationReason,
     assignedToWaId: string | null,
-  ): Promise<Ticket> {
+  ): Promise<{ ticket: Ticket; agente: AssignedAgent | null }> {
     const level = ESCALATION_LEVEL[reason];
 
     const ticket = await this.prisma.ticket.update({
@@ -173,11 +173,14 @@ export class TicketService {
     // Sin destinatario explícito, el ticket se reparte solo entre los
     // agentes de soporte y al elegido le llega el aviso por WhatsApp. Si no
     // hay agentes, queda EN_REVISION sin asignar, visible en el panel.
-    if (!assignedToWaId) {
-      await this.assignment.asignar(ticketId, reason);
-    }
+    //
+    // Quién quedó a cargo se devuelve para que la respuesta al cliente
+    // pueda decir "te atiende Paula" en vez de "alguien del equipo".
+    const agente = assignedToWaId
+      ? null
+      : await this.assignment.asignar(ticketId, reason);
 
-    return ticket;
+    return { ticket, agente };
   }
 
   /**

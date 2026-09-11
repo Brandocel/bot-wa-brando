@@ -7,9 +7,10 @@ import {
   type HistoryTurn,
 } from './conversation-history.service';
 import { DocumentDeliveryService } from './document-delivery.service';
-import { DocumentSearchService } from './document-search.service';
+import { DocumentSearchService, type InventoryLine } from './document-search.service';
 import type { SearchQuery } from './document-search.service';
 import { ReplyWriterService } from './reply-writer.service';
+import { parseQuery } from './query-parser';
 import { SlotExtractorService, type SlotPendiente } from './slot-extractor.service';
 import { TicketService } from './ticket.service';
 
@@ -137,6 +138,37 @@ export class SupportStrategy {
       if (resuelto) return resuelto;
     }
 
+    // "Sí", "esa", "mándala": cuando se ofreció UNA sola opción ("lo más
+    // parecido que tengo: 1. ..."), afirmar es elegirla.
+    if (esAfirmacion(message.body)) {
+      const conLista = await this.tickets.ticketConOpciones(ctx.conversationId);
+      const opciones = (conLista?.slots as { opciones?: unknown } | null)?.opciones;
+      if (Array.isArray(opciones) && opciones.length === 1) {
+        const resuelto = await this.resolverOpcion(1, turn, ctx);
+        if (resuelto) return resuelto;
+      }
+    }
+
+    /**
+     * "¿Qué documentos tienes?", "dame las opciones", "¿qué hay de este
+     * mes?": se contesta con lo que hay, sin modelo y sin abrir ticket.
+     * Antes esto caía en el modelo como charla ("puedo buscar facturas,
+     * contratos...") o, peor, heredaba el tipo de la solicitud anterior y
+     * buscaba "cotización de septiembre" cuando preguntaban por todo.
+     */
+    if (esInventario(message.body)) {
+      return this.inventario(turn, ctx);
+    }
+
+    /**
+     * "Pásame con un agente", "quiero hablar con una persona". Se escala
+     * directo, sin preguntar nada más: pedir humano es una instrucción, no
+     * una duda. Y se le dice quién lo va a atender, si hay alguien.
+     */
+    if (pideHumano(message.body)) {
+      return this.pasarAHumano(turn, ctx);
+    }
+
     /**
      * "No veo el doc", "no me llegó", "no lo recibí".
      *
@@ -261,6 +293,13 @@ export class SupportStrategy {
     // datos: el siguiente mensaje ya no la va a repetir.
     if (empresaMencionada) guardar.organizationId = empresaMencionada;
 
+    // Otro tipo de documento es otra solicitud: los fallos de la anterior
+    // no cuentan, o el segundo "no encontré" escalaría por acumulación.
+    const tipoGuardado = (ticket.slots as { category?: unknown }).category;
+    if (extraction.query.category && extraction.query.category !== tipoGuardado) {
+      guardar.fallos = 0;
+    }
+
     await this.tickets.updateSlots(ticket.id, guardar);
 
     return this.avanzar(turn, ticket, query, {
@@ -330,6 +369,23 @@ export class SupportStrategy {
       );
     }
 
+    /**
+     * Con nombre de archivo se busca por nombre y nada más: ni tipo ni
+     * mes. "La cotización BrandoCelSanchez_2026" tiene que encontrar ese
+     * archivo aunque esté clasificado como factura o sea de otro mes.
+     */
+    if (query.text) {
+      const porNombre = await this.search.search(scopes, {
+        category: null,
+        period: null,
+        folio: null,
+        text: query.text,
+        organizationId,
+      });
+
+      return this.resolverResultados(turn, ticket, query, porNombre, slots);
+    }
+
     if (!query.category && !query.folio) {
       return this.ask(
         ticket,
@@ -357,7 +413,7 @@ export class SupportStrategy {
         return this.ask(ticket, asked, 'periodo', `¿De qué mes necesitas la ${nombre(query.category)}?`);
       }
 
-      return this.resolverResultados(turn, ticket, query, candidatos);
+      return this.resolverResultados(turn, ticket, query, candidatos, slots);
     }
 
     const results = await this.search.search(scopes, {
@@ -365,7 +421,7 @@ export class SupportStrategy {
       organizationId,
     });
 
-    return this.resolverResultados(turn, ticket, query, results);
+    return this.resolverResultados(turn, ticket, query, results, slots);
   }
 
   /**
@@ -380,34 +436,10 @@ export class SupportStrategy {
     ticket: { id: string; number: number },
     query: SearchQuery,
     results: Document[],
+    slots: unknown,
   ): Promise<StrategyReply> {
     if (results.length === 0) {
-      const denial = query.category
-        ? this.scope.denialFor(turn.scopes, query.category, query.period)
-        : null;
-
-      await this.tickets.escalate(
-        ticket.id,
-        denial ? 'sin_permiso' : 'sin_resultados',
-        null,
-      );
-
-      const folio = `#${ticket.number}`;
-
-      // Sin permiso y sin resultados dan la MISMA respuesta. Distinguirlas
-      // permitiría mapear el Drive ajeno a base de preguntas.
-      //
-      // Plantilla, sin modelo: es un mensaje informativo que sale una vez
-      // por solicitud, y ya nombra lo que se buscó. No hay nada que ganar
-      // redactándolo cada vez.
-      return {
-        text: [
-          `No encontré ${describirPedido(query)}.`,
-          `Lo dejé anotado con el folio ${folio} para que alguien del equipo lo revise.`,
-        ].join('\n'),
-        awaiting: 'AGENTE',
-        topic: query.category,
-      };
+      return this.sinResultados(turn, ticket, query, slots);
     }
 
     if (results.length > 1) {
@@ -440,6 +472,117 @@ export class SupportStrategy {
     }
 
     return this.entregar(turn, ticket, results[0]!);
+  }
+
+  /**
+   * No se encontró lo pedido. Primero se ofrece lo más parecido; escalar
+   * es el segundo intento, no el primero.
+   *
+   * Antes cada búsqueda vacía abría un escalado, y una persona explorando
+   * ("¿y la cotización?", "¿y de este mes?") dejaba cinco tickets en cinco
+   * minutos para que alguien revisara nada. Ahora:
+   *
+   *  1. Si pidió un mes o un nombre, se busca sin eso: la cotización existe,
+   *     solo que es de otro mes. Se enseña numerada.
+   *  2. Si aun así no hay, se le dice qué SÍ hay de su empresa, por tipo.
+   *  3. Solo al segundo fallo en la misma solicitud se escala.
+   *
+   * Sin permiso y sin resultados siguen dando lo mismo: lo "parecido" y el
+   * inventario salen del alcance de quien pregunta, así que no revelan
+   * nada que la búsqueda normal no revelaría.
+   */
+  private async sinResultados(
+    turn: Turn,
+    ticket: { id: string; number: number },
+    query: SearchQuery,
+    slots: unknown,
+  ): Promise<StrategyReply> {
+    const { scopes } = turn;
+    const organizationId =
+      scopes.length === 1
+        ? scopes[0]!.organizationId
+        : empresaGuardada(slots, scopes);
+
+    const fallos = readFallos(slots) + 1;
+    await this.tickets.updateSlots(ticket.id, { fallos });
+
+    const pedido = describirPedido(query);
+
+    if (fallos < 2) {
+      // 1. Sin el mes: lo más parecido. (Con nombre de archivo no hay
+      // "parecido" que valga: se pasa directo a qué sí hay.)
+      if (query.period && !query.text) {
+        const parecidos = await this.search.search(
+          scopes,
+          {
+            category: query.category,
+            period: null,
+            folio: query.folio,
+            text: null,
+            organizationId,
+          },
+          MAX_OPCIONES,
+        );
+
+        if (parecidos.length > 0) {
+          await this.tickets.updateSlots(ticket.id, {
+            opciones: parecidos.map((doc, i) => ({
+              n: i + 1,
+              tipo: 'documento',
+              id: doc.id,
+              nombre: doc.name,
+            })),
+            opcionesAt: new Date().toISOString(),
+          });
+
+          return {
+            text: [
+              `No encontré ${pedido}. Lo más parecido que tengo:`,
+              ...parecidos.map((doc, i) => `${i + 1}. ${describe(doc)}`),
+              '',
+              '¿Te sirve alguno? Responde con el número.',
+            ].join('\n'),
+            awaiting: 'CLIENTE',
+            topic: query.category,
+          };
+        }
+      }
+
+      // 2. Qué sí hay.
+      const inventario = await this.search.inventario(scopes, organizationId);
+      if (inventario.length > 0) {
+        return {
+          text: [
+            `No encontré ${pedido}.`,
+            `${describirInventario(inventario, nombreEmpresa(scopes, organizationId))} ¿Te sirve alguno?`,
+          ].join('\n'),
+          awaiting: 'CLIENTE',
+          topic: query.category,
+        };
+      }
+    }
+
+    // 3. Escalar.
+    const denial = query.category
+      ? this.scope.denialFor(scopes, query.category, query.period)
+      : null;
+
+    const { agente } = await this.tickets.escalate(
+      ticket.id,
+      denial ? 'sin_permiso' : 'sin_resultados',
+      null,
+    );
+
+    return {
+      text: [
+        `No encontré ${pedido}.`,
+        agente
+          ? `Se lo pasé a ${agente.name} con el folio #${ticket.number}; te escribe por aquí.`
+          : `Lo dejé anotado con el folio #${ticket.number} para que alguien del equipo lo revise.`,
+      ].join('\n'),
+      awaiting: 'AGENTE',
+      topic: query.category,
+    };
   }
 
   /**
@@ -562,6 +705,12 @@ export class SupportStrategy {
     const documento = await this.search.byId(elegida.id);
     if (!documento) return null;
 
+    // Una lista de UNA opción se consume al usarla: no queda nada más que
+    // elegir, y si siguiera viva, el "ok" de después la volvería a entregar.
+    if ((slots.opciones as Opcion[]).length === 1) {
+      await this.tickets.updateSlots(ticket.id, { opciones: null });
+    }
+
     return this.entregar(turn, ticket, documento);
   }
 
@@ -637,15 +786,118 @@ export class SupportStrategy {
     );
   }
 
+  /**
+   * Qué hay: por tipo y meses, o, si preguntó por un mes concreto, los
+   * documentos de ese mes numerados para que pueda pedir uno.
+   */
+  private async inventario(turn: Turn, ctx: StrategyContext): Promise<StrategyReply> {
+    const { scopes } = turn;
+    const organizationId =
+      scopes.length === 1
+        ? scopes[0]!.organizationId
+        : empresaGuardada(await this.tickets.slotsVigentes(ctx.conversationId), scopes);
+
+    const empresa = nombreEmpresa(scopes, organizationId);
+    const { period, category } = parseQuery(turn.message.body);
+
+    // Un mes (o un tipo) concreto: se enseñan los documentos.
+    if (period || category) {
+      const docs = await this.search.search(
+        scopes,
+        { category, period, folio: null, text: null, organizationId },
+        MAX_OPCIONES + 1,
+      );
+
+      if (docs.length === 0) {
+        const que = category ? nombrePlural(category) : 'documentos';
+        const cuando = period ? ` de ${mesEnPalabras(period)}` : '';
+        const resto = await this.search.inventario(scopes, organizationId);
+        return {
+          text: [
+            `No tengo ${que}${cuando}${empresa ? ` de ${empresa}` : ''}.`,
+            ...(resto.length > 0 ? [describirInventario(resto, empresa)] : []),
+          ].join('\n'),
+          awaiting: 'NADIE',
+        };
+      }
+
+      if (docs.length <= MAX_OPCIONES) {
+        // Numerados y guardados en un ticket, para poder pedir "el 2".
+        const ticket = await this.tickets.openOrReattach({
+          conversationId: ctx.conversationId,
+          contactId: ctx.contactId,
+          organizationId,
+          subject: turn.message.body,
+          priority: 'BAJA',
+        });
+        await this.tickets.updateSlots(ticket.id, {
+          opciones: docs.map((doc, i) => ({
+            n: i + 1,
+            tipo: 'documento',
+            id: doc.id,
+            nombre: doc.name,
+          })),
+          opcionesAt: new Date().toISOString(),
+        });
+
+        return {
+          text: [
+            `${period ? `De ${mesEnPalabras(period)} tengo` : 'Tengo'} ${docs.length}:`,
+            ...docs.map((doc, i) => `${i + 1}. ${describe(doc)}`),
+            '',
+            'Si quieres alguno, responde con el número.',
+          ].join('\n'),
+          awaiting: 'CLIENTE',
+        };
+      }
+    }
+
+    const lineas = await this.search.inventario(scopes, organizationId);
+    if (lineas.length === 0) {
+      return {
+        text: `Todavía no tengo documentos indexados${empresa ? ` de ${empresa}` : ''}.`,
+        awaiting: 'NADIE',
+      };
+    }
+
+    return {
+      text: `${describirInventario(lineas, empresa)} Dime cuál y de qué mes.`,
+      awaiting: 'NADIE',
+    };
+  }
+
+  /** Escala por petición explícita y dice quién lo atiende. */
+  private async pasarAHumano(turn: Turn, ctx: StrategyContext): Promise<StrategyReply> {
+    const { scopes } = turn;
+    const ticket = await this.tickets.openOrReattach({
+      conversationId: ctx.conversationId,
+      contactId: ctx.contactId,
+      organizationId:
+        scopes.length === 1
+          ? scopes[0]!.organizationId
+          : empresaGuardada(await this.tickets.slotsVigentes(ctx.conversationId), scopes),
+      subject: turn.message.body,
+      priority: 'ALTA',
+    });
+
+    const { agente } = await this.tickets.escalate(ticket.id, 'pidio_humano', null);
+
+    return {
+      text: textoEscalado(ticket.number, agente),
+      awaiting: 'AGENTE',
+    };
+  }
+
   /** Escalado por no entender, con el mismo texto venga de donde venga. */
   private async escalarPorNoEntender(ticket: { id: string; number: number }): Promise<StrategyReply> {
-    await this.tickets.escalate(ticket.id, 'slots_incompletos', null);
+    const { agente } = await this.tickets.escalate(ticket.id, 'slots_incompletos', null);
 
-    // Plantilla: sale una vez por solicitud y siempre dice lo mismo.
     return {
       text: [
         'Creo que no te estoy entendiendo bien, y no quiero hacerte dar más vueltas.',
-        `Ya le pasé tu caso al equipo con el folio #${ticket.number}; alguien te contacta.`,
+        agente
+          ? `Te atiende ${agente.name}; ya tiene tu caso con el folio #${ticket.number}.`
+          : `Ya le pasé tu caso al equipo con el folio #${ticket.number}; alguien te contacta.`,
       ].join('\n'),
       awaiting: 'AGENTE',
     };
@@ -712,11 +964,13 @@ export class SupportStrategy {
     lista: readonly string[] = [],
   ): Promise<StrategyReply> {
     if (asked.slots[slot]) {
-      await this.tickets.escalate(ticket.id, 'slots_incompletos', null);
+      const { agente } = await this.tickets.escalate(ticket.id, 'slots_incompletos', null);
       return {
         text: [
           'Ya te pregunté esto y sigo sin entenderlo bien; no quiero hacerte repetir.',
-          `Se lo pasé al equipo con el folio #${ticket.number}.`,
+          agente
+            ? `Te atiende ${agente.name}; ya tiene tu caso con el folio #${ticket.number}.`
+            : `Se lo pasé al equipo con el folio #${ticket.number}.`,
         ].join('\n'),
         awaiting: 'AGENTE',
       };
@@ -759,6 +1013,10 @@ export class SupportStrategy {
  *    mes heredado de otra petición solo puede hacer que no aparezca.
  */
 function mergeSlots(stored: unknown, fresh: SearchQuery): SearchQuery {
+  // Un nombre de archivo identifica UN documento: no se hereda nada. El
+  // mes que se dijo hace dos mensajes no tiene por qué ser el de este.
+  if (fresh.text) return { ...fresh };
+
   const previous = (typeof stored === 'object' && stored !== null
     ? stored
     : {}) as Record<string, unknown>;
@@ -815,14 +1073,11 @@ function mergeSlots(stored: unknown, fresh: SearchQuery): SearchQuery {
     period = fresh.period;
   }
 
-  // El texto libre solo sirve cuando no hay NINGÚN dato: la misma regla que
-  // aplica el parser dentro de un mensaje, pero a lo largo de la
-  // conversación. "De pollos pirata" contestando a qué empresa no debe
-  // convertirse en un filtro sobre el nombre del archivo, que es justo lo
-  // que hacía que el folio guardado dos mensajes atrás no encontrara nada.
-  const hasMetadata = category !== null || period !== null || folio !== null;
-
-  return { category, period, folio, text: hasMetadata ? null : fresh.text };
+  // Sin nombre de archivo, el texto libre no se usa como filtro: "de pollos
+  // pirata" contestando a qué empresa no debe convertirse en un LIKE sobre
+  // el nombre, que es justo lo que hacía que el folio guardado dos mensajes
+  // atrás no encontrara nada.
+  return { category, period, folio, text: null };
 }
 
 /** Una consulta sin nada: para reanudar desde lo que el ticket ya guarda. */
@@ -1183,4 +1438,106 @@ function tieneDatos(slots: unknown): boolean {
     typeof raw.period === 'string' ||
     typeof raw.folio === 'string'
   );
+}
+
+/** Cuántas búsquedas vacías lleva esta solicitud. */
+function readFallos(slots: unknown): number {
+  const raw = (slots as { fallos?: unknown } | null)?.fallos;
+  return typeof raw === 'number' ? raw : 0;
+}
+
+/** El nombre de la empresa en juego, si se sabe. */
+function nombreEmpresa(
+  scopes: readonly OrgScope[],
+  organizationId: string | null,
+): string | null {
+  if (scopes.length === 1) return scopes[0]!.organizationName;
+  return scopes.find((s) => s.organizationId === organizationId)?.organizationName ?? null;
+}
+
+/**
+ * "De Constructora Vega tengo: 2 facturas (enero–febrero 2026), 1 contrato
+ * (marzo 2026)." Lo que hay, en una línea, sin listar archivo por archivo.
+ */
+function describirInventario(
+  lineas: readonly InventoryLine[],
+  empresa: string | null,
+): string {
+  const partes = lineas.map((l) => {
+    const tipo = l.count === 1 ? nombre(l.category) : nombrePlural(l.category);
+    return `${l.count} ${tipo}${rangoMeses(l.from, l.to)}`;
+  });
+
+  const quien = empresa ? `De ${empresa} tengo` : 'Tengo';
+  return `${quien}: ${partes.join(', ')}.`;
+}
+
+function rangoMeses(from: Date | null, to: Date | null): string {
+  if (!from) return '';
+  const a = mesCorto(from);
+  const b = to ? mesCorto(to) : a;
+  return a === b ? ` (${a})` : ` (${a} a ${b})`;
+}
+
+function mesCorto(d: Date): string {
+  return `${MESES[d.getUTCMonth()]!.slice(0, 3)} ${d.getUTCFullYear()}`;
+}
+
+/**
+ * ¿Pregunta qué hay? "qué documentos tienes", "dame las opciones", "qué me
+ * puedes entregar", "qué hay de este mes". Se contesta con el inventario,
+ * sin modelo y sin abrir ticket.
+ */
+function esInventario(texto: string): boolean {
+  const limpio = texto
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '');
+
+  if (limpio.length > 90) return false;
+
+  return /\b((que|cuales|cual) (documentos|docs|archivos|opciones|cosas)\b|opciones de lo que tienes|que tienes\b|que hay\b|que( (doc|docs|documento|documentos|archivo|archivos))? me puedes (dar|entregar|mandar|pasar|enviar)|que puedes (darme|entregarme|mandarme|pasarme|enviarme)|lista(me)? (lo que|los documentos|todo)|catalogo|inventario|todo lo que (tienes|tengas|haya))/.test(
+    limpio,
+  );
+}
+
+/** "sí", "esa", "ese mismo", "dale": para cuando solo se ofreció una opción. */
+function esAfirmacion(texto: string): boolean {
+  const limpio = texto
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return /^(si|sip|simon|claro|dale|va|sale|ok|esa|ese|esa misma|ese mismo|esa esta bien|ese esta bien|si esa|si ese|si por favor|si porfa|si mandala|si mandalo|mandala|mandalo|pasala|pasalo|esa por favor|ese por favor|esa me sirve|ese me sirve|me sirve|si me sirve)$/.test(
+    limpio,
+  );
+}
+
+/** "Pásame con un agente", "quiero hablar con alguien", "una persona por favor". */
+function pideHumano(texto: string): boolean {
+  const limpio = texto
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '');
+
+  if (limpio.length > 120) return false;
+
+  const alguien = /\b(agente|persona|humano|humana|alguien|asesor|asesora|ejecutivo|ejecutiva|encargado|encargada|operador|operadora|soporte|un ser humano)\b/;
+  const accion = /\b(pasa|pasame|pasarme|comunica|comunicame|comunicarme|hablar|hable|atienda|atiendan|contacte|contacten|llame|llamen|quiero|necesito|me puede|me pueden|con un|con una|con el|con la)\b/;
+
+  return alguien.test(limpio) && accion.test(limpio);
+}
+
+/**
+ * Lo que se le dice al cliente cuando su caso pasa a una persona. Con
+ * nombre si hay alguien asignado: "te atiende Paula" suena a equipo;
+ * "alguien del equipo" suena a buzón.
+ */
+function textoEscalado(numero: number, agente: { name: string } | null): string {
+  return agente
+    ? `Claro. Te atiende ${agente.name}; ya tiene tu caso con el folio #${numero} y te escribe por aquí.`
+    : `Claro. Lo dejé anotado con el folio #${numero}; alguien del equipo te contacta por aquí.`;
 }

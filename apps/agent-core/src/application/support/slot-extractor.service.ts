@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { LLM_PORT, type LlmPort } from '../ports/llm.port';
 import type { SearchQuery } from './document-search.service';
 import { formatHistory, type HistoryTurn } from './conversation-history.service';
-import { parseQuery } from './query-parser';
+import { nombreDeArchivo, parseQuery } from './query-parser';
 
 /**
  * Extracción de slots: primero reglas, el modelo solo cuando hacen falta.
@@ -115,7 +115,12 @@ export class SlotExtractorService {
      */
     const enCurso = options.enCurso === true;
 
+    // Un nombre de archivo (o algo que lo parece) identifica el documento
+    // mejor que cualquier metadato, y no hay nada que interpretar.
+    const hint = nombreDeArchivo(text);
+
     const resueltoPorReglas =
+      hint !== null ||
       byRules.category !== null ||
       byRules.folio !== null ||
       (byRules.period !== null && (enCurso || pendiente === 'periodo')) ||
@@ -124,7 +129,7 @@ export class SlotExtractorService {
     if (resueltoPorReglas) {
       return {
         // El nombre de la empresa no es texto para filtrar archivos.
-        query: { ...byRules, text: pendiente === 'empresa' ? null : byRules.text },
+        query: { ...byRules, text: hint },
         companyHint: null,
         notADocumentRequest: false,
         source: 'reglas',
@@ -150,7 +155,7 @@ export class SlotExtractorService {
       // El modelo falló o no está configurado. Lo que sacaron las reglas es
       // mejor que nada, y si tampoco alcanza, quien llama va a preguntar.
       return {
-        query: byRules,
+        query: { ...byRules, text: hint },
         companyHint: null,
         notADocumentRequest: false,
         source: 'ninguno',
@@ -177,7 +182,7 @@ export class SlotExtractorService {
         category: toCategory(extracted.categoria) ?? byRules.category,
         period: periodo ?? byRules.period,
         folio: folio ?? byRules.folio,
-        text: null,
+        text: hint,
       },
       companyHint: toValue(extracted.empresa),
       notADocumentRequest: extracted.no_es_documento,

@@ -25,6 +25,13 @@ export interface SearchQuery {
   organizationId?: string | null;
 }
 
+export interface InventoryLine {
+  category: DocCategory;
+  count: number;
+  from: Date | null;
+  to: Date | null;
+}
+
 @Injectable()
 export class DocumentSearchService {
   constructor(private readonly prisma: PrismaService) {}
@@ -53,7 +60,9 @@ export class DocumentSearchService {
     }
     if (query.period) filters.push({ period: query.period });
     if (query.folio) {
-      filters.push({ folio: { equals: query.folio, mode: 'insensitive' } });
+      // "3001" tiene que encontrar "V3001": la gente omite el prefijo. Es
+      // un contains y no un equals; si casa con varios, se listan.
+      filters.push({ folio: { contains: query.folio, mode: 'insensitive' } });
     }
     if (query.text) {
       filters.push({
@@ -75,6 +84,45 @@ export class DocumentSearchService {
       orderBy: [{ period: 'desc' }, { name: 'asc' }],
       take: limit,
     });
+  }
+
+  /**
+   * Qué hay, por tipo: cuántos y de qué meses.
+   *
+   * Es la respuesta a "¿qué tienes?" y el plan B cuando una búsqueda no
+   * encuentra nada: en vez de escalar en seco, se le enseña a la persona lo
+   * que sí existe dentro de su alcance. Solo lo que puede ver, así que no
+   * revela nada que la búsqueda normal no revelaría.
+   */
+  async inventario(
+    scopes: readonly OrgScope[],
+    organizationId?: string | null,
+  ): Promise<InventoryLine[]> {
+    const scoped = this.scopeFilter(scopes, {
+      category: null,
+      period: null,
+      folio: null,
+      text: null,
+      organizationId,
+    });
+    if (scoped.length === 0) return [];
+
+    const grupos = await this.prisma.document.groupBy({
+      by: ['category'],
+      where: { status: 'INDEXED', OR: scoped },
+      _count: { _all: true },
+      _min: { period: true },
+      _max: { period: true },
+    });
+
+    return grupos
+      .map((g) => ({
+        category: g.category,
+        count: g._count._all,
+        from: g._min.period,
+        to: g._max.period,
+      }))
+      .sort((a, b) => b.count - a.count);
   }
 
   /**
