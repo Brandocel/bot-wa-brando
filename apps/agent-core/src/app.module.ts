@@ -6,6 +6,7 @@ import { KillSwitchFilter } from './application/pipeline/filters/kill-switch.fil
 import { LoopGuardFilter } from './application/pipeline/filters/loop-guard.filter';
 import { RateLimitFilter } from './application/pipeline/filters/rate-limit.filter';
 import { DriveCommandsService } from './application/commands/drive-commands.service';
+import { EnvioCommandsService } from './application/commands/envio-commands.service';
 import { OwnerCommandsService } from './application/commands/owner-commands.service';
 import { SourceFilter } from './application/pipeline/filters/source.filter';
 import { AccessScopeService } from './application/support/access-scope.service';
@@ -92,6 +93,7 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
 
     // ── Casos de uso ───────────────────────────────────────────────────
     DriveCommandsService,
+    EnvioCommandsService,
     OwnerCommandsService,
     HandleIncomingMessageUseCase,
   ],

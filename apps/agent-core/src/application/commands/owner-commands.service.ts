@@ -3,6 +3,7 @@ import { FlagsService } from '../../infrastructure/persistence/flags.service';
 import { PrismaService } from '../../infrastructure/persistence/prisma.service';
 import type { IncomingMessage } from '../../domain/message/incoming-message';
 import { DriveCommandsService } from './drive-commands.service';
+import { EnvioCommandsService } from './envio-commands.service';
 
 interface OwnerCommand {
   readonly help: string;
@@ -24,6 +25,7 @@ export class OwnerCommandsService {
     private readonly flags: FlagsService,
     private readonly prisma: PrismaService,
     private readonly drive: DriveCommandsService,
+    private readonly envio: EnvioCommandsService,
   ) {
     this.commands = {
       empresa: {
@@ -49,6 +51,16 @@ export class OwnerCommandsService {
       resync: {
         help: 'borra el cursor de Drive para rehacer el barrido completo',
         run: async () => this.drive.fullResync(),
+      },
+
+      diag: {
+        help: 'por qué no salen los archivos en este chat: /diag [destino]',
+        run: async (args, message) => this.envio.diagnosticar(args, message),
+      },
+
+      probar: {
+        help: 'manda un mensaje y un PDF de prueba: /probar <destino>',
+        run: async (args) => this.envio.probar(args),
       },
 
       pausa: {
