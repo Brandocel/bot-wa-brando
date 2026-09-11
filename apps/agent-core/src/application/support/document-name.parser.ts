@@ -60,17 +60,25 @@ export function parseDocumentName(
 ): ParsedName {
   const text = normalize(fileName);
 
-  // La categoría puede venir del nombre o de la subcarpeta: una carpeta
-  // "Facturas" es una señal tan buena como el prefijo del archivo, y muchos
-  // clientes nombran los archivos solo con el folio.
-  const haystack = [text, ...folderPath.map(normalize)].join(' ');
-
+  /**
+   * La categoría puede venir del nombre o de la subcarpeta: una carpeta
+   * "Facturas" es una buena señal, y muchos clientes nombran los archivos
+   * solo con el folio.
+   *
+   * Pero el nombre manda sobre la carpeta. Antes se juntaba todo en un
+   * solo texto y ganaba el primer patrón de la lista: "Cotizacion_X.pdf"
+   * dentro de "Facturas/" quedaba como FACTURA, y el bot la ofrecía como
+   * factura. Un archivo mal ubicado sigue siendo lo que dice su nombre.
+   */
   let category: DocCategory | null = null;
-  for (const [pattern, value] of CATEGORY_PATTERNS) {
-    if (pattern.test(haystack)) {
-      category = value;
-      break;
+  for (const fuente of [text, ...folderPath.map(normalize)]) {
+    for (const [pattern, value] of CATEGORY_PATTERNS) {
+      if (pattern.test(fuente)) {
+        category = value;
+        break;
+      }
     }
+    if (category) break;
   }
 
   return {

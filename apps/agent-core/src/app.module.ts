@@ -8,6 +8,9 @@ import { RateLimitFilter } from './application/pipeline/filters/rate-limit.filte
 import { DriveCommandsService } from './application/commands/drive-commands.service';
 import { EnvioCommandsService } from './application/commands/envio-commands.service';
 import { OwnerCommandsService } from './application/commands/owner-commands.service';
+import { AgentCommandsService } from './application/commands/agent-commands.service';
+import { AgentAdminCommandsService } from './application/commands/agent-admin-commands.service';
+import { TicketAssignmentService } from './application/support/ticket-assignment.service';
 import { SourceFilter } from './application/pipeline/filters/source.filter';
 import { AccessScopeService } from './application/support/access-scope.service';
 import { ConversationStateService } from './application/support/conversation-state.service';
@@ -84,6 +87,7 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     AccessScopeService,
     DocumentSearchService,
     TicketService,
+    TicketAssignmentService,
     SupportCommandsService,
     DocumentDeliveryService,
     DriveSyncService,
@@ -99,6 +103,8 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     DriveCommandsService,
     EnvioCommandsService,
     OwnerCommandsService,
+    AgentCommandsService,
+    AgentAdminCommandsService,
     HandleIncomingMessageUseCase,
   ],
 })

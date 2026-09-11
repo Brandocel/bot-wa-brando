@@ -411,9 +411,38 @@ model Ticket {
   organization Organization? @relation(fields: [organizationId], references: [id])
   contact      Contact       @relation(fields: [contactId], references: [id], onDelete: Cascade)
   events       TicketEvent[]
+  /// A quién se le asignó. Por waId y no por id: es el mismo número al que
+  /// se le manda el aviso, y lo que el agente ve en su propio /id.
+  assignedTo   SupportAgent? @relation(fields: [assignedToWaId], references: [waId], onDelete: SetNull)
 
   @@index([state, priority, slaDueAt])
   @@index([conversationId, state])
+  @@index([assignedToWaId, state])
+}
+
+/// Quien atiende lo que el bot no pudo resolver.
+///
+/// Tabla aparte de PanelUser y de Membership a propósito: un agente de
+/// soporte no necesita entrar al panel ni tener acceso a documentos de
+/// ninguna empresa. Lo que necesita es un WhatsApp donde recibir el aviso
+/// y un enlace para retomar el chat del cliente.
+model SupportAgent {
+  id     String  @id @default(cuid())
+  /// "5219984862017@c.us". Es también el chat al que se le avisa.
+  waId   String  @unique
+  name   String
+  active Boolean @default(true)
+
+  /// Cuándo recibió su último ticket. Desempata el reparto: a igual carga,
+  /// el que lleva más tiempo sin recibir uno.
+  lastAssignedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tickets Ticket[]
+
+  @@index([active])
 }
 
 /// Bitácora append-only del ticket: aquí nunca se hace UPDATE. El campo

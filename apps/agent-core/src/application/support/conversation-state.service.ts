@@ -13,6 +13,7 @@ import {
   PrismaService,
   type TransactionClient,
 } from '../../infrastructure/persistence/prisma.service';
+import { TicketAssignmentService } from './ticket-assignment.service';
 
 /**
  * Estado de la conversación: de quién es el turno, de qué trata y desde
@@ -50,6 +51,7 @@ export class ConversationStateService implements OnModuleInit {
   constructor(
     private readonly prisma: PrismaService,
     @Inject(MESSAGING_PORT) private readonly messaging: MessagingPort,
+    private readonly assignment: TicketAssignmentService,
   ) {}
 
   onModuleInit(): void {
@@ -158,6 +160,10 @@ export class ConversationStateService implements OnModuleInit {
           data: { reason: 'sla_vencido', level: 2 },
         },
       });
+
+      // Al agente que lo tiene se le recuerda; si nadie lo tenía, se
+      // reparte ahora. Subir de nivel sin que nadie se entere no sirve.
+      await this.assignment.recordarVencido(ticket.id);
     }
 
     if (dormidos.count > 0 || vencidos.length > 0) {

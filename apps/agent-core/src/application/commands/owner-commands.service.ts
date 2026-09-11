@@ -4,6 +4,7 @@ import { PrismaService } from '../../infrastructure/persistence/prisma.service';
 import type { IncomingMessage } from '../../domain/message/incoming-message';
 import { DriveCommandsService } from './drive-commands.service';
 import { EnvioCommandsService } from './envio-commands.service';
+import { AgentAdminCommandsService } from './agent-admin-commands.service';
 
 interface OwnerCommand {
   readonly help: string;
@@ -26,8 +27,29 @@ export class OwnerCommandsService {
     private readonly prisma: PrismaService,
     private readonly drive: DriveCommandsService,
     private readonly envio: EnvioCommandsService,
+    private readonly agentes: AgentAdminCommandsService,
   ) {
     this.commands = {
+      agente: {
+        help: 'da de alta un agente de soporte: /agente <nombre> | <teléfono>',
+        run: async (args) => this.agentes.alta(args),
+      },
+
+      'agente-baja': {
+        help: 'da de baja un agente y reparte sus tickets: /agente-baja <teléfono>',
+        run: async (args) => this.agentes.baja(args),
+      },
+
+      agentes: {
+        help: 'lista de agentes de soporte y su carga',
+        run: async () => this.agentes.lista(),
+      },
+
+      asignar: {
+        help: 'manda un ticket a un agente: /asignar <número> <teléfono>',
+        run: async (args) => this.agentes.asignar(args),
+      },
+
       empresa: {
         help: 'da de alta una empresa: /empresa <nombre> | <id de carpeta>',
         run: async (args) => this.drive.registerOrganization(args),
@@ -125,6 +147,11 @@ export class OwnerCommandsService {
             '/permisos — qué puedes consultar y de qué empresas',
             '/tickets — tus últimos tickets en esta conversación',
             '/id — tus identificadores de WhatsApp',
+            '',
+            'Comandos de agente de soporte (solo números dados de alta con /agente):',
+            '/mios — tus tickets pendientes',
+            '/tomar <número> — te asigna un ticket',
+            '/cerrar <número> [nota] — cierra un ticket tuyo',
           ].join('\n'),
       },
     };

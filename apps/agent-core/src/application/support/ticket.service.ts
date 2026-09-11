@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { DocCategory, Prisma, Ticket, TicketPriority } from '@prisma/client';
 import { PrismaService } from '../../infrastructure/persistence/prisma.service';
+import { TicketAssignmentService } from './ticket-assignment.service';
 
 /**
  * Ciclo de vida del ticket: ABIERTO → EN_REVISION → CERRADO.
@@ -19,6 +20,9 @@ const REOPEN_MS = 72 * 60 * 60 * 1000;
 /** Cuánto sigue contando lo dicho en el ticket anterior de la conversación. */
 const CONTINUIDAD_MS = 30 * 60 * 1000;
 
+/** Cuánto sigue valiendo una lista numerada que se ofreció. */
+const OPCIONES_MS = 30 * 60 * 1000;
+
 export type EscalationReason =
   | 'sin_resultados'
   | 'sin_permiso'
@@ -26,7 +30,8 @@ export type EscalationReason =
   | 'slots_incompletos'
   | 'molesto'
   | 'sla_vencido'
-  | 'tema_sensible';
+  | 'tema_sensible'
+  | 'reasignado';
 
 /** El nivel al que sube cada motivo. Tabla, no `if` desperdigados. */
 const ESCALATION_LEVEL: Record<EscalationReason, number> = {
@@ -36,12 +41,16 @@ const ESCALATION_LEVEL: Record<EscalationReason, number> = {
   slots_incompletos: 1,
   molesto: 1,
   tema_sensible: 1,
+  reasignado: 1,
   sla_vencido: 2,
 };
 
 @Injectable()
 export class TicketService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly assignment: TicketAssignmentService,
+  ) {}
 
   /**
    * Prioridad por tabla determinista. El LLM puede sugerir, pero el valor lo
@@ -160,6 +169,14 @@ export class TicketService {
     });
 
     await this.record(ticketId, 'escalado', 'bot', { reason, level });
+
+    // Sin destinatario explícito, el ticket se reparte solo entre los
+    // agentes de soporte y al elegido le llega el aviso por WhatsApp. Si no
+    // hay agentes, queda EN_REVISION sin asignar, visible en el panel.
+    if (!assignedToWaId) {
+      await this.assignment.asignar(ticketId, reason);
+    }
+
     return ticket;
   }
 
@@ -288,6 +305,38 @@ export class TicketService {
     });
 
     return reciente ? soloDatos(reciente.slots as Record<string, unknown>) : null;
+  }
+
+  /**
+   * El último ticket de la conversación que dejó una lista numerada
+   * vigente, esté abierto o cerrado.
+   *
+   * Cerrado también: la lista se ofreció, la persona eligió uno, se
+   * entregó y el ticket se cerró — y ahora pide "también el 1". La lista
+   * sigue en su pantalla; tiene que seguir en la base.
+   */
+  async ticketConOpciones(conversationId: string): Promise<Ticket | null> {
+    const recientes = await this.prisma.ticket.findMany({
+      where: {
+        conversationId,
+        updatedAt: { gte: new Date(Date.now() - OPCIONES_MS) },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+    });
+
+    for (const ticket of recientes) {
+      const slots = ticket.slots as { opciones?: unknown; opcionesAt?: unknown };
+      if (!Array.isArray(slots.opciones) || slots.opciones.length === 0) continue;
+
+      const ofrecida =
+        typeof slots.opcionesAt === 'string' ? new Date(slots.opcionesAt) : null;
+      if (ofrecida && Date.now() - ofrecida.getTime() > OPCIONES_MS) continue;
+
+      return ticket;
+    }
+
+    return null;
   }
 
   /** El ticket más reciente de la conversación, escalado o no. */

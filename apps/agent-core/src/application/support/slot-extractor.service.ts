@@ -157,11 +157,26 @@ export class SlotExtractorService {
       };
     }
 
+    /**
+     * Lo que el modelo diga tiene que estar anclado en el mensaje.
+     *
+     * Ve la conversación como contexto, y a veces la usa como fuente: a
+     * "y la 2" le puso "cotización de enero" porque eso decía la lista de
+     * arriba. Un mes solo vale si el texto trae un mes, un año o una
+     * referencia de tiempo; un folio, si el texto lo contiene. La
+     * categoría sí se acepta sin palabra exacta: "la de la luz" es una
+     * factura y no hay forma de anclarla.
+     */
+    const periodo = mencionaTiempo(text) ? toPeriod(extracted.periodo) : null;
+    const folioModelo = toValue(extracted.folio)?.toUpperCase() ?? null;
+    const folio =
+      folioModelo && contiene(text, folioModelo) ? folioModelo : null;
+
     return {
       query: {
         category: toCategory(extracted.categoria) ?? byRules.category,
-        period: toPeriod(extracted.periodo) ?? byRules.period,
-        folio: toValue(extracted.folio)?.toUpperCase() ?? byRules.folio,
+        period: periodo ?? byRules.period,
+        folio: folio ?? byRules.folio,
         text: null,
       },
       companyHint: toValue(extracted.empresa),
@@ -240,4 +255,22 @@ function toPeriod(raw: string): Date | null {
   // sincronizador escribe Document.period. Si las dos no coinciden, la
   // búsqueda exacta no encuentra nada y el bug es invisible.
   return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, 1));
+}
+
+/** ¿El mensaje habla de algún momento: mes, año, "pasado", "este mes"...? */
+function mencionaTiempo(text: string): boolean {
+  const limpio = text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '');
+
+  return /\b(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre|20\d\d|mes|meses|pasad[oa]|este|esta|actual|anterior|ultim[oa]|proxim[oa]|hoy|ayer|semana|quincena|a[nñ]o|reciente|vigente)\b/.test(
+    limpio,
+  );
+}
+
+/** ¿El texto contiene el folio, ignorando guiones, espacios y mayúsculas? */
+function contiene(text: string, folio: string): boolean {
+  const plano = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return plano(text).includes(plano(folio));
 }

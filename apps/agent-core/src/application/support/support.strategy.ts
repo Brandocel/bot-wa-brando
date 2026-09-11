@@ -183,9 +183,9 @@ export class SupportStrategy {
      * hay una pregunta en el aire: "ok" contestando a "¿de qué mes?" sí
      * tiene que pasar por el flujo normal.
      */
-    if (pendiente === null) {
-      const rapida = respuestaRapida(message.body, turn);
-      if (rapida !== null) return { text: rapida, awaiting: 'NADIE' };
+    const rapida = respuestaRapida(message.body, turn, pendiente);
+    if (rapida !== null) {
+      return { text: rapida, awaiting: pendiente ? 'CLIENTE' : 'NADIE' };
     }
 
     // La empresa se busca primero en el texto crudo, por reglas: un nombre
@@ -212,10 +212,17 @@ export class SupportStrategy {
       extraction.query.folio !== null ||
       empresaMencionada !== null;
 
-    // Charla solo si de verdad no trae nada y no se le había preguntado
-    // nada. Un dato suelto, o cualquier cosa dicha en respuesta a una
-    // pregunta del bot, sigue por el camino de los documentos.
-    if (extraction.notADocumentRequest && !aporta && pendiente === null) {
+    /**
+     * Sin ningún dato nuevo y sin pregunta en el aire, es charla — diga lo
+     * que diga el modelo sobre si "pide un documento".
+     *
+     * Un mensaje que no aporta tipo, mes, folio ni empresa no puede cambiar
+     * la búsqueda; lo único que haría es repetir la anterior. Así es como
+     * "va con eso está bien gracias" acababa en la misma cotización por
+     * segunda vez. Un dato suelto, o cualquier cosa dicha en respuesta a
+     * una pregunta del bot, sí sigue por el camino de los documentos.
+     */
+    if (!aporta && pendiente === null) {
       return {
         text: await this.smallTalk(turn, conocido),
         awaiting: 'NADIE',
@@ -309,6 +316,7 @@ export class SupportStrategy {
           id: s.organizationId,
           nombre: s.organizationName,
         })),
+        opcionesAt: new Date().toISOString(),
       });
 
       const lista = scopes.map((s, i) => `${i + 1}. ${s.organizationName}`);
@@ -410,6 +418,7 @@ export class SupportStrategy {
           id: doc.id,
           nombre: doc.name,
         })),
+        opcionesAt: new Date().toISOString(),
       });
 
       // Plantilla con el tipo y el mes en palabras: dice lo mismo que
@@ -506,13 +515,21 @@ export class SupportStrategy {
    * Devuelve null si no había lista o el número no corresponde a ninguna:
    * ahí el mensaje sigue su camino normal, porque un "2" suelto también
    * puede ser parte de una frase que no tiene nada que ver.
+   *
+   * La lista NO se consume al elegir. "La 2" y luego "¿y me das la 1?"
+   * es una conversación normal: la persona sigue mirando la misma lista
+   * en su pantalla. Lo que la retira es el tiempo (media hora) o que se
+   * ofrezca otra. Antes se borraba al primer uso, y el segundo número
+   * caía en el modelo, que lo adivinaba a partir del historial: acertó
+   * una vez y a la siguiente pidió una "cotización de enero" que no
+   * existía y escaló un ticket por nada.
    */
   private async resolverOpcion(
     numero: number,
     turn: Turn,
     ctx: StrategyContext,
   ): Promise<StrategyReply | null> {
-    const ticket = await this.tickets.ultimoTicket(ctx.conversationId);
+    const ticket = await this.tickets.ticketConOpciones(ctx.conversationId);
     if (!ticket) return null;
 
     const slots = ticket.slots as { opciones?: unknown };
@@ -521,11 +538,10 @@ export class SupportStrategy {
     const elegida = (slots.opciones as Opcion[]).find((o) => o.n === numero);
     if (!elegida) return null;
 
-    // La lista se consume: si sigue guardada, un "1" de otra conversación
-    // más adelante resucitaría una elección que ya no viene a cuento.
-    await this.tickets.updateSlots(ticket.id, { opciones: null });
-
     if (elegida.tipo === 'empresa') {
+      // La lista de empresas sí se consume: ya cumplió, y los siguientes
+      // números de la conversación van a ser documentos.
+      await this.tickets.updateSlots(ticket.id, { opciones: null });
       await this.tickets.updateSlots(ticket.id, { organizationId: elegida.id });
 
       // Con la empresa ya resuelta se sigue desde el estado del ticket, sin
@@ -961,18 +977,47 @@ interface Opcion {
 }
 
 /**
- * El número de una lista, si el mensaje es SOLO eso.
+ * El número de una lista, si el mensaje viene a eso.
  *
- * "1", "el 2", "opcion 3". Un número dentro de una frase larga no cuenta:
- * "necesito la factura 2026" no es elegir la opción 2026.
+ * "1", "el 2", "la 2", "y la 2", "me pasas el 1", "dame la primera". Es
+ * una frase corta cuyo único dato es un número chico o un ordinal. Un
+ * número dentro de una frase con más información no cuenta: "necesito la
+ * factura 2026" no es elegir la opción 2026, y "la factura 3 de marzo"
+ * trae tipo y mes, así que va por el flujo normal.
+ *
+ * Antes solo se aceptaba el número pelado. "Oye me puedes dar el 1" caía
+ * en el modelo, que lo resolvía adivinando a partir del historial: a
+ * veces bien, a veces pidiendo un documento que no existía.
  */
 function leerNumero(texto: string): number | null {
-  const limpio = texto.trim().toLowerCase();
-  const match = /^(?:el |la |opcion |opción |numero |número )?([1-9])\.?$/.exec(
-    limpio,
-  );
+  const limpio = texto
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9ñ\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 
-  return match ? Number(match[1]) : null;
+  const palabras = limpio.split(' ').filter(Boolean);
+  if (palabras.length === 0 || palabras.length > 8) return null;
+
+  // Con tipo, mes, año o folio no es una elección: es una petición.
+  if (/\b(factura|contrato|cotizacion|reporte|poliza|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|mes|meses|20\d\d)\b/.test(limpio)) {
+    return null;
+  }
+  if (/\b[a-z]{1,3}\d{3,}\b/.test(limpio)) return null;
+
+  const ORDINALES: Record<string, number> = {
+    primero: 1, primera: 1, segundo: 2, segunda: 2, tercero: 3, tercera: 3,
+    cuarto: 4, cuarta: 4, quinto: 5, quinta: 5,
+  };
+
+  const numeros = palabras
+    .map((p) => (/^[1-9]$/.test(p) ? Number(p) : ORDINALES[p] ?? null))
+    .filter((n): n is number => n !== null);
+
+  // Exactamente uno: "el 1 y el 2" no se puede resolver con una entrega.
+  return numeros.length === 1 ? numeros[0]! : null;
 }
 
 /**
@@ -1009,7 +1054,11 @@ function esQuejaDeNoRecibido(texto: string): boolean {
  * igual que la primera, que es la diferencia entre alguien que sigue el
  * hilo y un contestador.
  */
-function respuestaRapida(texto: string, turn: Turn): string | null {
+function respuestaRapida(
+  texto: string,
+  turn: Turn,
+  pendiente: SlotPendiente | null,
+): string | null {
   const limpio = texto
     .toLowerCase()
     .normalize('NFD')
@@ -1018,15 +1067,19 @@ function respuestaRapida(texto: string, turn: Turn): string | null {
     .replace(/\s+/g, ' ')
     .trim();
 
-  if (limpio.length === 0 || limpio.length > 40) return null;
+  if (limpio.length === 0 || limpio.length > 60) return null;
+
+  // Si trae un dato de documento, no es charla por corta que sea.
+  if (parseQueryTieneDatos(limpio)) return null;
 
   const saludo =
     /^(hola|holi|buenas|buenos dias|buen dia|buenas tardes|buenas noches|que tal|hey|que onda|como estas|como andas)( (buenas|que tal|como estas|como andas|buen dia|buenos dias|buenas tardes))?$/;
-  const gracias = /^(muchas |mil |muchisimas )?gracias( por todo| por la ayuda| por el apoyo)?$/;
-  const acuse =
-    /^(ok|okay|okey|oki|va|vale|sale|listo|perfecto|excelente|genial|de acuerdo|entendido|enterado|recibido|ya|si|dale|orale|ah ok|ok gracias|va gracias|sale gracias|listo gracias)$/;
 
   if (saludo.test(limpio)) {
+    // Con una pregunta en el aire se repite, sin gastar presupuesto: la
+    // persona volvió y no tiene por qué acordarse de dónde se quedó.
+    if (pendiente) return `Aquí sigo. ${PREGUNTA_PENDIENTE[pendiente]}`;
+
     const yaSaludo = turn.history.some(
       (t) => t.role === 'bot' && /\bhola\b/i.test(t.text),
     );
@@ -1037,13 +1090,47 @@ function respuestaRapida(texto: string, turn: Turn): string | null {
       : '¡Hola! Dime qué documento necesitas y de qué empresa, y lo busco.';
   }
 
-  if (gracias.test(limpio)) return 'De nada. Cualquier otro documento, aquí estoy.';
+  // Lo de abajo solo sin pregunta pendiente: "ok" contestando a "¿de qué
+  // mes?" tiene que pasar por el flujo normal.
+  if (pendiente) return null;
+
+  /**
+   * Gracias y cierres: "gracias", "va con eso está bien gracias", "es
+   * todo", "con eso basta". Frases cortas sin ningún dato de documento.
+   * Antes "va con eso está bien gracias" caía en el modelo y acababa en
+   * una entrega repetida.
+   */
+  const palabras = limpio.split(' ').length;
+  if (palabras <= 8 && /\bgracias\b/.test(limpio)) {
+    return 'De nada. Cualquier otro documento, aquí estoy.';
+  }
+
+  const cierre =
+    /\b(es todo|eso es todo|con eso (esta bien|basta|es suficiente|me sirve|quedo)|asi esta bien|esta bien asi|ya quedo|ya con eso|nada mas|por ahora no|no gracias)\b/;
+  const acuse =
+    /^(ok|okay|okey|oki|va|vale|sale|listo|perfecto|excelente|genial|de acuerdo|entendido|enterado|recibido|ya|si|dale|orale|ah ok|va bien|esta bien|muy bien)$/;
 
   // Un "ok" no se contesta: ya quedó marcado como leído, y responderle a
   // cada acuse es justo lo que hace que un bot se sienta como bot.
-  if (acuse.test(limpio)) return '';
+  if (acuse.test(limpio) || (palabras <= 8 && cierre.test(limpio))) return '';
 
   return null;
+}
+
+/** Cómo se repite la pregunta pendiente cuando la persona vuelve. */
+const PREGUNTA_PENDIENTE: Record<SlotPendiente, string> = {
+  categoria: '¿Qué documento necesitas?',
+  periodo: '¿De qué mes lo necesitas?',
+  empresa: '¿De qué empresa lo necesitas? Responde con el número de la lista.',
+};
+
+/** ¿El texto trae tipo, mes, año o folio? Entonces no es charla. */
+function parseQueryTieneDatos(limpio: string): boolean {
+  return (
+    /\b(factura|facturas|contrato|contratos|cotizacion|cotizaciones|reporte|reportes|poliza|polizas|cfdi|recibo|comprobante|documento|archivo|pdf)\b/.test(limpio) ||
+    /\b(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|20\d\d)\b/.test(limpio) ||
+    /\b[a-z]{1,3}\d{3,}\b/.test(limpio)
+  );
 }
 
 /** Los datos que el bot sabe pedir cuando faltan. */

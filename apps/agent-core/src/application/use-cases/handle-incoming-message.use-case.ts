@@ -8,6 +8,7 @@ import { KillSwitchFilter } from '../pipeline/filters/kill-switch.filter';
 import { LoopGuardFilter } from '../pipeline/filters/loop-guard.filter';
 import { RateLimitFilter } from '../pipeline/filters/rate-limit.filter';
 import { OwnerCommandsService } from '../commands/owner-commands.service';
+import { AgentCommandsService } from '../commands/agent-commands.service';
 import { SupportCommandsService } from '../support/support-commands.service';
 import { ConversationStateService } from '../support/conversation-state.service';
 import { SupportStrategy } from '../support/support.strategy';
@@ -24,6 +25,7 @@ export class HandleIncomingMessageUseCase {
     private readonly prisma: PrismaService,
     private readonly outbox: OutboxDispatcher,
     private readonly ownerCommands: OwnerCommandsService,
+    private readonly agentCommands: AgentCommandsService,
     private readonly supportCommands: SupportCommandsService,
     private readonly supportStrategy: SupportStrategy,
     private readonly conversations: ConversationStateService,
@@ -147,8 +149,13 @@ export class HandleIncomingMessageUseCase {
       const ownerReply =
         role === 'OWNER' ? await this.ownerCommands.tryHandle(message) : null;
 
+      // Los agentes de soporte van antes que los comandos de cliente: un
+      // agente también puede tener membresías, y /cerrar es suyo.
+      const agentReply =
+        ownerReply ?? (await this.agentCommands.tryHandle(message));
+
       const supportReply =
-        ownerReply ??
+        agentReply ??
         (await this.supportCommands.tryHandle(message, {
           contactId,
           conversationId,
