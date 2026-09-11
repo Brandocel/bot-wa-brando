@@ -32,7 +32,8 @@ export class GoogleDriveAdapter implements DocumentSourcePort {
   private client: JWT | null = null;
 
   /** id de carpeta -> nombre. Cadena vacía = no la pudimos leer. */
-  private readonly folderNames = new Map<string, string>();
+  /** Carpeta → { nombre, padres }. Una llamada por carpeta nueva, no por archivo. */
+  private readonly folders = new Map<string, { name: string; parents: string[] }>();
 
   /**
    * El JWT se construye una vez y él solo renueva su token de acceso. Crear
@@ -125,7 +126,7 @@ export class GoogleDriveAdapter implements DocumentSourcePort {
           if (raw.mimeType === 'application/vnd.google-apps.folder') {
             // El nombre de la carpeta se cachea aquí para que los cambios
             // incrementales no tengan que volver a preguntarlo.
-            this.folderNames.set(raw.id, raw.name);
+            this.folders.set(raw.id, { name: raw.name, parents: [current.id] });
             pending.push({ id: raw.id, path: [...current.path, raw.name] });
             continue;
           }
@@ -140,30 +141,64 @@ export class GoogleDriveAdapter implements DocumentSourcePort {
   }
 
   /**
-   * Nombre de una carpeta, cacheado.
+   * Nombre y padres de una carpeta, cacheados.
    *
-   * Los cambios incrementales solo traen el id del padre, y sin el nombre
-   * se pierde la clasificación por carpeta — que es justo el caso común:
-   * el cliente sube "A1234.pdf" a su carpeta "Facturas" y el nombre del
-   * archivo por sí solo no dice nada. Una llamada por carpeta nueva, no
-   * por archivo.
+   * Los cambios incrementales solo traen el id del padre inmediato. Sin
+   * subir la cadena no se sabe a qué empresa pertenece un archivo que está
+   * en "Constructora Vega/Facturas/": el padre es "Facturas", que no es
+   * ninguna raíz registrada, y el archivo se descartaba. Era exactamente lo
+   * que pasaba con todo lo que se subía a una subcarpeta después del primer
+   * barrido: nunca entraba al índice.
    */
-  private async folderName(folderId: string): Promise<string | null> {
-    const cached = this.folderNames.get(folderId);
-    if (cached !== undefined) return cached;
+  private async folderInfo(
+    folderId: string,
+  ): Promise<{ name: string; parents: string[] } | null> {
+    const cached = this.folders.get(folderId);
+    if (cached !== undefined) return cached.name === '' ? null : cached;
 
     try {
-      const data = await this.request<{ name: string }>(`/files/${folderId}`, {
-        fields: 'name',
-      });
-      this.folderNames.set(folderId, data.name);
-      return data.name;
+      const data = await this.request<{ name: string; parents?: string[] }>(
+        `/files/${folderId}`,
+        { fields: 'name,parents' },
+      );
+
+      const info = { name: data.name, parents: data.parents ?? [] };
+      this.folders.set(folderId, info);
+      return info;
     } catch {
       // Una carpeta que no podemos leer no es un error fatal: el archivo
       // se clasifica solo por su nombre y, si no alcanza, va a cuarentena.
-      this.folderNames.set(folderId, '');
+      this.folders.set(folderId, { name: '', parents: [] });
       return null;
     }
+  }
+
+  /**
+   * Toda la cadena de carpetas de un archivo, de la más cercana hacia la
+   * raíz del Drive: ids para saber de qué empresa es, nombres para
+   * clasificar. Tope de profundidad por si hay un atajo circular.
+   */
+  private async ancestry(
+    parentIds: string[],
+  ): Promise<{ ids: string[]; names: string[] }> {
+    const ids: string[] = [];
+    const names: string[] = [];
+    let frontier = [...parentIds];
+
+    for (let depth = 0; depth < 12 && frontier.length > 0; depth++) {
+      const next: string[] = [];
+      for (const id of frontier) {
+        if (ids.includes(id)) continue;
+        ids.push(id);
+        const info = await this.folderInfo(id);
+        if (!info) continue;
+        names.push(info.name);
+        next.push(...info.parents);
+      }
+      frontier = next;
+    }
+
+    return { ids, names };
   }
 
   async changesSince(cursor: string): Promise<ChangePage> {
@@ -190,17 +225,20 @@ export class GoogleDriveAdapter implements DocumentSourcePort {
 
       if (change.file.mimeType === 'application/vnd.google-apps.folder') {
         // Se cachea por si algún archivo de esta carpeta llega después.
-        this.folderNames.set(change.file.id, change.file.name);
+        this.folders.set(change.file.id, {
+          name: change.file.name,
+          parents: change.file.parents ?? [],
+        });
         continue;
       }
 
-      const path: string[] = [];
-      for (const parentId of change.file.parents ?? []) {
-        const name = await this.folderName(parentId);
-        if (name) path.push(name);
-      }
-
-      files.push(toSourceFile(change.file, false, path));
+      const cadena = await this.ancestry(change.file.parents ?? []);
+      files.push({
+        ...toSourceFile(change.file, false, cadena.names),
+        // Todos los ancestros, no solo el padre: así el core reconoce la
+        // raíz de la empresa aunque el archivo esté tres carpetas adentro.
+        parentIds: cadena.ids,
+      });
     }
 
     return {

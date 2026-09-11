@@ -281,12 +281,17 @@ export class DriveSyncService implements OnModuleInit {
     }
 
     const parsed = parseDocumentName(file.name, file.folderPath);
-    // Con tipo basta para indexar. El mes ayuda a buscar, pero un CFDI
-    // descargado del portal ("FACTURA_1782860673094_365162...pdf") no lo
-    // trae legible, y dejarlo en cuarentena era dejar fuera justo las
-    // facturas reales. Sin mes, se encuentra por folio, por nombre o en la
-    // lista del tipo.
-    const status: DocStatus = parsed.category ? 'INDEXED' : 'QUARANTINE';
+    /**
+     * Todo lo entregable entra al índice, diga lo que diga el nombre.
+     *
+     * La empresa sale de la carpeta raíz, nunca del nombre, así que un
+     * archivo mal nombrado no puede acabar en manos de otro cliente: lo
+     * peor que le pasa es quedar como OTRO y sin mes. Y así se encuentra
+     * igual, por folio, por nombre o preguntando "qué tienes". Dejarlo en
+     * cuarentena era dejar fuera justo los CFDI reales, que nunca traen
+     * "FACTURA_2026-02" en el nombre.
+     */
+    const status: DocStatus = 'INDEXED';
 
     await this.prisma.document.upsert({
       where: { driveFileId: file.id },
@@ -336,12 +341,11 @@ export class DriveSyncService implements OnModuleInit {
 
     for (const doc of encuarentena) {
       const parsed = parseDocumentName(doc.name);
-      if (!parsed.category) continue;
 
       await this.prisma.document.update({
         where: { id: doc.id },
         data: {
-          category: parsed.category,
+          category: parsed.category ?? 'OTRO',
           period: parsed.period,
           folio: parsed.folio,
           status: 'INDEXED',
@@ -354,5 +358,13 @@ export class DriveSyncService implements OnModuleInit {
   /** Fuerza un barrido completo: borra el cursor y vuelve a leer todo. */
   async resetCursor(): Promise<void> {
     await this.prisma.driveSyncState.deleteMany({ where: { id: SYNC_STATE_ID } });
+
+    // Y todas las empresas vuelven a "nunca barrida": un cursor nuevo no
+    // trae historia, así que sin esto el resync solo veía cambios futuros
+    // y lo que se había perdido seguía perdido.
+    await this.prisma.organization.updateMany({
+      where: { active: true },
+      data: { lastScanAt: null },
+    });
   }
 }
