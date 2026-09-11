@@ -137,6 +137,31 @@ export class DocumentSearchService {
       .sort((a, b) => b.count - a.count);
   }
 
+  /** Qué meses hay de un tipo, con cuántos en cada uno. Para "¿de qué meses hay?". */
+  async mesesDe(
+    scopes: readonly OrgScope[],
+    category: DocCategory,
+    organizationId?: string | null,
+  ): Promise<{ period: Date | null; count: number }[]> {
+    const scoped = this.scopeFilter(scopes, {
+      category,
+      period: null,
+      folio: null,
+      text: null,
+      organizationId,
+    });
+    if (scoped.length === 0) return [];
+
+    const grupos = await this.prisma.document.groupBy({
+      by: ['period'],
+      where: { status: 'INDEXED', category, OR: scoped },
+      _count: { _all: true },
+      orderBy: { period: 'desc' },
+    });
+
+    return grupos.map((g) => ({ period: g.period, count: g._count._all }));
+  }
+
   /**
    * Un documento por su id. Solo para reenviar algo YA entregado a esta
    * misma conversación: el permiso se comprobó cuando se entregó, y quien

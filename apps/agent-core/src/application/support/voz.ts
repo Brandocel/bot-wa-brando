@@ -297,3 +297,10 @@ export function rechazoPideDetalle(pedido: string): string {
     `Perdón por la vuelta. Para ubicar ${pedido} que sí es, dime el folio, el nombre del archivo o el mes exacto.`,
   ]);
 }
+
+export function mesesDisponibles(tipoPlural: string, meses: readonly string[]): string {
+  return una([
+    `De ${tipoPlural} tengo de: ${meses.join(', ')}. ¿Cuál te mando?`,
+    `Hay ${tipoPlural} de ${meses.join(', ')}. Dime el mes y te la busco.`,
+  ]);
+}

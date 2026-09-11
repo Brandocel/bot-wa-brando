@@ -251,7 +251,7 @@ export class SupportStrategy {
      * que diga el modelo. Un mensaje que no aporta nada no puede cambiar
      * la búsqueda; lo único que haría es repetir la anterior.
      */
-    if (!aporta && pendiente === null) {
+    if (!aporta) {
       return { text: await this.smallTalk(turn, conocido), awaiting: 'NADIE' };
     }
 
@@ -700,7 +700,31 @@ export class SupportStrategy {
       scopes.length === 1 ? scopes[0]!.organizationId : empresaGuardada(sol, scopes);
 
     const empresa = nombreEmpresa(scopes, organizationId);
-    const { period, category } = parseQuery(turn.message.body);
+    const { period, category: categoriaDicha } = parseQuery(turn.message.body);
+
+    /**
+     * "¿De qué meses hay?": meses del tipo en juego, con cuántos en cada
+     * uno. El tipo sale del mensaje o de la solicitud en curso ("la de
+     * agosto?" → "no hay" → "¿de qué meses hay?" es de facturas).
+     */
+    const entregada = await this.solicitudes.ultimaEntrega(turn.ctx.conversationId);
+    const tipoEnJuego = categoriaDicha ?? sol.category ?? entregada?.category ?? null;
+
+    if (preguntaMeses(turn.message.body) && tipoEnJuego) {
+      const meses = await this.search.mesesDe(scopes, tipoEnJuego, organizationId);
+      if (meses.length === 0) {
+        return { text: voz.sinDocumentosDe(nombrePlural(tipoEnJuego), '', empresa, null), awaiting: 'NADIE' };
+      }
+      const partes = meses.map((m) =>
+        (m.period ? mesEnPalabras(m.period) : 'sin mes') + (m.count > 1 ? ` (${m.count})` : ''),
+      );
+      return {
+        text: voz.mesesDisponibles(nombrePlural(tipoEnJuego), partes),
+        awaiting: 'NADIE',
+      };
+    }
+
+    const category = categoriaDicha;
 
     if (period || category) {
       const docs = await this.search.search(
@@ -1422,7 +1446,7 @@ function esInventario(texto: string): boolean {
 
   if (limpio.length > 90) return false;
 
-  return /\b((que|cuales|cual) (documentos|docs|archivos|opciones|cosas)\b|opciones de lo que tienes|que tienes\b|que hay\b|que( (doc|docs|documento|documentos|archivo|archivos))? me puedes (dar|entregar|mandar|pasar|enviar)|que puedes (darme|entregarme|mandarme|pasarme|enviarme)|lista(me)? (lo que|los documentos|todo)|catalogo|inventario|todo lo que (tienes|tengas|haya))/.test(
+  return /\b((que|cuales|cual) (documentos|docs|archivos|opciones|cosas|meses|fechas)\b|opciones de lo que tienes|(de que|de cuales) (meses|fechas)|que tienes\b|que hay\b|que( (doc|docs|documento|documentos|archivo|archivos))? me puedes (dar|entregar|mandar|pasar|enviar)|que puedes (darme|entregarme|mandarme|pasarme|enviarme)|lista(me)? (lo que|los documentos|todo)|catalogo|inventario|todo lo que (tienes|tengas|haya))/.test(
     limpio,
   );
 }
@@ -1509,4 +1533,10 @@ function esRechazo(texto: string): boolean {
  */
 function excluir(query: SearchQuery, sol: Solicitud): readonly string[] {
   return query.folio || query.text ? [] : sol.rechazados;
+}
+
+/** "¿De qué meses hay?", "qué meses tienes", "de qué fechas". */
+function preguntaMeses(texto: string): boolean {
+  const limpio = texto.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  return /\b(que|cuales|de que|de cuales) (meses|fechas)\b/.test(limpio);
 }
