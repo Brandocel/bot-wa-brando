@@ -57,6 +57,16 @@ export class PanelApiController {
     return req.panelUser.email;
   }
 
+  /** El contacto detrás de un chatId, para tratar todos sus hilos como uno. */
+  private async contactoDe(chatId: string): Promise<string> {
+    const c = await this.prisma.conversation.findUnique({
+      where: { chatId },
+      select: { contactId: true },
+    });
+    if (!c) throw new BadRequestException('no existe esa conversación');
+    return c.contactId;
+  }
+
   @Post('login')
   async login(
     @Body() body: { email?: string; password?: string },
@@ -300,14 +310,41 @@ export class PanelApiController {
       },
     });
 
-    return rows.map((row) => ({
+    /**
+     * Una fila por PERSONA, no por chatId.
+     *
+     * WhatsApp direcciona el mismo contacto a veces por número y a veces
+     * por LID, y de cada forma nace una conversación distinta. Para quien
+     * atiende es la misma persona: se agrupan por contacto, manda la más
+     * reciente, y las demás aportan sus tickets abiertos y su bandera de
+     * "lo atiende una persona".
+     */
+    const porContacto = new Map<string, (typeof rows)[number]>();
+    const ticketsExtra = new Map<string, (typeof rows)[number]['tickets']>();
+    const enManos = new Set<string>();
+
+    for (const row of rows) {
+      const clave = row.contact?.waId ?? row.chatId;
+      if (row.handoffUntil && row.handoffUntil.getTime() > Date.now()) enManos.add(clave);
+
+      const actual = porContacto.get(clave);
+      if (!actual) {
+        porContacto.set(clave, row);
+        continue;
+      }
+      // rows viene ordenado por lastInboundAt desc: la primera es la más
+      // reciente. Las siguientes solo aportan tickets.
+      ticketsExtra.set(clave, [...(ticketsExtra.get(clave) ?? []), ...row.tickets]);
+    }
+
+    return [...porContacto.entries()].map(([clave, row]) => ({
       ...row,
+      tickets: [...row.tickets, ...(ticketsExtra.get(clave) ?? [])].slice(0, 1),
       // El tiempo de espera se calcula aquí y no en el navegador: es el
       // dato por el que se ordena, y dos relojes distintos darían dos
       // ordenaciones distintas.
       esperando: quietFor(row.lastInboundAt),
-      enManosDePersona:
-        row.handoffUntil !== null && row.handoffUntil.getTime() > Date.now(),
+      enManosDePersona: enManos.has(clave),
       ultimo: row.messages[0] ?? null,
     }));
   }
@@ -326,8 +363,22 @@ export class PanelApiController {
   async thread(@Query('chatId') chatId: string) {
     if (!chatId) throw new BadRequestException('falta chatId');
 
-    const conversation = await this.prisma.conversation.findUnique({
+    const base = await this.prisma.conversation.findUnique({
       where: { chatId },
+      select: { id: true, contactId: true },
+    });
+    if (!base) return null;
+
+    /**
+     * Todas las conversaciones de esta persona, no solo la del chatId.
+     *
+     * El mismo contacto puede tener un hilo por número y otro por LID;
+     * para quien atiende es una sola charla. Se leen todas, se mezclan los
+     * mensajes por fecha, y se contesta por la que habló más reciente.
+     */
+    const hilos = await this.prisma.conversation.findMany({
+      where: { contactId: base.contactId },
+      orderBy: { lastInboundAt: 'desc' },
       select: {
         id: true,
         chatId: true,
@@ -336,20 +387,6 @@ export class PanelApiController {
         seenAt: true,
         lastInboundAt: true,
         handoffUntil: true,
-        contact: {
-          select: {
-            waId: true,
-            displayName: true,
-            memberships: {
-              where: { revokedAt: null },
-              select: {
-                role: true,
-                verifiedAt: true,
-                organization: { select: { name: true } },
-              },
-            },
-          },
-        },
         tickets: {
           orderBy: { createdAt: 'desc' },
           select: {
@@ -361,27 +398,37 @@ export class PanelApiController {
             level: true,
             createdAt: true,
             closeReason: true,
-            events: { orderBy: { createdAt: 'asc' } },
           },
         },
       },
     });
 
-    if (!conversation) return null;
-
-    // Los últimos 60, pero se devuelven en orden de lectura: la conversación
-    // se lee de arriba abajo, no al revés.
-    const messages = await this.prisma.message.findMany({
-      where: { conversationId: conversation.id },
-      orderBy: { createdAt: 'desc' },
-      take: 60,
+    const contact = await this.prisma.contact.findUnique({
+      where: { id: base.contactId },
       select: {
-        id: true,
-        direction: true,
-        kind: true,
-        body: true,
-        createdAt: true,
+        waId: true,
+        displayName: true,
+        memberships: {
+          where: { revokedAt: null },
+          select: {
+            role: true,
+            verifiedAt: true,
+            organization: { select: { name: true } },
+          },
+        },
       },
+    });
+
+    const principal = hilos[0]!;
+    const ids = hilos.map((h) => h.id);
+    const chatIds = hilos.map((h) => h.chatId);
+
+    // Los últimos 80 entre todos los hilos, en orden de lectura.
+    const messages = await this.prisma.message.findMany({
+      where: { conversationId: { in: ids } },
+      orderBy: { createdAt: 'desc' },
+      take: 80,
+      select: { id: true, direction: true, kind: true, body: true, createdAt: true },
     });
 
     /**
@@ -393,16 +440,33 @@ export class PanelApiController {
      * era "no mandó nada".
      */
     const pendientes = await this.prisma.outboxMessage.findMany({
-      where: { chatId, status: { in: ['PENDING', 'FAILED'] } },
+      where: { chatId: { in: chatIds }, status: { in: ['PENDING', 'FAILED'] } },
       orderBy: { createdAt: 'asc' },
       select: { id: true, payload: true, status: true, lastError: true, createdAt: true },
     });
 
+    const enManosDePersona = hilos.some(
+      (h) => h.handoffUntil !== null && h.handoffUntil.getTime() > Date.now(),
+    );
+    const handoffUntil = hilos
+      .map((h) => h.handoffUntil)
+      .filter((d): d is Date => d !== null)
+      .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
+
     return {
-      ...conversation,
-      enManosDePersona:
-        conversation.handoffUntil !== null &&
-        conversation.handoffUntil.getTime() > Date.now(),
+      id: principal.id,
+      chatId: principal.chatId,
+      chatIds,
+      topic: hilos.find((h) => h.topic)?.topic ?? null,
+      awaiting: principal.awaiting,
+      seenAt: principal.seenAt,
+      lastInboundAt: principal.lastInboundAt,
+      handoffUntil,
+      enManosDePersona,
+      contact,
+      tickets: hilos
+        .flatMap((h) => h.tickets)
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()),
       messages: messages.reverse(),
       pendientes: pendientes.map((p) => {
         const payload = p.payload as { kind?: string; text?: string; filename?: string; caption?: string };
@@ -418,6 +482,7 @@ export class PanelApiController {
       }),
     };
   }
+
 
   /**
    * Una persona toma (o suelta) el hilo desde el panel.
@@ -436,8 +501,10 @@ export class PanelApiController {
 
     const handoffUntil = body.activo === false ? null : new Date(Date.now() + HANDOFF_MS);
 
-    await this.prisma.conversation.update({
-      where: { chatId: body.chatId },
+    // A todos los hilos de la persona: si la atiendes tú, la atiendes por
+    // el número y por el LID por igual.
+    await this.prisma.conversation.updateMany({
+      where: { contactId: await this.contactoDe(body.chatId) },
       data: {
         handoffUntil,
         awaiting: body.activo === false ? 'NADIE' : 'AGENTE',
@@ -636,7 +703,7 @@ export class PanelApiController {
     // suelte o venza el plazo. Antes el cliente contestaba al operador y
     // el bot se metía en medio con "¿qué documento necesitas?".
     await this.prisma.conversation.updateMany({
-      where: { chatId: body.chatId },
+      where: { contactId: await this.contactoDe(body.chatId) },
       data: {
         awaiting: 'CLIENTE',
         lastOutboundAt: new Date(),

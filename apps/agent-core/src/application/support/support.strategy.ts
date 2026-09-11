@@ -1297,6 +1297,8 @@ function leerNumero(texto: string): number | null {
   const ORDINALES: Record<string, number> = {
     primero: 1, primera: 1, segundo: 2, segunda: 2, tercero: 3, tercera: 3,
     cuarto: 4, cuarta: 4, quinto: 5, quinta: 5,
+    // "es el número dos", "la tres": con letra también.
+    uno: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5,
   };
 
   const numeros = palabras

@@ -177,6 +177,8 @@ const hace = (iso) => {
 
 const numeroBonito = (waId) => String(waId ?? '').replace(/@.*$/, '');
 const iniciales = (nombre) => String(nombre ?? '?').trim().split(/\\s+/).slice(0, 2).map((p) => p[0]).join('').toUpperCase();
+// Un color por persona, estable: el mismo nombre siempre se ve igual.
+const tono = (nombre) => { let h = 0; for (const ch of String(nombre ?? '')) h = (h * 31 + ch.charCodeAt(0)) % 360; return h; };
 
 const CATEGORIAS = ['FACTURA', 'CONTRATO', 'COTIZACION', 'REPORTE', 'POLIZA', 'OTRO'];
 
@@ -421,16 +423,16 @@ const VISTAS = {
             ? (c.ultimo.direction === 'OUT' ? '↩ ' : '') + c.ultimo.body.replace(/\\s+/g, ' ').slice(0, 90)
             : 'sin mensajes';
           const estado = c.enManosDePersona
-            ? '<span class="pill warn">lo atiende una persona</span>'
+            ? '<span class="estado persona"><i></i>lo atiendes tú</span>'
             : c.awaiting === 'AGENTE' || (c.tickets[0] && c.tickets[0].state === 'EN_REVISION')
-              ? '<span class="pill warn">espera a una persona</span>'
+              ? '<span class="estado espera"><i></i>espera a una persona</span>'
               : c.awaiting === 'BOT'
-                ? '<span class="pill ABIERTO">sin responder</span>'
+                ? '<span class="estado nuevo"><i></i>sin responder</span>'
                 : c.awaiting === 'CLIENTE'
-                  ? '<span class="pill">espera al cliente</span>'
-                  : '';
+                  ? '<span class="estado cliente"><i></i>espera al cliente</span>'
+                  : '<span class="estado ok"><i></i>al día</span>';
           return '<div class="fila' + (c.chatId === chatAbierto ? ' abierta' : '') + '" data-chat="' + esc(c.chatId) + '">' +
-            '<div class="avatar">' + esc(iniciales(nombre)) + '</div>' +
+            '<div class="avatar" style="--h:' + tono(nombre) + '">' + esc(iniciales(nombre)) + '</div>' +
             '<div class="fila-cuerpo">' +
               '<div class="fila-arriba"><strong class="recorte">' + esc(nombre) + '</strong>' +
                 '<span class="muted small">' + hace(c.lastInboundAt) + '</span></div>' +
