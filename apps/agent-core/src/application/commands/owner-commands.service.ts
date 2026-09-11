@@ -55,6 +55,11 @@ export class OwnerCommandsService {
         run: async (args) => this.drive.registerOrganization(args),
       },
 
+      'empresa-baja': {
+        help: 'da de baja una empresa (deja de sincronizar): /empresa-baja <nombre>',
+        run: async (args) => this.drive.deactivateOrganization(args),
+      },
+
       sync: {
         help: 'sincroniza ya con Drive, sin esperar al temporizador',
         run: async () => this.drive.runSync(),

@@ -23,6 +23,31 @@ export class DriveCommandsService {
    * El id de la carpeta sale de su URL en Drive:
    * drive.google.com/drive/folders/ESTO_DE_AQUI
    */
+  /**
+   * Baja de una empresa: deja de sincronizarse y sus números dejan de ver
+   * documentos. No se borra nada: el índice y los tickets siguen ahí por
+   * si hay que volver, y por auditoría.
+   */
+  async deactivateOrganization(args: string): Promise<string> {
+    const nombre = args.trim().toLowerCase();
+    if (!nombre) return 'Uso: /empresa-baja <nombre>';
+
+    const empresas = await this.prisma.organization.findMany({ where: { active: true } });
+    const hit = empresas.filter((o) => o.name.toLowerCase().includes(nombre));
+
+    if (hit.length === 0) return `No hay ninguna empresa activa que se llame "${args.trim()}".`;
+    if (hit.length > 1) {
+      return ['Varias coinciden; sé más específico:', ...hit.map((o) => `• ${o.name}`)].join('\n');
+    }
+
+    await this.prisma.organization.update({
+      where: { id: hit[0]!.id },
+      data: { active: false },
+    });
+
+    return `${hit[0]!.name} dada de baja: ya no se sincroniza ni se entregan sus documentos.`;
+  }
+
   async registerOrganization(args: string): Promise<string> {
     const [name, folderId] = args.split('|').map((part) => part.trim());
 
