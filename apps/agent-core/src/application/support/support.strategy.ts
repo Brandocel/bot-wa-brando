@@ -166,6 +166,16 @@ export class SupportStrategy {
      * "Pásame con un agente", "quiero hablar con una persona". Se escala
      * directo: pedir humano es una instrucción, no una duda.
      */
+    /**
+     * "No es esa", "ninguna de esas", "tampoco": rechaza lo ofrecido o lo
+     * entregado. Antes esto caía en el modelo, que sacaba el tipo del
+     * contexto, y el bot volvía a enseñar la misma lista tres veces.
+     */
+    if (esRechazo(message.body)) {
+      const rechazado = await this.rechazar(turn, sol);
+      if (rechazado) return rechazado;
+    }
+
     if (pideHumano(message.body)) {
       return this.pasarAHumano(turn, sol);
     }
@@ -326,6 +336,7 @@ export class SupportStrategy {
         folio: null,
         text: query.text,
         organizationId,
+        excludeIds: sol.rechazados,
       });
       return this.resolverResultados(turn, query, porNombre, sol);
     }
@@ -338,7 +349,7 @@ export class SupportStrategy {
     if (!query.folio && (!query.category || !query.period)) {
       const candidatos = await this.search.search(
         scopes,
-        { ...query, organizationId },
+        { ...query, organizationId, excludeIds: sol.rechazados },
         MAX_OPCIONES + 1,
       );
 
@@ -361,7 +372,7 @@ export class SupportStrategy {
       return this.resolverResultados(turn, query, candidatos, sol);
     }
 
-    const results = await this.search.search(scopes, { ...query, organizationId });
+    const results = await this.search.search(scopes, { ...query, organizationId, excludeIds: sol.rechazados });
     return this.resolverResultados(turn, query, results, sol);
   }
 
@@ -432,7 +443,7 @@ export class SupportStrategy {
     if (query.category && !query.folio) {
       const porNombre = await this.search.search(
         scopes,
-        { category: null, period: null, folio: null, text: raizNombre(query.category), organizationId },
+        { category: null, period: null, folio: null, text: raizNombre(query.category), organizationId, excludeIds: sol.rechazados },
         MAX_OPCIONES + 1,
       );
 
@@ -458,7 +469,7 @@ export class SupportStrategy {
     if (query.period && query.category && !query.text) {
       const otrosMeses = await this.search.search(
         scopes,
-        { category: query.category, period: null, folio: query.folio, text: null, organizationId },
+        { category: query.category, period: null, folio: query.folio, text: null, organizationId, excludeIds: sol.rechazados },
         MAX_OPCIONES + 1,
       );
 
@@ -737,6 +748,60 @@ export class SupportStrategy {
     return {
       text: voz.inventarioGeneral(describirInventario(lineas, empresa)),
       awaiting: 'NADIE',
+    };
+  }
+
+  /**
+   * La persona dice que no es lo que se le ofreció o entregó.
+   *
+   * Lo rechazado se apunta y no se vuelve a ofrecer; se pide un dato que
+   * distinga (folio, nombre, mes exacto). Al segundo rechazo sin dar con
+   * nada, nace el ticket: con lo que hay, no se puede resolver solo.
+   * Devuelve null si no había nada que rechazar.
+   */
+  private async rechazar(turn: Turn, sol: Solicitud): Promise<StrategyReply | null> {
+    const entregada = await this.solicitudes.ultimaEntrega(turn.ctx.conversationId);
+
+    const ids = sol.opciones?.length
+      ? sol.opciones.filter((o) => o.tipo === 'documento').map((o) => o.id)
+      : entregada
+        ? [entregada.documentId]
+        : [];
+
+    if (ids.length === 0) return null;
+
+    const rechazados = [...new Set([...sol.rechazados, ...ids])];
+    const category = sol.category ?? entregada?.category ?? null;
+    const fallos = readFallos(sol) + 1;
+
+    const actualizada = await this.solicitudes.guardar(turn.ctx.conversationId, {
+      rechazados,
+      opciones: null,
+      category,
+      fallos,
+    });
+
+    const pedido = describirPedido({
+      category,
+      period: actualizada.period ? new Date(actualizada.period) : null,
+      folio: actualizada.folio,
+      text: null,
+    });
+
+    const asked = readAsked(actualizada);
+    if (!asked.slots.detalle) {
+      return this.ask(turn, asked, 'detalle', voz.rechazoPideDetalle(pedido));
+    }
+
+    const { scopes } = turn;
+    const organizationId =
+      scopes.length === 1 ? scopes[0]!.organizationId : empresaGuardada(actualizada, scopes);
+    const { ticket, agente } = await this.escalar(turn, actualizada, 'sin_resultados', organizationId);
+
+    return {
+      text: voz.sinInformacionEscalado(pedido, `#${ticket.number}`, agente),
+      awaiting: 'AGENTE',
+      topic: category,
     };
   }
 
@@ -1408,4 +1473,27 @@ function raizNombre(category: DocCategory): string {
     POLIZA: 'poliza',
     OTRO: 'documento',
   }[category];
+}
+
+/**
+ * "No es esa", "ninguna de esas", "esa no", "tampoco", "no me sirve",
+ * "te digo que ninguna": rechazo de lo ofrecido o lo entregado. Corto y
+ * sin datos de documento; con datos ("no, la de marzo") va por el flujo
+ * normal, que ya sabe que es otra petición.
+ */
+function esRechazo(texto: string): boolean {
+  const limpio = texto
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9ñ\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (limpio.length === 0 || limpio.split(' ').length > 9) return false;
+  if (parseQueryTieneDatos(limpio)) return false;
+
+  return /\b(no es (esa|ese|esta|este|ninguna|ninguno)|esa no( es)?|ese no( es)?|ningun[ao]( de (esas|esos|estas|estos|las dos|los dos))?|tampoco|no me sirve|no (es|era) (la|el) que|no son (esas|esos)|no es ninguna|nel|nop)\b/.test(
+    limpio,
+  ) || /^(no|no no|que no)$/.test(limpio);
 }

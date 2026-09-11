@@ -23,6 +23,8 @@ export interface SearchQuery {
   text: string | null;
   /** Fija la organización cuando el solicitante pertenece a varias. */
   organizationId?: string | null;
+  /** Documentos que la persona ya rechazó ("no es esa"): no se vuelven a ofrecer. */
+  excludeIds?: readonly string[];
 }
 
 export interface InventoryLine {
@@ -63,6 +65,9 @@ export class DocumentSearchService {
       // "3001" tiene que encontrar "V3001": la gente omite el prefijo. Es
       // un contains y no un equals; si casa con varios, se listan.
       filters.push({ folio: { contains: query.folio, mode: 'insensitive' } });
+    }
+    if (query.excludeIds && query.excludeIds.length > 0) {
+      filters.push({ id: { notIn: [...query.excludeIds] } });
     }
     if (query.text) {
       filters.push({

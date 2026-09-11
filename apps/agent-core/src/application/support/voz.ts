@@ -289,3 +289,11 @@ export function sinInformacionEscalado(pedido: string, folio: string, agente: Ag
     ? `Con lo que tengo no logro ubicar ${pedido}. Se lo pasé a ${agente.name} con el folio ${folio}; te escribe por aquí para revisarlo contigo.`
     : `Con lo que tengo no logro ubicar ${pedido}. Quedó con el folio ${folio} para que alguien del equipo lo revise contigo.`;
 }
+
+export function rechazoPideDetalle(pedido: string): string {
+  return una([
+    `Entendido, no es ninguna de esas. Para dar con ${pedido} correcta necesito un dato más: el folio, el nombre del archivo o el mes exacto.`,
+    `Va, esas no. ¿Tienes el folio o el nombre del archivo de ${pedido}? Con eso la ubico sin adivinar.`,
+    `Perdón por la vuelta. Para ubicar ${pedido} que sí es, dime el folio, el nombre del archivo o el mes exacto.`,
+  ]);
+}

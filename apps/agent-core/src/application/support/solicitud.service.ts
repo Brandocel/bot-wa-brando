@@ -41,6 +41,8 @@ export interface Solicitud {
   preguntado: Partial<Record<SlotPendiente, boolean>>;
   ultimaPregunta: SlotPendiente | null;
   fallos: number;
+  /** Documentos que ya dijo que no son: no se vuelven a ofrecer. */
+  rechazados: string[];
   /** Cuándo se tocó por última vez. null = no hay solicitud en curso. */
   updatedAt: string | null;
 }
@@ -63,6 +65,7 @@ const VACIA: Solicitud = {
   preguntado: {},
   ultimaPregunta: null,
   fallos: 0,
+  rechazados: [],
   updatedAt: null,
 };
 

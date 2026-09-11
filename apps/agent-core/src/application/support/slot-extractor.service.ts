@@ -179,7 +179,12 @@ export class SlotExtractorService {
 
     return {
       query: {
-        category: toCategory(extracted.categoria) ?? byRules.category,
+        // Con una solicitud en curso, el tipo solo vale si el mensaje lo
+        // menciona: "no es esa" no trae tipo, y el modelo lo sacaba del
+        // contexto y hacía repetir la misma búsqueda.
+        category:
+          (!enCurso || mencionaTipo(text) ? toCategory(extracted.categoria) : null) ??
+          byRules.category,
         period: periodo ?? byRules.period,
         folio: folio ?? byRules.folio,
         text: hint,
@@ -280,4 +285,16 @@ function mencionaTiempo(text: string): boolean {
 function contiene(text: string, folio: string): boolean {
   const plano = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
   return plano(text).includes(plano(folio));
+}
+
+/** ¿El mensaje nombra algún tipo de documento, aunque sea de forma indirecta? */
+function mencionaTipo(text: string): boolean {
+  const limpio = text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '');
+
+  return /\b(factur|cfdi|invoice|recibo|comprobante|nota|contrat|cotiza|quote|presupuesto|report|informe|poliz|seguro|documento|archivo|papel|pdf|lo de|el de|la de|los de|las de)\w*/.test(
+    limpio,
+  );
 }
