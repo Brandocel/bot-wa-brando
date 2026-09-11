@@ -336,7 +336,7 @@ export class SupportStrategy {
         folio: null,
         text: query.text,
         organizationId,
-        excludeIds: sol.rechazados,
+        excludeIds: excluir(query, sol),
       });
       return this.resolverResultados(turn, query, porNombre, sol);
     }
@@ -349,7 +349,7 @@ export class SupportStrategy {
     if (!query.folio && (!query.category || !query.period)) {
       const candidatos = await this.search.search(
         scopes,
-        { ...query, organizationId, excludeIds: sol.rechazados },
+        { ...query, organizationId, excludeIds: excluir(query, sol) },
         MAX_OPCIONES + 1,
       );
 
@@ -372,7 +372,7 @@ export class SupportStrategy {
       return this.resolverResultados(turn, query, candidatos, sol);
     }
 
-    const results = await this.search.search(scopes, { ...query, organizationId, excludeIds: sol.rechazados });
+    const results = await this.search.search(scopes, { ...query, organizationId, excludeIds: excluir(query, sol) });
     return this.resolverResultados(turn, query, results, sol);
   }
 
@@ -443,7 +443,7 @@ export class SupportStrategy {
     if (query.category && !query.folio) {
       const porNombre = await this.search.search(
         scopes,
-        { category: null, period: null, folio: null, text: raizNombre(query.category), organizationId, excludeIds: sol.rechazados },
+        { category: null, period: null, folio: null, text: raizNombre(query.category), organizationId, excludeIds: excluir(query, sol) },
         MAX_OPCIONES + 1,
       );
 
@@ -469,7 +469,7 @@ export class SupportStrategy {
     if (query.period && query.category && !query.text) {
       const otrosMeses = await this.search.search(
         scopes,
-        { category: query.category, period: null, folio: query.folio, text: null, organizationId, excludeIds: sol.rechazados },
+        { category: query.category, period: null, folio: query.folio, text: null, organizationId, excludeIds: excluir(query, sol) },
         MAX_OPCIONES + 1,
       );
 
@@ -1496,4 +1496,17 @@ function esRechazo(texto: string): boolean {
   return /\b(no es (esa|ese|esta|este|ninguna|ninguno)|esa no( es)?|ese no( es)?|ningun[ao]( de (esas|esos|estas|estos|las dos|los dos))?|tampoco|no me sirve|no (es|era) (la|el) que|no son (esas|esos)|no es ninguna|nel|nop)\b/.test(
     limpio,
   ) || /^(no|no no|que no)$/.test(limpio);
+}
+
+/**
+ * Qué documentos no volver a ofrecer.
+ *
+ * Lo rechazado ("no es esa") se excluye de las búsquedas por tipo y mes,
+ * que son las que se equivocan. Pero un folio o un nombre de archivo es
+ * una identificación explícita: si después de rechazar la lista dice
+ * "es V3001", es ese, aunque estuviera en la lista. Rechazar una lista
+ * de dos y luego nombrar uno de los dos es una conversación normal.
+ */
+function excluir(query: SearchQuery, sol: Solicitud): readonly string[] {
+  return query.folio || query.text ? [] : sol.rechazados;
 }
