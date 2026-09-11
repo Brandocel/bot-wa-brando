@@ -39,7 +39,18 @@ export class DocumentSearchService {
 
     const filters: Prisma.DocumentWhereInput[] = [];
 
-    if (query.category) filters.push({ category: query.category });
+    /**
+     * El folio manda sobre la categoría.
+     *
+     * Un folio identifica un documento concreto; pedir además que coincida
+     * el tipo solo sirve para no encontrarlo cuando quien pregunta se
+     * equivoca de tipo — o cuando no llegó a decir ninguno. Los permisos no
+     * se relajan: el alcance sigue limitando a las categorías autorizadas,
+     * que es donde vive la seguridad.
+     */
+    if (query.category && !query.folio) {
+      filters.push({ category: query.category });
+    }
     if (query.period) filters.push({ period: query.period });
     if (query.folio) {
       filters.push({ folio: { equals: query.folio, mode: 'insensitive' } });
@@ -94,7 +105,11 @@ export class DocumentSearchService {
       }
 
       for (const window of scope.windows) {
-        if (query.category && window.category !== query.category) continue;
+        // Con folio se buscan TODAS las categorías que la persona puede ver,
+        // no solo la que dijo. Sigue sin poder ver lo que no le toca.
+        if (query.category && !query.folio && window.category !== query.category) {
+          continue;
+        }
 
         const condition: Prisma.DocumentWhereInput = {
           organizationId: scope.organizationId,

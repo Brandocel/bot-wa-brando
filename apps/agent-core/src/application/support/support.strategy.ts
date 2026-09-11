@@ -583,8 +583,21 @@ function mergeSlots(stored: unknown, fresh: SearchQuery): SearchQuery {
   const storedPeriod =
     typeof previous.period === 'string' ? new Date(previous.period) : null;
 
-  const category =
-    fresh.category ?? (previous.category as SearchQuery['category']) ?? null;
+  /**
+   * OTRO guardado NO cuenta como categoría.
+   *
+   * Es una categoría real en la base, pero como slot de una petición
+   * significa "no supimos qué tipo es" — y filtrar por ella hace que una
+   * factura que existe no aparezca. Se limpia aquí además de en el
+   * extractor porque los tickets ya creados lo llevan dentro y se hereda
+   * durante media hora.
+   */
+  const categoriaGuardada =
+    previous.category === 'OTRO'
+      ? null
+      : (previous.category as SearchQuery['category'] | undefined) ?? null;
+
+  const category = fresh.category ?? categoriaGuardada;
   const period = fresh.period ?? storedPeriod;
   const folio =
     fresh.folio ?? (typeof previous.folio === 'string' ? previous.folio : null);

@@ -157,6 +157,7 @@ function systemPrompt(today: Date, pendiente: SlotPendiente | null): string {
     '- No inventes: lo que el mensaje no diga, va como NINGUNO o NINGUNA.',
     '- "recibo", "nota" y "comprobante" cuentan como FACTURA.',
     '- Un saludo, una queja o una pregunta general llevan no_es_documento en true.',
+    '- "documento", "archivo" o "papel" a secas NO son un tipo: eso es NINGUNA.',
     ...(pendiente ? [contexto[pendiente]] : []),
   ].join('\n');
 }
