@@ -99,7 +99,7 @@ export class HandleIncomingMessageUseCase {
     const ahora = new Date();
 
     // ── FASE 1: registrar lo que llegó ──────────────────────────────────
-    const { contactId, conversationId } = await this.prisma.withChatLock(
+    const { contactId, conversationId, enManosDePersona } = await this.prisma.withChatLock(
       message.chatId,
       async (tx) => {
         const contact = await tx.contact.upsert({
@@ -135,7 +135,13 @@ export class HandleIncomingMessageUseCase {
           },
         });
 
-        return { contactId: contact.id, conversationId: conversation.id };
+        return {
+          contactId: contact.id,
+          conversationId: conversation.id,
+          enManosDePersona:
+            conversation.handoffUntil !== null &&
+            conversation.handoffUntil.getTime() > Date.now(),
+        };
       },
     );
 
@@ -172,6 +178,15 @@ export class HandleIncomingMessageUseCase {
 
       // La Strategy solo ve lo que NO es un comando: uno mal escrito no debe
       // gastar una llamada al modelo.
+      //
+      // Y no habla mientras una persona atiende el hilo desde el panel: dos
+      // voces en el mismo chat es lo que más desconcierta a un cliente. Lo
+      // que llega se registra igual, para que la persona lo vea.
+      if (enManosDePersona && supportReply === null && !isCommand) {
+        await this.conversations.onOutbound({ conversationId, awaiting: 'AGENTE', tx });
+        return;
+      }
+
       const strategyReply =
         supportReply === null && !isCommand
           ? await this.supportStrategy.handle(message, {

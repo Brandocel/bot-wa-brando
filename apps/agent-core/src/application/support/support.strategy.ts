@@ -13,6 +13,7 @@ import { ReplyWriterService } from './reply-writer.service';
 import { parseQuery } from './query-parser';
 import { SlotExtractorService, type SlotPendiente } from './slot-extractor.service';
 import { TicketService } from './ticket.service';
+import * as voz from './voz';
 
 /**
  * La conversación de soporte en lenguaje normal.
@@ -119,7 +120,7 @@ export class SupportStrategy {
     // que no venía a cuento.
     if (message.kind !== 'TEXT' && message.body.trim() === '') {
       return {
-        text: 'Recibí tu archivo, pero todavía no sé leerlo. Escríbeme qué documento necesitas y de qué mes.',
+        text: voz.archivoNoLeible(),
         awaiting: 'CLIENTE',
       };
     }
@@ -364,7 +365,7 @@ export class SupportStrategy {
         ticket,
         asked,
         'empresa',
-        'Tienes acceso a varias empresas. ¿De cuál lo necesitas?',
+        voz.preguntaEmpresa(),
         lista,
       );
     }
@@ -403,15 +404,13 @@ export class SupportStrategy {
 
       if (candidatos.length > MAX_OPCIONES) {
         if (query.category) {
-          return this.ask(ticket, asked, 'periodo', `¿De qué mes necesitas la ${nombre(query.category)}?`);
+          return this.ask(ticket, asked, 'periodo', voz.preguntaMes(nombre(query.category)));
         }
         return this.ask(
           ticket,
           asked,
           'categoria',
-          query.period
-            ? `De ${mesEnPalabras(query.period)} tengo varios. ¿Qué documento necesitas: factura, contrato, cotización, reporte o póliza?`
-            : '¿Qué documento necesitas? Puedo buscarte facturas, contratos, cotizaciones, reportes y pólizas.',
+          query.period ? voz.preguntaTipoConMes(mesEnPalabras(query.period)) : voz.preguntaTipo(),
         );
       }
 
@@ -420,7 +419,7 @@ export class SupportStrategy {
           ticket,
           asked,
           'categoria',
-          '¿Qué documento necesitas? Puedo buscarte facturas, contratos, cotizaciones, reportes y pólizas.',
+          voz.preguntaTipo(),
         );
       }
 
@@ -472,10 +471,10 @@ export class SupportStrategy {
 
       return {
         text: [
-          `Tengo ${results.length} ${que}. ¿Cuál necesitas?`,
+          voz.encabezadoLista(results.length, que),
           ...results.map((doc, i) => `${i + 1}. ${describe(doc)}`),
           '',
-          'Responde con el número.',
+          voz.pieLista(),
         ].join('\n'),
         awaiting: 'CLIENTE',
         topic: query.category,
@@ -548,10 +547,10 @@ export class SupportStrategy {
 
           return {
             text: [
-              `No encontré ${pedido}. Lo más parecido que tengo:`,
+              voz.noEncontreParecidos(pedido),
               ...parecidos.map((doc, i) => `${i + 1}. ${describe(doc)}`),
               '',
-              '¿Te sirve alguno? Responde con el número.',
+              voz.pieParecidos(),
             ].join('\n'),
             awaiting: 'CLIENTE',
             topic: query.category,
@@ -580,10 +579,10 @@ export class SupportStrategy {
 
         return {
           text: [
-            `No encontré ${pedido}. Lo que tengo${nombreEmpresa(scopes, organizationId) ? ` de ${nombreEmpresa(scopes, organizationId)}` : ''}:`,
+            voz.noEncontreListaTodo(pedido, nombreEmpresa(scopes, organizationId)),
             ...todos.map((doc, i) => `${i + 1}. ${describe(doc)}`),
             '',
-            '¿Te sirve alguno? Responde con el número.',
+            voz.pieParecidos(),
           ].join('\n'),
           awaiting: 'CLIENTE',
           topic: query.category,
@@ -656,9 +655,7 @@ export class SupportStrategy {
     const que = `la ${nombre(doc.category)}${
       doc.period ? ` de ${mesEnPalabras(doc.period)}` : ''
     }`;
-    const caption = yaEntregoAlgo
-      ? `Aquí va también ${que}. Folio ${folio} por si algo.`
-      : `Aquí está ${que}. Te dejo el folio ${folio} por si necesitas darle seguimiento.`;
+    const caption = voz.entrega(que, folio, yaEntregoAlgo);
 
     const sent = await this.delivery.deliver(
       turn.message.chatId,
@@ -677,12 +674,9 @@ export class SupportStrategy {
     });
 
     if (!sent.ok) {
-      await this.tickets.escalate(ticket.id, 'sin_resultados', null);
+      const { agente } = await this.tickets.escalate(ticket.id, 'sin_resultados', null);
       return {
-        text: [
-          'Encontré tu documento pero no pude enviártelo por aquí.',
-          `Ya lo pasé al equipo con el folio ${folio}.`,
-        ].join('\n'),
+        text: voz.entregaFallida(folio, agente),
         awaiting: 'AGENTE',
         topic: doc.category,
       };
@@ -776,11 +770,8 @@ export class SupportStrategy {
     const sent = await this.delivery.deliver(
       chatId,
       documento,
-      `Perdón, te lo mando otra vez: ${documento.name} (folio #${entrega.ticketNumber}).`,
-      [
-        `Sigo sin poder enviarte ${documento.name} por aquí.`,
-        `Ya lo pasé al equipo con el folio #${entrega.ticketNumber} para que te lo hagan llegar.`,
-      ].join('\n'),
+      voz.reenvio(documento.name, `#${entrega.ticketNumber}`),
+      voz.reenvioFallido(documento.name, `#${entrega.ticketNumber}`),
     );
 
     // La disculpa va como leyenda del archivo, por la misma razón que en
@@ -792,10 +783,7 @@ export class SupportStrategy {
     await this.tickets.escalate(entrega.ticketId, 'sin_resultados', null);
 
     return {
-      text: [
-        'Sigo sin poder enviártelo por aquí.',
-        `Ya lo pasé al equipo con el folio #${entrega.ticketNumber} para que te lo hagan llegar.`,
-      ].join('\n'),
+      text: voz.reenvioFallido(documento.name, `#${entrega.ticketNumber}`),
       awaiting: 'AGENTE',
       topic: documento.category,
     };
@@ -821,7 +809,7 @@ export class SupportStrategy {
           'El mensaje no pide ningún documento.',
           'Si te preguntan algo que no sea sobre documentos, dilo y ofrece buscar uno.',
         ],
-        fallback: `Puedo buscarte documentos de ${companies}. Dime cuál necesitas y de qué mes.`,
+        fallback: voz.charlaSinModelo(companies),
       },
       this.replyContext(turn, conocido),
     );
@@ -883,10 +871,10 @@ export class SupportStrategy {
 
         return {
           text: [
-            `${period ? `De ${mesEnPalabras(period)} tengo` : 'Tengo'} ${docs.length}:`,
+            period ? voz.encabezadoInventarioMes(mesEnPalabras(period), docs.length) : voz.encabezadoLista(docs.length, 'documentos'),
             ...docs.map((doc, i) => `${i + 1}. ${describe(doc)}`),
             '',
-            'Si quieres alguno, responde con el número.',
+            voz.pieInventario(),
           ].join('\n'),
           awaiting: 'CLIENTE',
         };
@@ -896,13 +884,13 @@ export class SupportStrategy {
     const lineas = await this.search.inventario(scopes, organizationId);
     if (lineas.length === 0) {
       return {
-        text: `Todavía no tengo documentos indexados${empresa ? ` de ${empresa}` : ''}.`,
+        text: voz.sinNada(empresa),
         awaiting: 'NADIE',
       };
     }
 
     return {
-      text: `${describirInventario(lineas, empresa)} Dime cuál y de qué mes.`,
+      text: voz.inventarioGeneral(describirInventario(lineas, empresa)),
       awaiting: 'NADIE',
     };
   }
@@ -924,7 +912,7 @@ export class SupportStrategy {
     const { agente } = await this.tickets.escalate(ticket.id, 'pidio_humano', null);
 
     return {
-      text: textoEscalado(ticket.number, agente),
+      text: voz.pasarAHumano(`#${ticket.number}`, agente),
       awaiting: 'AGENTE',
     };
   }
@@ -934,12 +922,7 @@ export class SupportStrategy {
     const { agente } = await this.tickets.escalate(ticket.id, 'slots_incompletos', null);
 
     return {
-      text: [
-        'Creo que no te estoy entendiendo bien, y no quiero hacerte dar más vueltas.',
-        agente
-          ? `Te atiende ${agente.name}; ya tiene tu caso con el folio #${ticket.number}.`
-          : `Ya le pasé tu caso al equipo con el folio #${ticket.number}; alguien te contacta.`,
-      ].join('\n'),
+      text: voz.noTeEntiendo(`#${ticket.number}`, agente),
       awaiting: 'AGENTE',
     };
   }
@@ -1007,12 +990,7 @@ export class SupportStrategy {
     if (asked.slots[slot]) {
       const { agente } = await this.tickets.escalate(ticket.id, 'slots_incompletos', null);
       return {
-        text: [
-          'Ya te pregunté esto y sigo sin entenderlo bien; no quiero hacerte repetir.',
-          agente
-            ? `Te atiende ${agente.name}; ya tiene tu caso con el folio #${ticket.number}.`
-            : `Se lo pasé al equipo con el folio #${ticket.number}.`,
-        ].join('\n'),
+        text: voz.yaPregunte(`#${ticket.number}`, agente),
         awaiting: 'AGENTE',
       };
     }
@@ -1382,21 +1360,21 @@ function respuestaRapida(
   if (parseQueryTieneDatos(limpio)) return null;
 
   const saludo =
-    /^(hola|holi|buenas|buenos dias|buen dia|buenas tardes|buenas noches|que tal|hey|que onda|como estas|como andas)( (buenas|que tal|como estas|como andas|buen dia|buenos dias|buenas tardes))?$/;
+    /^(hola|holi|buenas|buenos dias|buen dia|buenas tardes|buenas noches|que tal|hey|que onda|como estas|como andas)( (buenas|que tal|como estas|como andas|buen dia|buenos dias|buenas tardes|brother|bro|amigo|amiga|jefe|jefa|compa|hermano|buenas buenas|que hay|todo bien))?$/;
 
   if (saludo.test(limpio)) {
     // Con una pregunta en el aire se repite, sin gastar presupuesto: la
     // persona volvió y no tiene por qué acordarse de dónde se quedó.
-    if (pendiente) return `Aquí sigo. ${PREGUNTA_PENDIENTE[pendiente]}`;
+    if (pendiente) return voz.saludoConPendiente(voz.PREGUNTA_PENDIENTE[pendiente]);
 
     const yaSaludo = turn.history.some(
       (t) => t.role === 'bot' && /\bhola\b/i.test(t.text),
     );
-    if (yaSaludo) return 'Aquí sigo. ¿Qué documento necesitas?';
+    if (yaSaludo) return voz.saludoDeNuevo();
 
-    return turn.scopes.length === 1
-      ? `¡Hola! Dime qué documento necesitas de ${turn.scopes[0]!.organizationName} y lo busco.`
-      : '¡Hola! Dime qué documento necesitas y de qué empresa, y lo busco.';
+    return voz.saludoInicial(
+      turn.scopes.length === 1 ? turn.scopes[0]!.organizationName : null,
+    );
   }
 
   // Lo de abajo solo sin pregunta pendiente: "ok" contestando a "¿de qué
@@ -1411,7 +1389,7 @@ function respuestaRapida(
    */
   const palabras = limpio.split(' ').length;
   if (palabras <= 8 && /\bgracias\b/.test(limpio)) {
-    return 'De nada. Cualquier otro documento, aquí estoy.';
+    return voz.deNada();
   }
 
   const cierre =
@@ -1425,13 +1403,6 @@ function respuestaRapida(
 
   return null;
 }
-
-/** Cómo se repite la pregunta pendiente cuando la persona vuelve. */
-const PREGUNTA_PENDIENTE: Record<SlotPendiente, string> = {
-  categoria: '¿Qué documento necesitas?',
-  periodo: '¿De qué mes lo necesitas?',
-  empresa: '¿De qué empresa lo necesitas? Responde con el número de la lista.',
-};
 
 /** ¿El texto trae tipo, mes, año o folio? Entonces no es charla. */
 function parseQueryTieneDatos(limpio: string): boolean {
@@ -1585,13 +1556,3 @@ function pideHumano(texto: string): boolean {
   return alguien.test(limpio) && accion.test(limpio);
 }
 
-/**
- * Lo que se le dice al cliente cuando su caso pasa a una persona. Con
- * nombre si hay alguien asignado: "te atiende Paula" suena a equipo;
- * "alguien del equipo" suena a buzón.
- */
-function textoEscalado(numero: number, agente: { name: string } | null): string {
-  return agente
-    ? `Claro. Te atiende ${agente.name}; ya tiene tu caso con el folio #${numero} y te escribe por aquí.`
-    : `Claro. Lo dejé anotado con el folio #${numero}; alguien del equipo te contacta por aquí.`;
-}

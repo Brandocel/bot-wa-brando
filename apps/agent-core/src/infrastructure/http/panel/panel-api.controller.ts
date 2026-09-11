@@ -18,6 +18,7 @@ import type {
 } from '@prisma/client';
 import { DirectoryService } from '../../../application/support/directory.service';
 import { PrismaService } from '../../persistence/prisma.service';
+import { OutboxDispatcher } from '../../persistence/outbox.dispatcher';
 import { PanelAuthService, SESSION_COOKIE } from './panel-auth.service';
 import { PanelGuard, readCookie, type PanelRequest } from './panel.guard';
 
@@ -29,12 +30,16 @@ import { PanelGuard, readCookie, type PanelRequest } from './panel.guard';
  * revocables y roles probados — que es el orden correcto cuando lo que se
  * edita es quién puede ver las facturas de quién.
  */
+/** Cuánto conserva una persona el hilo desde el panel sin renovarlo. */
+const HANDOFF_MS = 4 * 60 * 60 * 1000;
+
 @Controller('panel/api')
 export class PanelApiController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auth: PanelAuthService,
     private readonly directory: DirectoryService,
+    private readonly outbox: OutboxDispatcher,
   ) {}
 
   /**
@@ -99,8 +104,18 @@ export class PanelApiController {
 
     const [abiertos, revision, alta, cuarentena, entregas24h, denegados24h] =
       await Promise.all([
-        this.prisma.ticket.count({ where: { state: 'ABIERTO' } }),
-        this.prisma.ticket.count({ where: { state: 'EN_REVISION' } }),
+        this.prisma.conversation.count({ where: { awaiting: 'BOT' } }),
+        // Conversaciones, no tickets: una persona con tres tickets
+        // escalados es UNA persona esperando. Contar tickets daba 18 en
+        // la tarjeta y una bandeja vacía debajo.
+        this.prisma.conversation.count({
+          where: {
+            OR: [
+              { awaiting: 'AGENTE' },
+              { tickets: { some: { state: 'EN_REVISION' } } },
+            ],
+          },
+        }),
         this.prisma.ticket.count({
           where: { priority: 'ALTA', state: { not: 'CERRADO' } },
         }),
@@ -237,16 +252,29 @@ export class PanelApiController {
   @UseGuards(PanelGuard)
   @Get('bandeja')
   async inbox(@Query('esperando') esperando?: string) {
+    /**
+     * "persona" = lo que espera a un humano: el hilo lo pide, o tiene un
+     * ticket en revisión. Antes solo se miraba `awaiting`, y como una
+     * entrega posterior lo ponía en NADIE, la tarjeta decía 18 y la lista
+     * decía "nada pendiente".
+     */
     const filtro: Prisma.ConversationWhereInput =
-      esperando === 'BOT' || esperando === 'CLIENTE' || esperando === 'AGENTE'
-        ? { awaiting: esperando }
-        : // Por defecto, solo lo que nos espera a nosotros: lo que espera al
-          // cliente no es tarea de nadie hasta que conteste.
-          { awaiting: { in: ['BOT', 'AGENTE'] } };
+      esperando === 'persona'
+        ? {
+            OR: [
+              { awaiting: 'AGENTE' },
+              { tickets: { some: { state: 'EN_REVISION' } } },
+            ],
+          }
+        : esperando === 'BOT' || esperando === 'CLIENTE'
+          ? { awaiting: esperando }
+          : // Todas las que tuvieron actividad reciente. Es la bandeja de
+            // WhatsApp, no una cola: se ve de qué está hablando la gente.
+            { lastInboundAt: { gte: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000) } };
 
     const rows = await this.prisma.conversation.findMany({
       where: filtro,
-      orderBy: { lastInboundAt: 'asc' },
+      orderBy: { lastInboundAt: 'desc' },
       take: 100,
       select: {
         id: true,
@@ -256,12 +284,18 @@ export class PanelApiController {
         seenAt: true,
         lastInboundAt: true,
         lastOutboundAt: true,
+        handoffUntil: true,
         contact: { select: { displayName: true, waId: true } },
         tickets: {
           where: { state: { not: 'CERRADO' } },
           select: { number: true, state: true, priority: true },
           take: 1,
           orderBy: { createdAt: 'desc' },
+        },
+        messages: {
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          select: { body: true, direction: true, createdAt: true },
         },
       },
     });
@@ -272,6 +306,9 @@ export class PanelApiController {
       // dato por el que se ordena, y dos relojes distintos darían dos
       // ordenaciones distintas.
       esperando: quietFor(row.lastInboundAt),
+      enManosDePersona:
+        row.handoffUntil !== null && row.handoffUntil.getTime() > Date.now(),
+      ultimo: row.messages[0] ?? null,
     }));
   }
 
@@ -298,6 +335,7 @@ export class PanelApiController {
         awaiting: true,
         seenAt: true,
         lastInboundAt: true,
+        handoffUntil: true,
         contact: {
           select: {
             waId: true,
@@ -346,7 +384,67 @@ export class PanelApiController {
       },
     });
 
-    return { ...conversation, messages: messages.reverse() };
+    /**
+     * Lo que está por salir también se enseña, marcado como pendiente.
+     *
+     * Un mensaje del panel se escribe en el outbox y sale unos segundos
+     * después; hasta que sale no está en la tabla de mensajes. Sin esto el
+     * operador escribía, el hilo se refrescaba sin su mensaje, y la lectura
+     * era "no mandó nada".
+     */
+    const pendientes = await this.prisma.outboxMessage.findMany({
+      where: { chatId, status: { in: ['PENDING', 'FAILED'] } },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true, payload: true, status: true, lastError: true, createdAt: true },
+    });
+
+    return {
+      ...conversation,
+      enManosDePersona:
+        conversation.handoffUntil !== null &&
+        conversation.handoffUntil.getTime() > Date.now(),
+      messages: messages.reverse(),
+      pendientes: pendientes.map((p) => {
+        const payload = p.payload as { kind?: string; text?: string; filename?: string; caption?: string };
+        return {
+          id: p.id,
+          body: payload.kind === 'file'
+            ? `[documento] ${payload.filename ?? ''}${payload.caption ? `\n${payload.caption}` : ''}`
+            : payload.text ?? '',
+          status: p.status,
+          error: p.lastError,
+          createdAt: p.createdAt,
+        };
+      }),
+    };
+  }
+
+  /**
+   * Una persona toma (o suelta) el hilo desde el panel.
+   *
+   * Mientras lo tiene, el bot registra lo que llega y no contesta. Vence
+   * solo a las cuatro horas: un operador que se olvida de soltarlo no deja
+   * al cliente sin atención para siempre.
+   */
+  @UseGuards(PanelGuard)
+  @Post('conversacion/atender')
+  async takeOver(
+    @Req() req: PanelRequest,
+    @Body() body: { chatId?: string; activo?: boolean },
+  ) {
+    if (!body.chatId) throw new BadRequestException('falta chatId');
+
+    const handoffUntil = body.activo === false ? null : new Date(Date.now() + HANDOFF_MS);
+
+    await this.prisma.conversation.update({
+      where: { chatId: body.chatId },
+      data: {
+        handoffUntil,
+        awaiting: body.activo === false ? 'NADIE' : 'AGENTE',
+      },
+    });
+
+    return { ok: true, handoffUntil, por: req.panelUser?.email };
   }
 
   // ── Escritura ───────────────────────────────────────────────────────────
@@ -533,11 +631,22 @@ export class PanelApiController {
       },
     });
 
-    // Contestar deja la pelota del lado del cliente: el operador ya movió.
+    // Contestar deja la pelota del lado del cliente, y toma el hilo: si
+    // una persona ya está escribiendo aquí, el bot se calla hasta que lo
+    // suelte o venza el plazo. Antes el cliente contestaba al operador y
+    // el bot se metía en medio con "¿qué documento necesitas?".
     await this.prisma.conversation.updateMany({
       where: { chatId: body.chatId },
-      data: { awaiting: 'CLIENTE', lastOutboundAt: new Date() },
+      data: {
+        awaiting: 'CLIENTE',
+        lastOutboundAt: new Date(),
+        handoffUntil: new Date(Date.now() + HANDOFF_MS),
+      },
     });
+
+    // Sale ya, no en el siguiente barrido: quince segundos mirando un
+    // hilo sin el mensaje que acabas de escribir se sienten como un fallo.
+    await this.outbox.drain();
 
     return { ok: true, enviadoPor: req.panelUser?.email };
   }

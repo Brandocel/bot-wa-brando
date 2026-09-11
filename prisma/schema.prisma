@@ -94,6 +94,12 @@ model Conversation {
   lastInboundAt  DateTime?
   lastOutboundAt DateTime?
 
+  /// Hasta cuándo atiende una persona este hilo desde el panel. Mientras
+  /// no venza, el bot registra lo que llega pero no contesta: dos voces
+  /// en el mismo chat —la persona y el automático— es lo peor que le puede
+  /// pasar a una conversación. null = el bot atiende.
+  handoffUntil DateTime?
+
   contact  Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
   messages Message[]
   tickets  Ticket[]

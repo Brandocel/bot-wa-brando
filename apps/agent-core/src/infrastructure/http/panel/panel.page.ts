@@ -6,6 +6,11 @@
  * proyecto aparte con su despliegue, su pipeline y su versión que se
  * desincroniza de la API — para pintar unas tablas y tres formularios.
  *
+ * Disposición: menú lateral (plegable, y fuera de pantalla en móvil),
+ * contenido al centro, y el hilo de la conversación como columna derecha
+ * en pantallas anchas o a pantalla completa en el teléfono. Abrir un hilo
+ * nunca tapa la lista de la que venías.
+ *
  * Cuando esto crezca lo bastante como para necesitar rutas, estado
  * compartido y componentes de verdad, ese es el momento de separarlo.
  */
@@ -53,51 +58,78 @@ export function panelPage(): string {
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Panel de operación</title>${STYLES}</head>
 <body>
-<header>
-  <strong>Panel de operación</strong>
-  <span class="spacer"></span>
-  <span id="whoami" class="muted"></span>
-  <button class="ghost" id="logout">Salir</button>
-</header>
+<div class="app" id="app">
 
-<section class="cards" id="resumen"></section>
-
-<nav class="tabs">
-  <button data-view="bandeja" class="active">Conversaciones</button>
-  <button data-view="tickets">Tickets</button>
-  <button data-view="directorio">Directorio</button>
-  <button data-view="empresas">Empresas</button>
-  <button data-view="cuarentena">Cuarentena</button>
-  <button data-view="auditoria">Auditoría</button>
-</nav>
-
-<main id="contenido"><p class="muted">Cargando…</p></main>
-
-<!-- Panel lateral del hilo. Fuera del flujo: abrir una conversación no debe
-     perder la lista que estabas mirando. -->
-<aside id="hilo" hidden>
-  <div class="hilo-head">
-    <div>
-      <strong id="hilo-nombre"></strong>
-      <div class="muted mono" id="hilo-numero"></div>
+  <!-- Menú lateral -->
+  <aside class="nav" id="nav">
+    <div class="nav-brand">
+      <span class="logo">◔</span>
+      <span class="nav-text"><strong>Panel</strong><small>operación</small></span>
+      <button class="icon nav-text" id="nav-plegar" title="Plegar menú">‹</button>
     </div>
-    <button class="ghost" id="hilo-cerrar">Cerrar</button>
+    <nav class="nav-items">
+      <button data-view="bandeja" class="active" title="Conversaciones"><span class="ico">💬</span><span class="nav-text">Conversaciones</span><span class="badge nav-text" id="badge-persona" hidden></span></button>
+      <button data-view="tickets" title="Tickets"><span class="ico">🎫</span><span class="nav-text">Tickets</span></button>
+      <button data-view="directorio" title="Directorio"><span class="ico">👤</span><span class="nav-text">Directorio</span></button>
+      <button data-view="empresas" title="Empresas"><span class="ico">🏢</span><span class="nav-text">Empresas</span></button>
+      <button data-view="cuarentena" title="Cuarentena"><span class="ico">📁</span><span class="nav-text">Cuarentena</span><span class="badge nav-text" id="badge-cuarentena" hidden></span></button>
+      <button data-view="auditoria" title="Auditoría"><span class="ico">🔍</span><span class="nav-text">Auditoría</span></button>
+    </nav>
+    <div class="nav-foot">
+      <div class="nav-text"><div id="whoami" class="muted small"></div></div>
+      <button class="ghost" id="logout" title="Salir"><span class="ico">⏻</span><span class="nav-text">Salir</span></button>
+    </div>
+  </aside>
+  <div id="nav-velo" hidden></div>
+
+  <!-- Centro -->
+  <div class="main">
+    <header class="top">
+      <button class="icon" id="nav-abrir" title="Menú">☰</button>
+      <strong id="titulo">Conversaciones</strong>
+      <span class="spacer"></span>
+      <span class="muted small" id="reloj"></span>
+      <button class="icon" id="refrescar" title="Actualizar">↻</button>
+    </header>
+    <section class="cards" id="resumen"></section>
+    <main id="contenido"><p class="muted">Cargando…</p></main>
   </div>
-  <div id="hilo-meta" class="hilo-meta"></div>
-  <div id="hilo-tickets" class="hilo-tickets"></div>
-  <div id="hilo-mensajes" class="chat"></div>
-  <form id="hilo-form" class="hilo-form">
-    <input id="hilo-texto" placeholder="Escribe un mensaje…" autocomplete="off">
-    <button type="submit">Enviar</button>
-  </form>
-</aside>
-<div id="velo" hidden></div>
+
+  <!-- Hilo -->
+  <aside id="hilo" hidden>
+    <div class="hilo-head">
+      <button class="icon solo-movil" id="hilo-volver" title="Volver">‹</button>
+      <div class="hilo-quien">
+        <strong id="hilo-nombre"></strong>
+        <div class="muted mono small" id="hilo-numero"></div>
+      </div>
+      <button class="ghost small" id="hilo-atender"></button>
+      <button class="icon no-movil" id="hilo-cerrar" title="Cerrar">×</button>
+    </div>
+    <div id="hilo-estado" class="hilo-estado"></div>
+    <div id="hilo-meta" class="hilo-meta"></div>
+    <div id="hilo-tickets" class="hilo-tickets"></div>
+    <div id="hilo-mensajes" class="chat"></div>
+    <form id="hilo-form" class="hilo-form">
+      <textarea id="hilo-texto" rows="1" placeholder="Escribe un mensaje… (Enter envía, Shift+Enter salto)"></textarea>
+      <button type="submit" title="Enviar">➤</button>
+    </form>
+  </aside>
+</div>
 
 <script>
 const contenido = document.getElementById('contenido');
+const app = document.getElementById('app');
 let vistaActual = 'bandeja';
+let filtroBandeja = 'todas';
 let yo = null;
 let chatAbierto = null;
+let ultimoHilo = null;
+
+const TITULOS = {
+  bandeja: 'Conversaciones', tickets: 'Tickets', directorio: 'Directorio',
+  empresas: 'Empresas', cuarentena: 'Cuarentena', auditoria: 'Auditoría',
+};
 
 const api = async (ruta) => {
   const res = await fetch('/panel/api/' + ruta);
@@ -128,7 +160,23 @@ const hora = (iso) => iso
   ? new Date(iso).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })
   : '';
 
-const mes = (iso) => iso ? String(iso).slice(0, 7) : '—';
+/** "hace 5 min", "ayer", "12/09": lo que un humano quiere leer en una lista. */
+const hace = (iso) => {
+  if (!iso) return '';
+  const ms = Date.now() - new Date(iso).getTime();
+  const min = Math.floor(ms / 60000);
+  if (min < 1) return 'ahora';
+  if (min < 60) return 'hace ' + min + ' min';
+  const h = Math.floor(min / 60);
+  if (h < 24) return 'hace ' + h + ' h';
+  const d = Math.floor(h / 24);
+  if (d === 1) return 'ayer';
+  if (d < 7) return 'hace ' + d + ' días';
+  return new Date(iso).toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit' });
+};
+
+const numeroBonito = (waId) => String(waId ?? '').replace(/@.*$/, '');
+const iniciales = (nombre) => String(nombre ?? '?').trim().split(/\\s+/).slice(0, 2).map((p) => p[0]).join('').toUpperCase();
 
 const CATEGORIAS = ['FACTURA', 'CONTRATO', 'COTIZACION', 'REPORTE', 'POLIZA', 'OTRO'];
 
@@ -147,16 +195,90 @@ function aviso(texto, tipo) {
   setTimeout(() => caja.remove(), 4000);
 }
 
+// ── Menú lateral ────────────────────────────────────────────────────────
+
+function menuPlegado(valor) {
+  if (valor === undefined) return app.classList.contains('plegado');
+  app.classList.toggle('plegado', valor);
+  try { localStorage.setItem('panel.menu', valor ? 'plegado' : 'abierto'); } catch {}
+}
+
+function menuMovil(abierto) {
+  app.classList.toggle('menu-abierto', abierto);
+  document.getElementById('nav-velo').hidden = !abierto;
+}
+
+try { menuPlegado(localStorage.getItem('panel.menu') === 'plegado'); } catch {}
+
+document.getElementById('nav-plegar').addEventListener('click', () => menuPlegado(!menuPlegado()));
+document.getElementById('nav-abrir').addEventListener('click', () => {
+  // En móvil el menú se abre encima; en escritorio el mismo botón lo pliega.
+  if (window.innerWidth < 900) menuMovil(!app.classList.contains('menu-abierto'));
+  else menuPlegado(!menuPlegado());
+});
+document.getElementById('nav-velo').addEventListener('click', () => menuMovil(false));
+
 // ── Hilo de conversación ────────────────────────────────────────────────
 
-async function abrirHilo(chatId) {
+function pintarMensajes(datos) {
+  const caja = document.getElementById('hilo-mensajes');
+  const abajo = caja.scrollHeight - caja.scrollTop - caja.clientHeight < 40;
+
+  const burbujas = datos.messages.map((m) =>
+    '<div class="burbuja ' + (m.direction === 'IN' ? 'entra' : 'sale') + '">' +
+      esc(m.body).slice(0, 1200) +
+      '<span class="hora">' + hora(m.createdAt) + '</span>' +
+    '</div>');
+
+  const pendientes = (datos.pendientes ?? []).map((p) =>
+    '<div class="burbuja sale pendiente' + (p.status === 'FAILED' ? ' fallo' : '') + '">' +
+      esc(p.body).slice(0, 1200) +
+      '<span class="hora">' + (p.status === 'FAILED'
+        ? 'no salió: ' + esc(p.error ?? 'error')
+        : 'enviando…') + '</span>' +
+    '</div>');
+
+  caja.innerHTML = burbujas.concat(pendientes).join('') ||
+    '<p class="muted centro">Sin mensajes todavía.</p>';
+
+  // Solo baja al final si ya estabas abajo: si estás leyendo arriba, no
+  // te arrastra.
+  if (abajo || ultimoHilo === null) caja.scrollTop = caja.scrollHeight;
+}
+
+function pintarEstadoHilo(datos) {
+  const boton = document.getElementById('hilo-atender');
+  const estado = document.getElementById('hilo-estado');
+
+  if (datos.enManosDePersona) {
+    boton.textContent = 'Devolver al bot';
+    boton.className = 'ghost small activo';
+    estado.innerHTML = '<span class="pill warn">Lo atiendes tú · el bot no contesta</span>' +
+      (datos.handoffUntil ? ' <span class="muted small">hasta ' + hora(datos.handoffUntil) + '</span>' : '');
+  } else {
+    boton.textContent = 'Atender yo';
+    boton.className = 'ghost small';
+    const etiqueta = {
+      BOT: ['warn', 'sin responder'],
+      AGENTE: ['warn', 'espera a una persona'],
+      CLIENTE: ['', 'espera al cliente'],
+      NADIE: ['ok', 'al día'],
+    }[datos.awaiting] ?? ['', datos.awaiting];
+    estado.innerHTML = '<span class="pill ' + etiqueta[0] + '">' + etiqueta[1] + '</span>' +
+      ' <span class="muted small">el bot atiende</span>';
+  }
+}
+
+async function abrirHilo(chatId, silencioso) {
   chatAbierto = chatId;
   const datos = await api('conversacion?chatId=' + encodeURIComponent(chatId));
   if (!datos) return;
 
   document.getElementById('hilo-nombre').textContent =
-    datos.contact?.displayName || datos.contact?.waId || datos.chatId;
-  document.getElementById('hilo-numero').textContent = datos.contact?.waId || datos.chatId;
+    datos.contact?.displayName || numeroBonito(datos.contact?.waId) || datos.chatId;
+  document.getElementById('hilo-numero').textContent = numeroBonito(datos.contact?.waId || datos.chatId);
+
+  pintarEstadoHilo(datos);
 
   const membresias = datos.contact?.memberships ?? [];
   document.getElementById('hilo-meta').innerHTML = membresias.length
@@ -166,58 +288,95 @@ async function abrirHilo(chatId) {
       ).join(' ')
     : '<span class="pill warn">sin acceso a ninguna empresa</span>';
 
-  document.getElementById('hilo-tickets').innerHTML = datos.tickets.length
-    ? datos.tickets.map((t) =>
+  const abiertos = datos.tickets.filter((t) => t.state !== 'CERRADO');
+  document.getElementById('hilo-tickets').innerHTML = abiertos.length
+    ? abiertos.map((t) =>
         '<div class="ticket-mini">' +
-          '<span class="pill ' + t.state + '">#' + t.number + ' ' + t.state + '</span> ' +
-          esc(t.subject) +
-          (t.state !== 'CERRADO'
-            ? ' <button class="mini" data-cerrar="' + t.id + '">Cerrar</button>'
-            : '') +
+          '<span class="pill ' + t.state + '">#' + t.number + '</span> ' +
+          '<span class="recorte">' + esc(t.subject) + '</span>' +
+          ' <button class="mini" data-cerrar="' + t.id + '">Cerrar</button>' +
         '</div>',
       ).join('')
-    : '<p class="muted">Sin tickets.</p>';
+    : '<span class="muted small">Sin tickets abiertos' +
+      (datos.tickets.length ? ' · ' + datos.tickets.length + ' cerrados' : '') + '</span>';
 
-  document.getElementById('hilo-mensajes').innerHTML = datos.messages.map((m) =>
-    '<div class="burbuja ' + (m.direction === 'IN' ? 'entra' : 'sale') + '">' +
-      esc(m.body).slice(0, 800) +
-      '<span class="hora">' + hora(m.createdAt) + '</span>' +
-    '</div>',
-  ).join('');
+  pintarMensajes(datos);
+  ultimoHilo = datos;
 
   document.getElementById('hilo').hidden = false;
-  document.getElementById('velo').hidden = false;
+  app.classList.add('con-hilo');
 
-  // Al final del hilo: lo último es lo que importa.
-  const caja = document.getElementById('hilo-mensajes');
-  caja.scrollTop = caja.scrollHeight;
+  if (!silencioso) {
+    document.querySelectorAll('[data-chat]').forEach((el) =>
+      el.classList.toggle('abierta', el.dataset.chat === chatId));
+    if (window.innerWidth >= 900) document.getElementById('hilo-texto').focus();
+  }
 }
 
 function cerrarHilo() {
   chatAbierto = null;
+  ultimoHilo = null;
   document.getElementById('hilo').hidden = true;
-  document.getElementById('velo').hidden = true;
+  app.classList.remove('con-hilo');
+  document.querySelectorAll('[data-chat].abierta').forEach((el) => el.classList.remove('abierta'));
 }
 
 document.getElementById('hilo-cerrar').addEventListener('click', cerrarHilo);
-document.getElementById('velo').addEventListener('click', cerrarHilo);
+document.getElementById('hilo-volver').addEventListener('click', cerrarHilo);
+
+document.getElementById('hilo-atender').addEventListener('click', async () => {
+  if (!chatAbierto || !ultimoHilo) return;
+  const activo = !ultimoHilo.enManosDePersona;
+  try {
+    await enviar('conversacion/atender', { chatId: chatAbierto, activo });
+    aviso(activo ? 'El bot se calla en este chat; lo atiendes tú.' : 'El bot vuelve a atender este chat.');
+    await abrirHilo(chatAbierto, true);
+    pintar(vistaActual, true);
+  } catch (err) { aviso(err.message, 'error'); }
+});
+
+const campoTexto = document.getElementById('hilo-texto');
+campoTexto.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    document.getElementById('hilo-form').requestSubmit();
+  }
+});
+campoTexto.addEventListener('input', () => {
+  campoTexto.style.height = 'auto';
+  campoTexto.style.height = Math.min(campoTexto.scrollHeight, 140) + 'px';
+});
 
 document.getElementById('hilo-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const campo = document.getElementById('hilo-texto');
-  const texto = campo.value.trim();
+  const texto = campoTexto.value.trim();
   if (!texto || !chatAbierto) return;
 
-  campo.value = '';
+  campoTexto.value = '';
+  campoTexto.style.height = 'auto';
+
+  // Se pinta ya, como pendiente: el mensaje existe para ti desde que le
+  // das enviar, no desde que WhatsApp lo confirma.
+  if (ultimoHilo) {
+    ultimoHilo.pendientes = (ultimoHilo.pendientes ?? []).concat([{ body: texto, status: 'PENDING' }]);
+    pintarMensajes(ultimoHilo);
+  }
+
   try {
     await enviar('mensaje', { chatId: chatAbierto, text: texto });
-    aviso('Mensaje encolado');
-    await abrirHilo(chatAbierto);
+    await abrirHilo(chatAbierto, true);
+    pintar(vistaActual, true);
   } catch (err) {
     aviso(err.message, 'error');
-    campo.value = texto;
+    campoTexto.value = texto;
   }
 });
+
+// Con un hilo abierto, se refresca solo cada 5 s: lo que conteste el
+// cliente aparece sin tocar nada. Sin pisar lo que estás escribiendo.
+setInterval(() => {
+  if (chatAbierto) abrirHilo(chatAbierto, true);
+}, 5000);
 
 document.addEventListener('click', async (e) => {
   const cerrar = e.target.closest('[data-cerrar]');
@@ -225,38 +384,69 @@ document.addEventListener('click', async (e) => {
     try {
       await enviar('ticket/cerrar', { id: cerrar.dataset.cerrar });
       aviso('Ticket cerrado');
-      if (chatAbierto) await abrirHilo(chatAbierto);
+      if (chatAbierto) await abrirHilo(chatAbierto, true);
       pintarResumen();
     } catch (err) { aviso(err.message, 'error'); }
     return;
   }
 
+  const filtro = e.target.closest('[data-filtro]');
+  if (filtro) {
+    filtroBandeja = filtro.dataset.filtro;
+    pintar('bandeja');
+    return;
+  }
+
   const fila = e.target.closest('[data-chat]');
-  if (fila) abrirHilo(fila.dataset.chat);
+  if (fila && fila.dataset.chat) abrirHilo(fila.dataset.chat);
 });
 
 // ── Vistas ──────────────────────────────────────────────────────────────
 
 const VISTAS = {
   async bandeja() {
-    const filas = await api('bandeja');
-    return '<p class="muted">Lo que espera por nosotros, lo más antiguo primero. ' +
-      'Haz clic en una fila para abrir la conversación.</p>' +
-      tabla(
-        ['Espera desde', 'Contacto', 'Tema', 'Situación', 'Ticket', 'Visto'],
-        filas.map((c) => '<tr class="clic" data-chat="' + esc(c.chatId) + '">' +
-          '<td><strong>' + esc(c.esperando) + '</strong></td>' +
-          '<td>' + esc(c.contact?.displayName ?? c.contact?.waId ?? c.chatId) + '</td>' +
-          '<td>' + (c.topic
-            ? '<span class="pill">' + esc(c.topic) + '</span>'
-            : '<span class="muted">sin clasificar</span>') + '</td>' +
-          '<td><span class="pill ' + (c.awaiting === 'AGENTE' ? 'warn' : 'ABIERTO') + '">' +
-            (c.awaiting === 'AGENTE' ? 'espera a una persona' : 'sin responder') + '</span></td>' +
-          '<td>' + (c.tickets[0] ? '#' + c.tickets[0].number : '—') + '</td>' +
-          '<td class="muted">' + (c.seenAt ? 'leído' : 'sin leer') + '</td>' +
-        '</tr>'),
-        'Nada pendiente. Todo contestado.',
-      );
+    const consulta = filtroBandeja === 'todas' ? 'bandeja' : 'bandeja?esperando=' + filtroBandeja;
+    const filas = await api(consulta);
+
+    const chips = [
+      ['todas', 'Todas'], ['persona', 'Esperan a una persona'], ['BOT', 'Sin responder'], ['CLIENTE', 'Esperan al cliente'],
+    ].map(([valor, texto]) =>
+      '<button class="chip' + (filtroBandeja === valor ? ' activo' : '') + '" data-filtro="' + valor + '">' + texto + '</button>',
+    ).join('');
+
+    const lista = filas.length
+      ? '<div class="lista">' + filas.map((c) => {
+          const nombre = c.contact?.displayName || numeroBonito(c.contact?.waId) || c.chatId;
+          const ultimo = c.ultimo
+            ? (c.ultimo.direction === 'OUT' ? '↩ ' : '') + c.ultimo.body.replace(/\\s+/g, ' ').slice(0, 90)
+            : 'sin mensajes';
+          const estado = c.enManosDePersona
+            ? '<span class="pill warn">lo atiende una persona</span>'
+            : c.awaiting === 'AGENTE' || (c.tickets[0] && c.tickets[0].state === 'EN_REVISION')
+              ? '<span class="pill warn">espera a una persona</span>'
+              : c.awaiting === 'BOT'
+                ? '<span class="pill ABIERTO">sin responder</span>'
+                : c.awaiting === 'CLIENTE'
+                  ? '<span class="pill">espera al cliente</span>'
+                  : '';
+          return '<div class="fila' + (c.chatId === chatAbierto ? ' abierta' : '') + '" data-chat="' + esc(c.chatId) + '">' +
+            '<div class="avatar">' + esc(iniciales(nombre)) + '</div>' +
+            '<div class="fila-cuerpo">' +
+              '<div class="fila-arriba"><strong class="recorte">' + esc(nombre) + '</strong>' +
+                '<span class="muted small">' + hace(c.lastInboundAt) + '</span></div>' +
+              '<div class="fila-abajo"><span class="muted recorte">' + esc(ultimo) + '</span></div>' +
+              '<div class="fila-pills">' + estado +
+                (c.topic ? ' <span class="pill">' + esc(c.topic) + '</span>' : '') +
+                (c.tickets[0] ? ' <span class="muted small">#' + c.tickets[0].number + '</span>' : '') +
+              '</div>' +
+            '</div>' +
+          '</div>';
+        }).join('') + '</div>'
+      : '<p class="vacio">' + (filtroBandeja === 'todas'
+          ? 'Nadie ha escrito en las últimas dos semanas.'
+          : 'Nada aquí. Todo atendido.') + '</p>';
+
+    return '<div class="chips">' + chips + '</div>' + lista;
   },
 
   async tickets() {
@@ -265,12 +455,12 @@ const VISTAS = {
       ['Folio', 'Asunto', 'Estado', 'Prioridad', 'Empresa', 'Contacto', 'Creado'],
       filas.map((t) => '<tr class="clic" data-chat="' + esc(t.contact?.waId ?? '') + '">' +
         '<td>#' + t.number + '</td>' +
-        '<td>' + esc(t.subject) + '</td>' +
+        '<td class="recorte-celda">' + esc(t.subject) + '</td>' +
         '<td><span class="pill ' + t.state + '">' + t.state.replace('_', ' ') + '</span>' +
-          (t.level > 0 ? ' <span class="muted">nivel ' + t.level + '</span>' : '') + '</td>' +
+          (t.level > 0 ? ' <span class="muted small">nivel ' + t.level + '</span>' : '') + '</td>' +
         '<td><span class="pill p' + t.priority + '">' + t.priority + '</span></td>' +
         '<td>' + esc(t.organization?.name ?? '—') + '</td>' +
-        '<td class="mono muted">' + esc(t.contact?.waId ?? '') + '</td>' +
+        '<td>' + esc(t.contact?.displayName ?? numeroBonito(t.contact?.waId)) + '</td>' +
         '<td class="muted">' + fecha(t.createdAt) + '</td>' +
       '</tr>'),
       'No hay tickets.',
@@ -315,7 +505,7 @@ const VISTAS = {
     return formulario + tabla(
       ['Número', 'Nombre', 'Empresa', 'Rol', 'Verificado', 'Puede consultar', ''],
       filas.map((m) => '<tr>' +
-        '<td class="mono">' + esc(m.contact.waId.replace('@c.us', '')) + '</td>' +
+        '<td class="mono">' + esc(numeroBonito(m.contact.waId)) + '</td>' +
         '<td>' + esc(m.contact.displayName ?? '—') + '</td>' +
         '<td>' + esc(m.organization.name) + '</td>' +
         '<td>' + m.role + '</td>' +
@@ -325,7 +515,7 @@ const VISTAS = {
         '<td>' + (m.role === 'VIEWER'
           ? (m.grants.map((g) => esc(g.category)).join(', ') || '<span class="muted">nada</span>')
           : '<span class="muted">todo lo de su empresa</span>') + '</td>' +
-        '<td>' + (esAdmin
+        '<td class="acciones">' + (esAdmin
           ? (m.verifiedAt ? '' : '<button class="mini" data-verificar="' + m.id + '">Verificar</button> ') +
             '<button class="mini peligro" data-revocar="' + m.id + '">Revocar</button>'
           : '') + '</td>' +
@@ -352,8 +542,6 @@ const VISTAS = {
         <button type="submit">Crear empresa</button>
       </form>\` : '';
 
-    // Una carpeta que empieza por "drive-folder-" es de los datos de prueba:
-    // no existe en Drive y conviene que salte a la vista.
     const esFalsa = (id) => id.startsWith('drive-folder-');
 
     return formulario + tabla(
@@ -366,14 +554,12 @@ const VISTAS = {
             ? '<input class="mono compacto" value="' + esc(o.driveFolderId) +
               '" data-carpeta="' + o.id + '">'
             : esc(o.driveFolderId)) +
-          (esFalsa(o.driveFolderId)
-            ? ' <span class="pill warn">de prueba</span>'
-            : '') +
+          (esFalsa(o.driveFolderId) ? ' <span class="pill warn">de prueba</span>' : '') +
         '</td>' +
         '<td>' + o._count.memberships + '</td>' +
         '<td>' + o._count.documents + '</td>' +
         '<td>' + o._count.tickets + '</td>' +
-        '<td>' + (esAdmin
+        '<td class="acciones">' + (esAdmin
           ? '<button class="mini" data-guardar="' + o.id + '">Guardar</button>'
           : '') + '</td>' +
       '</tr>'),
@@ -384,7 +570,7 @@ const VISTAS = {
   async cuarentena() {
     const filas = await api('cuarentena');
     return '<p class="muted">Documentos que Drive tiene y el bot no pudo clasificar. ' +
-      'Les falta categoría o periodo en el nombre; mientras estén aquí, no se entregan. ' +
+      'Les falta tipo o mes en el nombre; mientras estén aquí, no se entregan. ' +
       'Formato esperado: <code>FACTURA_2026-02_A1234.pdf</code></p>' +
       tabla(
         ['Archivo', 'Empresa', 'Tipo', 'Indexado'],
@@ -406,7 +592,7 @@ const VISTAS = {
         ['Cuándo', 'Número', 'Consulta', 'Decisión', 'Regla'],
         filas.map((a) => '<tr>' +
           '<td class="muted">' + fecha(a.createdAt) + '</td>' +
-          '<td class="mono">' + esc(a.waId.replace('@c.us', '')) + '</td>' +
+          '<td class="mono">' + esc(numeroBonito(a.waId)) + '</td>' +
           '<td>' + esc(a.query) + '</td>' +
           '<td><span class="pill ' + (a.decision === 'ALLOW' ? 'ok' : 'warn') + '">' +
             esc(a.decision) + '</span></td>' +
@@ -419,10 +605,6 @@ const VISTAS = {
 
 // ── Formularios ─────────────────────────────────────────────────────────
 
-/**
- * La vista previa del número se pide al servidor con un respiro de 400 ms.
- * Sin ese respiro, cada tecla dispara una consulta a WhatsApp.
- */
 let temporizador = null;
 
 document.addEventListener('input', (e) => {
@@ -458,8 +640,6 @@ document.addEventListener('input', (e) => {
 
 document.addEventListener('change', (e) => {
   if (e.target.id !== 'rol') return;
-  // MANAGER y ADMIN ven todo lo de su empresa: marcar categorías ahí solo
-  // confunde a quien lea el directorio después.
   document.getElementById('permisos').hidden = e.target.value !== 'VIEWER';
 });
 
@@ -539,7 +719,7 @@ async function pintarResumen() {
   if (!r) return;
 
   document.getElementById('resumen').innerHTML = [
-    ['Sin responder', r.abiertos, ''],
+    ['Sin responder', r.abiertos, r.abiertos > 0 ? 'warn' : ''],
     ['Esperan a una persona', r.revision, r.revision > 0 ? 'warn' : ''],
     ['Prioridad alta', r.alta, r.alta > 0 ? 'warn' : ''],
     ['Sin clasificar en Drive', r.cuarentena, r.cuarentena > 0 ? 'warn' : ''],
@@ -548,24 +728,37 @@ async function pintarResumen() {
   ].map(([etiqueta, valor, clase]) =>
     '<div class="card metric ' + clase + '"><span>' + etiqueta + '</span><strong>' + valor + '</strong></div>',
   ).join('');
+
+  const bp = document.getElementById('badge-persona');
+  bp.textContent = r.revision; bp.hidden = !(r.revision > 0);
+  const bc = document.getElementById('badge-cuarentena');
+  bc.textContent = r.cuarentena; bc.hidden = !(r.cuarentena > 0);
 }
 
-async function pintar(vista) {
+async function pintar(vista, silencioso) {
   vistaActual = vista;
-  contenido.innerHTML = '<p class="muted">Cargando…</p>';
+  document.getElementById('titulo').textContent = TITULOS[vista] ?? vista;
+  document.querySelectorAll('.nav-items button').forEach((b) =>
+    b.classList.toggle('active', b.dataset.view === vista));
+  if (!silencioso) contenido.innerHTML = '<p class="muted">Cargando…</p>';
   try {
     contenido.innerHTML = await VISTAS[vista]();
   } catch (err) {
     contenido.innerHTML = '<p class="alert">No se pudo cargar: ' + esc(err.message) + '</p>';
   }
+  document.getElementById('reloj').textContent = 'actualizado ' + hora(new Date().toISOString());
 }
 
-document.querySelectorAll('.tabs button').forEach((boton) => {
+document.querySelectorAll('.nav-items button').forEach((boton) => {
   boton.addEventListener('click', () => {
-    document.querySelectorAll('.tabs button').forEach((b) => b.classList.remove('active'));
-    boton.classList.add('active');
+    menuMovil(false);
     pintar(boton.dataset.view);
   });
+});
+
+document.getElementById('refrescar').addEventListener('click', () => {
+  pintarResumen();
+  pintar(vistaActual, true);
 });
 
 document.getElementById('logout').addEventListener('click', async () => {
@@ -583,16 +776,13 @@ api('me').then((usuario) => {
 
 pintarResumen();
 
-// Refresco periódico. 30 segundos: esto es una consola de operación, no un
-// tablero en vivo. No refresca con el hilo abierto ni con un formulario a
-// medio llenar: recargar debajo de las manos del operador es peor que un
-// dato con medio minuto de retraso.
+// Refresco de la lista cada 20 s, sin recargar debajo de un formulario a
+// medio llenar. El hilo abierto tiene su propio refresco más frecuente.
 setInterval(() => {
-  if (chatAbierto) return;
   if (document.querySelector('.form-alta input:focus')) return;
   pintarResumen();
-  pintar(vistaActual);
-}, 30000);
+  pintar(vistaActual, true);
+}, 20000);
 </script>
 </body></html>`;
 }
@@ -602,59 +792,129 @@ const STYLES = `<style>
     color-scheme: dark;
     --fondo: #0f1115;
     --caja: #141821;
+    --caja2: #1a1f2a;
     --borde: #232733;
     --texto: #e6e6e6;
     --suave: #8b93a1;
     --azul: #2f6feb;
+    --nav: 232px;
+    --nav-plegado: 60px;
+    --hilo: 420px;
   }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
+  html, body { height: 100%; }
   body {
     margin: 0; background: var(--fondo); color: var(--texto);
     font: 14px/1.55 system-ui, -apple-system, Segoe UI, sans-serif;
   }
   body.centered { min-height: 100vh; display: grid; place-items: center; }
-  header {
-    display: flex; align-items: center; gap: 12px; position: sticky; top: 0; z-index: 5;
-    padding: 14px 20px; border-bottom: 1px solid var(--borde); background: var(--caja);
-  }
-  .spacer { flex: 1; }
   .muted { color: var(--suave); }
+  .small { font-size: 12px; }
+  .centro { text-align: center; }
   .warn-text { color: #e8c07d; }
   .ok-text { color: #7ee2a8; }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
   code { background: #1b1f28; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .spacer { flex: 1; }
+  .recorte { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .recorte-celda { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-  .cards { display: flex; gap: 12px; padding: 20px 20px 0; flex-wrap: wrap; }
-  .card { background: var(--caja); border: 1px solid var(--borde); border-radius: 10px; padding: 16px; }
-  .metric { min-width: 150px; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+  /* ── Armazón ─────────────────────────────────────────────────────── */
+  .app {
+    display: grid; height: 100vh; height: 100dvh;
+    grid-template-columns: var(--nav) 1fr 0;
+    transition: grid-template-columns .18s ease;
+  }
+  .app.plegado { grid-template-columns: var(--nav-plegado) 1fr 0; }
+  .app.con-hilo { grid-template-columns: var(--nav) 1fr var(--hilo); }
+  .app.plegado.con-hilo { grid-template-columns: var(--nav-plegado) 1fr var(--hilo); }
+
+  .main { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+  main { padding: 16px 20px 28px; overflow-y: auto; flex: 1; }
+  main > p:first-child { margin-top: 0; }
+
+  /* ── Menú lateral ────────────────────────────────────────────────── */
+  .nav {
+    background: var(--caja); border-right: 1px solid var(--borde);
+    display: flex; flex-direction: column; overflow: hidden; min-width: 0;
+  }
+  .nav-brand { display: flex; align-items: center; gap: 10px; padding: 14px 12px 12px 16px; border-bottom: 1px solid var(--borde); }
+  .logo { font-size: 20px; color: var(--azul); }
+  .nav-brand strong { display: block; line-height: 1.1; }
+  .nav-brand small { color: var(--suave); font-size: 11px; }
+  .nav-brand .nav-text { flex: 1; }
+  .nav-items { display: flex; flex-direction: column; gap: 2px; padding: 10px 8px; flex: 1; }
+  .nav-items button {
+    display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+    background: none; border: none; color: var(--suave); cursor: pointer;
+    padding: 9px 10px; border-radius: 8px; font-size: 14px; white-space: nowrap;
+  }
+  .nav-items button:hover { background: var(--caja2); color: var(--texto); }
+  .nav-items button.active { background: #1c2a45; color: #fff; }
+  .ico { width: 20px; text-align: center; flex-shrink: 0; font-size: 15px; }
+  .badge { margin-left: auto; background: #33270f; color: #e8c07d; border-radius: 999px; padding: 0 7px; font-size: 11px; }
+  .nav-foot { padding: 10px 8px 12px; border-top: 1px solid var(--borde); display: flex; flex-direction: column; gap: 8px; }
+  .nav-foot .nav-text { padding: 0 8px; }
+  .nav-foot .ghost { display: flex; align-items: center; gap: 10px; width: 100%; justify-content: flex-start; }
+  .plegado .nav-text { display: none !important; }
+  .plegado .nav-brand { padding-left: 12px; justify-content: center; }
+  .plegado .nav-items button { justify-content: center; padding: 10px 0; }
+  .plegado .nav-foot .ghost { justify-content: center; }
+  #nav-velo { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 30; }
+
+  /* ── Barra superior y tarjetas ───────────────────────────────────── */
+  .top {
+    display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+    border-bottom: 1px solid var(--borde); background: var(--caja);
+  }
+  .top strong { font-size: 15px; }
+  .icon {
+    background: none; border: 1px solid transparent; color: var(--suave); cursor: pointer;
+    width: 34px; height: 34px; border-radius: 8px; font-size: 18px; line-height: 1;
+  }
+  .icon:hover { color: var(--texto); background: var(--caja2); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; padding: 16px 20px 0; }
+  .card { background: var(--caja); border: 1px solid var(--borde); border-radius: 10px; padding: 14px 16px; }
+  .metric { display: flex; flex-direction: column; gap: 2px; }
   .metric span { color: var(--suave); font-size: 12px; }
-  .metric strong { font-size: 26px; font-weight: 600; }
+  .metric strong { font-size: 24px; font-weight: 600; }
   .metric.warn strong { color: #e8c07d; }
 
-  .tabs { display: flex; gap: 4px; padding: 16px 20px 0; flex-wrap: wrap; border-bottom: 1px solid var(--borde); }
-  .tabs button {
-    background: none; border: none; color: var(--suave); cursor: pointer;
-    padding: 9px 14px; border-radius: 8px 8px 0 0; font-size: 14px;
-    border-bottom: 2px solid transparent; margin-bottom: -1px;
+  /* ── Lista de conversaciones ─────────────────────────────────────── */
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .chip {
+    background: var(--caja); border: 1px solid var(--borde); color: var(--suave);
+    padding: 5px 12px; border-radius: 999px; cursor: pointer; font-size: 13px;
   }
-  .tabs button:hover { color: var(--texto); }
-  .tabs button.active { color: var(--texto); border-bottom-color: var(--azul); }
+  .chip:hover { color: var(--texto); }
+  .chip.activo { background: #1c2a45; border-color: #2a3f6b; color: #fff; }
+  .lista { background: var(--caja); border: 1px solid var(--borde); border-radius: 10px; overflow: hidden; }
+  .fila { display: flex; gap: 12px; padding: 12px 14px; border-bottom: 1px solid #1e222c; cursor: pointer; }
+  .fila:last-child { border-bottom: none; }
+  .fila:hover { background: var(--caja2); }
+  .fila.abierta { background: #182238; }
+  .avatar {
+    width: 38px; height: 38px; border-radius: 50%; background: #243250; color: #cfe0ff;
+    display: grid; place-items: center; font-size: 13px; font-weight: 600; flex-shrink: 0;
+  }
+  .fila-cuerpo { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .fila-arriba, .fila-abajo { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+  .fila-pills { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 3px; }
 
-  main { padding: 20px; }
-  main > p:first-child { margin-top: 0; }
+  /* ── Tablas ──────────────────────────────────────────────────────── */
   .vacio { color: var(--suave); padding: 32px; text-align: center; background: var(--caja);
            border: 1px dashed var(--borde); border-radius: 10px; }
-
   .scroll { overflow-x: auto; border: 1px solid var(--borde); border-radius: 10px; }
   table { width: 100%; border-collapse: collapse; background: var(--caja); }
   th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid #1e222c; }
   th { color: var(--suave); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
   tr:last-child td { border-bottom: none; }
   tr.clic { cursor: pointer; }
-  tr.clic:hover td { background: #1a1f2a; }
+  tr.clic:hover td { background: var(--caja2); }
+  td.acciones { white-space: nowrap; }
 
-  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; background: #232733; }
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; background: #232733; white-space: nowrap; }
   .ABIERTO { background: #123a52; color: #7cc7f0; }
   .EN_REVISION { background: #33270f; color: #e8c07d; }
   .CERRADO { background: #232733; color: var(--suave); }
@@ -664,15 +924,16 @@ const STYLES = `<style>
   .ok { background: #10331d; color: #7ee2a8; }
   .warn { background: #33270f; color: #e8c07d; }
 
+  /* ── Formularios ─────────────────────────────────────────────────── */
   .form-alta { margin-bottom: 20px; }
   .form-alta h3 { margin: 0 0 14px; font-size: 15px; }
   .campos { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; }
   label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--suave); }
-  input, select {
+  input, select, textarea {
     background: var(--fondo); border: 1px solid #2b3040; border-radius: 8px;
     padding: 9px 10px; color: var(--texto); font-size: 14px; font-family: inherit;
   }
-  input:focus, select:focus { outline: none; border-color: var(--azul); }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--azul); }
   .compacto { padding: 4px 7px; font-size: 12px; width: 240px; }
   .permisos { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin: 14px 0; font-size: 13px; }
   .check { flex-direction: row; align-items: center; gap: 6px; color: var(--texto); }
@@ -682,46 +943,80 @@ const STYLES = `<style>
   }
   .ghost { background: none; border: 1px solid #2b3040; color: var(--suave);
            padding: 6px 12px; border-radius: 8px; cursor: pointer; }
+  .ghost:hover { color: var(--texto); }
+  .ghost.small { padding: 4px 10px; font-size: 12px; white-space: nowrap; }
+  .ghost.activo { border-color: #6b5320; color: #e8c07d; }
   .mini { background: none; border: 1px solid #2b3040; color: var(--suave);
           padding: 3px 9px; border-radius: 6px; cursor: pointer; font-size: 12px; }
   .mini:hover { color: var(--texto); }
   .mini.peligro:hover { border-color: #6b2b2b; color: #f0a0a0; }
 
-  /* Hilo lateral */
-  #velo { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 8; }
+  /* ── Hilo ────────────────────────────────────────────────────────── */
   #hilo {
-    position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 100vw); z-index: 9;
     background: var(--caja); border-left: 1px solid var(--borde);
-    display: flex; flex-direction: column;
+    display: flex; flex-direction: column; min-width: 0; overflow: hidden;
   }
-  .hilo-head { display: flex; align-items: flex-start; gap: 12px; padding: 16px;
-               border-bottom: 1px solid var(--borde); }
-  .hilo-head strong { display: block; }
-  .hilo-head > div:first-child { flex: 1; }
-  .hilo-meta { padding: 12px 16px; display: flex; gap: 6px; flex-wrap: wrap;
-               border-bottom: 1px solid var(--borde); }
-  .hilo-tickets { padding: 12px 16px; border-bottom: 1px solid var(--borde); max-height: 140px; overflow-y: auto; }
-  .ticket-mini { margin-bottom: 6px; font-size: 13px; }
-  .chat { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+  .hilo-head { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--borde); }
+  .hilo-quien { flex: 1; min-width: 0; }
+  .hilo-quien strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hilo-estado { padding: 8px 14px; border-bottom: 1px solid var(--borde); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .hilo-meta { padding: 8px 14px; display: flex; gap: 6px; flex-wrap: wrap; border-bottom: 1px solid var(--borde); }
+  .hilo-tickets { padding: 8px 14px; border-bottom: 1px solid var(--borde); max-height: 120px; overflow-y: auto; }
+  .ticket-mini { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; font-size: 13px; }
+  .ticket-mini .recorte { flex: 1; }
+  .chat { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 8px; background: var(--fondo); }
   .burbuja {
-    max-width: 82%; padding: 8px 11px; border-radius: 10px; font-size: 13px;
+    max-width: 84%; padding: 8px 11px; border-radius: 10px; font-size: 13px;
     white-space: pre-wrap; word-break: break-word; position: relative;
   }
-  .burbuja.entra { background: #1e222c; align-self: flex-start; }
-  .burbuja.sale { background: #14452f; align-self: flex-end; }
+  .burbuja.entra { background: #1e222c; align-self: flex-start; border-bottom-left-radius: 3px; }
+  .burbuja.sale { background: #14452f; align-self: flex-end; border-bottom-right-radius: 3px; }
+  .burbuja.pendiente { opacity: .6; }
+  .burbuja.fallo { opacity: 1; background: #3d1a1a; }
   .hora { display: block; font-size: 10px; color: var(--suave); margin-top: 3px; text-align: right; }
-  .hilo-form { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--borde); }
-  .hilo-form input { flex: 1; }
+  .hilo-form { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--borde); align-items: flex-end; }
+  .hilo-form textarea { flex: 1; resize: none; max-height: 140px; line-height: 1.4; }
+  .hilo-form button { padding: 9px 14px; }
+  .solo-movil { display: none; }
 
+  /* ── Avisos ──────────────────────────────────────────────────────── */
   .toast {
     position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
     background: #1e222c; border: 1px solid var(--borde); color: var(--texto);
-    padding: 11px 18px; border-radius: 10px; z-index: 20; font-size: 13px;
-    box-shadow: 0 8px 24px rgba(0,0,0,.4);
+    padding: 11px 18px; border-radius: 10px; z-index: 50; font-size: 13px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.4); max-width: 90vw;
   }
   .toast.error { background: #3d1a1a; border-color: #6b2b2b; color: #f0a0a0; }
-
-  .login { display: flex; flex-direction: column; gap: 14px; width: 320px; }
+  .login { display: flex; flex-direction: column; gap: 14px; width: min(320px, 92vw); }
   .login h1 { font-size: 17px; margin: 0; }
   .alert { background: #3d1a1a; color: #f0a0a0; padding: 10px 12px; border-radius: 8px; font-size: 13px; }
+
+  /* ── Pantallas medianas: el hilo se superpone en vez de partir ───── */
+  @media (max-width: 1180px) {
+    .app.con-hilo, .app.plegado.con-hilo { grid-template-columns: var(--nav) 1fr 0; }
+    .app.plegado.con-hilo { grid-template-columns: var(--nav-plegado) 1fr 0; }
+    #hilo { position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 100vw); z-index: 20;
+            box-shadow: -12px 0 32px rgba(0,0,0,.45); }
+  }
+
+  /* ── Móvil: menú fuera de pantalla, hilo a pantalla completa ─────── */
+  @media (max-width: 899px) {
+    .app, .app.plegado, .app.con-hilo, .app.plegado.con-hilo { grid-template-columns: 1fr; }
+    .nav {
+      position: fixed; top: 0; bottom: 0; left: 0; width: min(280px, 85vw); z-index: 31;
+      transform: translateX(-100%); transition: transform .18s ease;
+    }
+    .app.menu-abierto .nav { transform: none; }
+    .plegado .nav-text { display: initial !important; }
+    .plegado .nav-items button { justify-content: flex-start; padding: 9px 10px; }
+    #nav-plegar { display: none; }
+    #hilo { width: 100vw; }
+    .solo-movil { display: inline-block; }
+    .no-movil { display: none; }
+    .cards { grid-template-columns: repeat(2, 1fr); padding: 12px 12px 0; gap: 8px; }
+    .metric strong { font-size: 20px; }
+    main { padding: 12px 12px 24px; }
+    .fila-abajo .recorte { max-width: 100%; }
+    th, td { padding: 9px 10px; }
+  }
 </style>`;
