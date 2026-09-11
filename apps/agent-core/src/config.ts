@@ -37,6 +37,16 @@ export const config = {
    */
   ownerSelfChatId: process.env.OWNER_SELF_CHAT_ID || null,
 
+  /**
+   * URL pública de este servicio, para los enlaces de descarga que se le
+   * mandan al cliente. En Render la inyecta RENDER_EXTERNAL_URL sola.
+   */
+  publicUrl: normalizeBaseUrl(
+    process.env.PUBLIC_URL ||
+      process.env.RENDER_EXTERNAL_URL ||
+      `http://localhost:${process.env.PORT ?? 3000}`,
+  ),
+
   /** Vacío = el bot funciona igual, pero sin conversación en lenguaje normal. */
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || null,
 

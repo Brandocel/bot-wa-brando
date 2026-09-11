@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { Document } from '@prisma/client';
 import { config } from '../../config';
 import { PrismaService } from '../../infrastructure/persistence/prisma.service';
+import { DocumentLinkService } from './document-link.service';
 import {
   DOCUMENT_SOURCE_PORT,
   type DocumentSourcePort,
@@ -63,7 +64,26 @@ export class DocumentDeliveryService {
   constructor(
     private readonly prisma: PrismaService,
     @Inject(DOCUMENT_SOURCE_PORT) private readonly source: DocumentSourcePort,
+    private readonly links: DocumentLinkService,
   ) {}
+
+  /**
+   * El mensaje con el enlace, para cuando el adjunto no sale.
+   *
+   * No es tan cómodo como recibir el PDF —hay que tocar un enlace— pero
+   * llega. Y caduca pronto, así que reenviarlo por ahí no lo convierte en
+   * una puerta abierta.
+   */
+  private enlaceDeRespaldo(document: Document): string {
+    const enlace = this.links.crear(document.id);
+
+    return [
+      `No pude adjuntarte ${document.name} por aquí, pero lo descargas desde:`,
+      enlace.url,
+      '',
+      'El enlace vence en 30 minutos.',
+    ].join('\n');
+  }
 
   /**
    * Encola el archivo en el outbox. No envía aquí: enviar es trabajo del
@@ -116,7 +136,11 @@ export class DocumentDeliveryService {
           base64,
           filename,
           caption,
-          fallbackText,
+          // Si el adjunto no sale, el enlace firmado sí. open-wa no logra
+          // mandar archivos a los hilos que WhatsApp direcciona por LID, y
+          // eso no se arregla desde aquí: es un límite de la librería. Un
+          // enlace que caduca en media hora entrega el documento igual.
+          fallbackText: fallbackText ?? this.enlaceDeRespaldo(document),
         },
       },
     });

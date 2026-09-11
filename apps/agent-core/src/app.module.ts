@@ -11,6 +11,7 @@ import { SourceFilter } from './application/pipeline/filters/source.filter';
 import { AccessScopeService } from './application/support/access-scope.service';
 import { ConversationStateService } from './application/support/conversation-state.service';
 import { DirectoryService } from './application/support/directory.service';
+import { DocumentLinkService } from './application/support/document-link.service';
 import { DocumentDeliveryService } from './application/support/document-delivery.service';
 import { DriveSyncService } from './application/support/drive-sync.service';
 import { SlotExtractorService } from './application/support/slot-extractor.service';
@@ -23,6 +24,7 @@ import { LLM_PORT } from './application/ports/llm.port';
 import { MESSAGING_PORT } from './application/ports/messaging.port';
 import { HandleIncomingMessageUseCase } from './application/use-cases/handle-incoming-message.use-case';
 
+import { DownloadController } from './infrastructure/http/download.controller';
 import { HealthController } from './infrastructure/http/health.controller';
 import { WaWebhookController } from './infrastructure/http/wa-webhook.controller';
 import { PanelApiController } from './infrastructure/http/panel/panel-api.controller';
@@ -42,6 +44,7 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
 @Module({
   controllers: [
     HealthController,
+    DownloadController,
     WaWebhookController,
     PanelController,
     PanelApiController,
@@ -85,6 +88,7 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     SupportStrategy,
     ConversationStateService,
     DirectoryService,
+    DocumentLinkService,
 
     // ── Casos de uso ───────────────────────────────────────────────────
     DriveCommandsService,

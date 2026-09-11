@@ -522,6 +522,37 @@ export async function sendText(to: string, text: string): Promise<string> {
  * `filename` importa más de lo que parece: WhatsApp lo usa para decidir el
  * icono y el visor. Un PDF sin extensión .pdf llega como archivo genérico.
  */
+/**
+ * Ejecuta algo capturando lo que open-wa escriba en console.error.
+ *
+ * Cuando sendImage recibe uno de sus errores conocidos, lo IMPRIME y luego
+ * devuelve `false`. Ese `false` es lo unico que nos llegaba, asi que el
+ * motivo real —"Not a contact", "Number not linked to WhatsApp Account"—
+ * se quedaba en los logs del gateway mientras el core reportaba un generico
+ * "rechazado sin explicacion".
+ *
+ * Interceptar console.error es intrusivo, pero los envios los serializa el
+ * outbox de uno en uno, asi que no hay dos capturas solapadas. Se restaura
+ * siempre en el finally.
+ */
+async function capturandoMotivo<T>(
+  fn: () => Promise<T>,
+): Promise<{ valor: T; motivos: string[] }> {
+  const original = console.error;
+  const motivos: string[] = [];
+
+  console.error = (...args: unknown[]): void => {
+    motivos.push(args.map((a) => String(a)).join(" "));
+    original(...(args as []));
+  };
+
+  try {
+    return { valor: await fn(), motivos };
+  } finally {
+    console.error = original;
+  }
+}
+
 export async function sendFile(input: {
   to: string;
   url?: string;
@@ -578,24 +609,26 @@ export async function sendFile(input: {
   for (const intento of intentos) {
     // waitForId en true: sin él open-wa devuelve `true` en vez del id del
     // mensaje, y sin id el core no puede reconocer el eco del archivo.
-    const result = url
-      ? await c.sendFileFromUrl(
-          intento.destino as never,
-          url,
-          filename,
-          caption,
-          (intento.citar ?? undefined) as never,
-          undefined,
-          true,
-        )
-      : await c.sendFile(
-          intento.destino as never,
-          base64 as string,
-          filename,
-          caption,
-          (intento.citar ?? undefined) as never,
-          true,
-        );
+    const { valor: result, motivos } = await capturandoMotivo(() =>
+      url
+        ? c.sendFileFromUrl(
+            intento.destino as never,
+            url,
+            filename,
+            caption,
+            (intento.citar ?? undefined) as never,
+            undefined,
+            true,
+          )
+        : c.sendFile(
+            intento.destino as never,
+            base64 as string,
+            filename,
+            caption,
+            (intento.citar ?? undefined) as never,
+            true,
+          ),
+    );
 
     if (typeof result === 'string' && !result.startsWith('ERROR')) return result;
 
@@ -604,7 +637,12 @@ export async function sendFile(input: {
     if (result === true) return `sent_${Date.now()}_${intento.destino}`;
 
     ultimoMotivo =
-      typeof result === 'string' ? result : 'rechazado sin explicación (false)';
+      typeof result === 'string'
+        ? result
+        : // El `false` de open-wa no dice nada, pero lo que imprimió justo
+          // antes sí: "Not a contact", "Number not linked to WhatsApp
+          // Account" y compañía.
+          motivos.join(' | ') || 'rechazado sin explicación (false)';
 
     console.warn(
       `[wa] ${filename} por ${intento.nota} (${intento.destino}): ${ultimoMotivo}`,
