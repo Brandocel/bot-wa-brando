@@ -55,17 +55,31 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  /**
+   * Varios trabajadores en paralelo, uno por mensaje.
+   *
+   * Con uno solo, diez personas escribiendo a la vez formaban fila: cada
+   * turno tarda unos segundos (modelo, Drive) y la décima esperaba medio
+   * minuto por una respuesta. Con varios, cada chat va por su lado. La
+   * serialización DENTRO de un chat no depende de esto: la da el advisory
+   * lock de PrismaService.withChatLock, así que dos mensajes de la misma
+   * persona nunca se procesan cruzados aunque haya trabajadores libres.
+   *
+   * Se llama a `work` varias veces (y no batchSize > 1) para que cada
+   * trabajo se complete o falle por su cuenta: en un lote, un fallo
+   * reintentaría también los que sí salieron bien.
+   */
   async workIncoming(handler: (job: IncomingJob) => Promise<void>): Promise<void> {
-    await this.boss.work<IncomingJob>(
-      INCOMING_QUEUE,
-      { batchSize: 1 },
-      async (jobs) => {
-        // pg-boss entrega un array; la serialización real por chat la da el
-        // advisory lock de PrismaService.withChatLock, no el batchSize.
-        for (const job of jobs) {
-          await handler(job.data);
-        }
-      },
-    );
+    for (let i = 0; i < config.queue.workers; i++) {
+      await this.boss.work<IncomingJob>(
+        INCOMING_QUEUE,
+        { batchSize: 1 },
+        async (jobs) => {
+          for (const job of jobs) {
+            await handler(job.data);
+          }
+        },
+      );
+    }
   }
 }

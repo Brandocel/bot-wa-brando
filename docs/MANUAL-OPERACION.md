@@ -198,7 +198,7 @@ Sin agentes dados de alta, los tickets quedan en revisión sin asignar y se ven 
 | `OWNER_WA_ID` | Tu número: `521XXXXXXXXXX@c.us`. Si está mal, no eres OWNER y no tienes comandos. `/id` te lo dice |
 | `ANTHROPIC_API_KEY` · `ANTHROPIC_MODEL` | Modelo (opcional) |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | JSON de la cuenta de servicio en una línea (opcional: sin esto no hay Drive) |
-| `MAX_DELIVERABLE_BYTES` · `DRIVE_SYNC_INTERVAL_MS` | Opcionales |
+| `MAX_DELIVERABLE_BYTES` · `DRIVE_SYNC_INTERVAL_MS` · `INCOMING_WORKERS` (mensajes atendidos a la vez, 4) | Opcionales |
 
 **wa-gateway**
 

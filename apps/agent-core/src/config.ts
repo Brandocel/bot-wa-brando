@@ -74,6 +74,17 @@ export const config = {
      */
     maxDeliverableBytes: Number(process.env.MAX_DELIVERABLE_BYTES ?? 15 * 1024 * 1024),
   },
+
+  queue: {
+    /**
+     * Cuántos mensajes entrantes se atienden a la vez (de chats distintos;
+     * el mismo chat siempre va en orden). Cuatro alcanza para decenas de
+     * personas escribiendo en la misma hora sin que nadie espere en fila.
+     * Cada uno es una conexión a Postgres y, cuando toca, una llamada al
+     * modelo: no conviene subirlo a lo loco en un plan chico.
+     */
+    workers: Math.max(1, Number(process.env.INCOMING_WORKERS ?? 4)),
+  },
 } as const;
 
 interface ServiceAccount {

@@ -11,6 +11,9 @@ import {
 } from '../../application/ports/messaging.port';
 import { PrismaService } from './prisma.service';
 
+/** Chats a los que se les manda a la vez. Cada uno sigue yendo en orden. */
+const CHATS_EN_PARALELO = 3;
+
 const MAX_ATTEMPTS = 5;
 const SWEEP_MS = 15_000;
 
@@ -95,91 +98,122 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
       const pending = await this.prisma.outboxMessage.findMany({
         where: { status: 'PENDING', attempts: { lt: MAX_ATTEMPTS } },
         orderBy: { createdAt: 'asc' },
-        take: 20,
+        take: 40,
       });
 
       /**
-       * Chats en los que ya falló algo en este barrido. Lo que venga
-       * detrás para el mismo chat espera al siguiente: si el archivo no
-       * salió, mandar el "aquí está" que lo acompaña es mentirle a la
-       * persona, y además le llegaría en el orden equivocado.
+       * Por chat, en orden; entre chats, en paralelo (con tope).
+       *
+       * Dentro de un chat el orden es sagrado: el archivo antes que el
+       * "aquí está", y si algo falla lo que venga detrás espera al
+       * siguiente barrido. Pero el retardo humano (uno a seis segundos
+       * por mensaje) no tiene por qué pagarlo cada persona por las demás:
+       * con diez chats activos, la décima esperaba medio minuto por una
+       * respuesta que ya estaba escrita. El tope existe por WhatsApp: no
+       * es buena idea disparar a veinte chats en el mismo segundo.
        */
-      const bloqueados = new Set<string>();
-
+      const porChat = new Map<string, typeof pending>();
       for (const row of pending) {
-        if (bloqueados.has(row.chatId)) continue;
+        const fila = porChat.get(row.chatId) ?? [];
+        fila.push(row);
+        porChat.set(row.chatId, fila);
+      }
 
-        const payload = row.payload as unknown as OutboxPayload;
-        const attempts = row.attempts + 1;
-
-        /**
-         * Reclamar la fila ANTES de enviar, y de forma atómica.
-         *
-         * Durante un deploy conviven dos instancias del core unos segundos,
-         * y las dos barren el mismo outbox. Sin esto las dos leían la misma
-         * fila PENDING, las dos la mandaban, y el cliente recibía cada
-         * respuesta dos veces. El `attempts` en el where es el cerrojo: solo
-         * una de las dos consigue subirlo, y la otra ve 0 filas y se aparta.
-         */
-        const claimed = await this.prisma.outboxMessage.updateMany({
-          where: { id: row.id, status: 'PENDING', attempts: row.attempts },
-          data: { attempts },
-        });
-        if (claimed.count === 0) continue;
-
-        try {
-          // Ritmo humano: nada de responder en 200ms como una máquina.
-          await this.messaging.setTyping(row.chatId, true);
-
-          const sent =
-            payload.kind === 'file'
-              ? await this.sendFilePayload(row.chatId, payload)
-              : await this.sendTextPayload(row.chatId, payload);
-
-          await this.messaging.setTyping(row.chatId, false);
-
-          await this.prisma.outboxMessage.update({
-            where: { id: row.id },
-            data: { status: 'SENT', sentAt: new Date() },
-          });
-
-          await this.recordOutbound(row.chatId, sent.id, sent.body, sent.kind);
-        } catch (err) {
-          const detail = err instanceof Error ? err.message : String(err);
-          this.logger.warn(`outbox ${row.id} intento ${attempts}: ${detail}`);
-          bloqueados.add(row.chatId);
-
-          const agotado = attempts >= MAX_ATTEMPTS;
-
-          // La fila pudo desaparecer entre el findMany y este update (otro
-          // proceso, una limpieza). Registrar el fallo es lo secundario aqui:
-          // que reviente el manejo de errores seria peor que el error mismo.
-          try {
-            await this.prisma.outboxMessage.update({
-              where: { id: row.id },
-              data: {
-                lastError: detail,
-                status: agotado ? 'FAILED' : 'PENDING',
-              },
-            });
-
-            // Se rindió con el archivo: que la persona lo sepa, en vez de
-            // quedarse esperando un PDF que ya no va a llegar.
-            if (agotado && payload.kind === 'file' && payload.fallbackText) {
-              await this.prisma.outboxMessage.create({
-                data: {
-                  chatId: row.chatId,
-                  payload: { kind: 'text', text: payload.fallbackText },
-                },
-              });
-            }
-          } catch {
-            this.logger.warn(`outbox ${row.id} ya no existe; se ignora`);
+      const colas = [...porChat.values()];
+      let siguiente = 0;
+      const trabajador = async (): Promise<void> => {
+        while (siguiente < colas.length) {
+          const cola = colas[siguiente++]!;
+          for (const row of cola) {
+            const ok = await this.enviarFila(row);
+            if (!ok) break;
           }
         }
-      }
+      };
+
+      await Promise.all(
+        Array.from({ length: Math.min(CHATS_EN_PARALELO, colas.length) }, () => trabajador()),
+      );
     } finally {
       this.draining = false;
+    }
+  }
+
+  /** Manda una fila del outbox. Devuelve false si falló (el chat se detiene por este barrido). */
+  private async enviarFila(row: {
+    id: string;
+    chatId: string;
+    attempts: number;
+    payload: unknown;
+  }): Promise<boolean> {
+    const payload = row.payload as unknown as OutboxPayload;
+    const attempts = row.attempts + 1;
+
+    /**
+     * Reclamar la fila ANTES de enviar, y de forma atómica.
+     *
+     * Durante un deploy conviven dos instancias del core unos segundos,
+     * y las dos barren el mismo outbox. Sin esto las dos leían la misma
+     * fila PENDING, las dos la mandaban, y el cliente recibía cada
+     * respuesta dos veces. El `attempts` en el where es el cerrojo: solo
+     * una de las dos consigue subirlo, y la otra ve 0 filas y se aparta.
+     */
+    const claimed = await this.prisma.outboxMessage.updateMany({
+      where: { id: row.id, status: 'PENDING', attempts: row.attempts },
+      data: { attempts },
+    });
+    if (claimed.count === 0) return true;
+
+    try {
+      // Ritmo humano: nada de responder en 200ms como una máquina.
+      await this.messaging.setTyping(row.chatId, true);
+
+      const sent =
+        payload.kind === 'file'
+          ? await this.sendFilePayload(row.chatId, payload)
+          : await this.sendTextPayload(row.chatId, payload);
+
+      await this.messaging.setTyping(row.chatId, false);
+
+      await this.prisma.outboxMessage.update({
+        where: { id: row.id },
+        data: { status: 'SENT', sentAt: new Date() },
+      });
+
+      await this.recordOutbound(row.chatId, sent.id, sent.body, sent.kind);
+      return true;
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`outbox ${row.id} intento ${attempts}: ${detail}`);
+
+      const agotado = attempts >= MAX_ATTEMPTS;
+
+      // La fila pudo desaparecer entre el findMany y este update (otro
+      // proceso, una limpieza). Registrar el fallo es lo secundario aqui:
+      // que reviente el manejo de errores seria peor que el error mismo.
+      try {
+        await this.prisma.outboxMessage.update({
+          where: { id: row.id },
+          data: {
+            lastError: detail,
+            status: agotado ? 'FAILED' : 'PENDING',
+          },
+        });
+
+        // Se rindió con el archivo: que la persona lo sepa, en vez de
+        // quedarse esperando un PDF que ya no va a llegar.
+        if (agotado && payload.kind === 'file' && payload.fallbackText) {
+          await this.prisma.outboxMessage.create({
+            data: {
+              chatId: row.chatId,
+              payload: { kind: 'text', text: payload.fallbackText },
+            },
+          });
+        }
+      } catch {
+        this.logger.warn(`outbox ${row.id} ya no existe; se ignora`);
+      }
+      return false;
     }
   }
 
