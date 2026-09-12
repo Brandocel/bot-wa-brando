@@ -380,3 +380,32 @@ export function mesDesconocido(nombre: string, tipo: string): string {
     `No te lo puedo asegurar. ${nombre} no dice de qué mes es, y es lo único que hay de ese tipo. Dime el mes que necesitas y lo checo, o lo paso con alguien del equipo.`,
   ]);
 }
+
+export function mesPorContenidoCorrigiendo(nombre: string, mesDentro: string, mesNombre: string): string {
+  return una([
+    `Es de ${mesDentro}: así dice la fecha de emisión por dentro. El nombre (${nombre}) trae una marca de ${mesNombre}, pero esa es la fecha en que se descargó, no la del documento.`,
+    `Por dentro dice ${mesDentro} (fecha de emisión). Lo de ${mesNombre} viene del nombre del archivo, que es cuando se bajó del portal; la buena es la de adentro.`,
+  ]);
+}
+
+export function perdonMesEquivocado(mesDicho: string): string {
+  return una([
+    `Tienes razón, te la mandé como de ${mesDicho} y no es así.`,
+    `Perdón, la etiqueté mal como de ${mesDicho}.`,
+  ]);
+}
+
+export function confirmaMes(mes: string): string {
+  return una([`Sí, es de ${mes}.`, `Correcto, ${mes}.`]);
+}
+
+export function siHayDeEseMes(tipoPlural: string, mes: string): string {
+  return `De ${mes} sí tengo ${tipoPlural}; dime el número y te la mando:`;
+}
+
+export function noHayDeEseMes(tipoPlural: string, mes: string): string {
+  return una([
+    `De ${mes} no veo ${tipoPlural} en la carpeta. Si tienes el folio o el nombre la busco; si no, lo reviso con el equipo.`,
+    `${tipoPlural.charAt(0).toUpperCase() + tipoPlural.slice(1)} de ${mes} no hay; a lo mejor todavía no la suben. Si me das el folio la ubico, o lo checo con el equipo.`,
+  ]);
+}

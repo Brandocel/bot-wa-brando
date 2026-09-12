@@ -279,6 +279,15 @@ async function main(): Promise<void> {
     'Si es la cotizacion pero esa no es de este mes',
   ]);
 
+  // Preguntas sobre lo entregado que traen un mes: se contesta cuál es, y
+  // si reclama otro mes se busca ese en vez de repetir el mismo archivo.
+  await conversacion('Preguntar el mes de lo entregado y reclamar otro', [
+    'la factura de febrero',
+    'Está de que mes es?',
+    'esta factura es de enero o de febrero? yo te pedí la de enero',
+    'y de marzo? te pedí la de marzo',
+  ]);
+
   // Palabras clave dentro del documento: "Parcia Ima" no está en ningún
   // nombre de archivo, pero sí en el texto de una factura.
   await prisma.document.updateMany({

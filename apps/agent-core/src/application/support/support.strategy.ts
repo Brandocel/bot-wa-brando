@@ -204,7 +204,7 @@ export class SupportStrategy {
      * Antes esto volvía a mandar el mismo archivo por cuarta vez.
      */
     if (preguntaSobreEntregado(message.body)) {
-      const explicado = await this.explicarEntregado(turn);
+      const explicado = await this.explicarEntregado(turn, sol);
       if (explicado) return explicado;
     }
 
@@ -997,7 +997,7 @@ export class SupportStrategy {
    * o "no lo sé". Y se deja el archivo como opción para que un "no, otra"
    * lo rechace o un "sí" lo confirme, sin volverlo a mandar.
    */
-  private async explicarEntregado(turn: Turn): Promise<StrategyReply | null> {
+  private async explicarEntregado(turn: Turn, sol: Solicitud): Promise<StrategyReply | null> {
     const entregada = await this.solicitudes.ultimaEntrega(turn.ctx.conversationId);
     if (!entregada) return null;
 
@@ -1007,13 +1007,76 @@ export class SupportStrategy {
     const porNombre = parseDocumentName(doc.name);
     const porDentro = parseDocumentContent(doc.extractedText);
 
+    /**
+     * De dónde sale el mes que el índice le tiene al documento. La regla es
+     * la misma del sincronizador: el nombre manda, salvo que su "mes" sea
+     * una marca de tiempo de descarga, en cuyo caso gana lo que dice el
+     * texto por dentro. Se explica exactamente eso, porque es lo que pasó.
+     */
+    const mesDentro = porDentro.period ? mesEnPalabras(porDentro.period) : null;
+    const mesNombre = porNombre.period ? mesEnPalabras(porNombre.period) : null;
+    const mesIndice = doc.period ? mesEnPalabras(doc.period) : null;
+
+    // Con qué mes se le mandó: si el índice ya lo corrigió después de
+    // leerlo por dentro, hay que decirlo, no fingir que siempre fue así.
+    const mesEntregado = entregada.period ? mesEnPalabras(new Date(entregada.period)) : null;
+
     let text: string;
-    if (porNombre.period) {
-      text = voz.mesPorNombre(doc.name, mesEnPalabras(porNombre.period));
-    } else if (porDentro.period) {
-      text = voz.mesPorContenido(doc.name, mesEnPalabras(porDentro.period));
+    if (mesDentro && porNombre.periodoDebil && mesNombre && mesNombre !== mesDentro) {
+      text = voz.mesPorContenidoCorrigiendo(doc.name, mesDentro, mesNombre);
+    } else if (mesNombre && !porNombre.periodoDebil) {
+      text = voz.mesPorNombre(doc.name, mesNombre);
+    } else if (mesDentro) {
+      text = voz.mesPorContenido(doc.name, mesDentro);
+    } else if (mesIndice) {
+      text = voz.mesPorNombre(doc.name, mesIndice);
     } else {
       text = voz.mesDesconocido(doc.name, nombre(doc.category));
+    }
+
+    const mesReal = mesDentro && porNombre.periodoDebil ? mesDentro : (mesIndice ?? mesNombre ?? mesDentro);
+    if (mesReal && mesEntregado && mesEntregado !== mesReal) {
+      text = `${voz.perdonMesEquivocado(mesEntregado)} ${text}`;
+    }
+
+    /**
+     * Si en la pregunta viene un mes ("¿es de abril o de mayo?", "yo te
+     * pedí la de mayo"), se contesta también eso: si es el mismo, se
+     * confirma; si es otro, se busca ese y se dice si hay o no.
+     */
+    const mesPreguntado = mesReclamado(turn.message.body);
+    if (mesPreguntado && mesReal) {
+      const pedido = mesEnPalabras(mesPreguntado);
+      if (pedido === mesReal) {
+        text = `${voz.confirmaMes(pedido)} ${text}`;
+      } else {
+        const organizationId =
+          turn.scopes.length === 1 ? turn.scopes[0]!.organizationId : empresaGuardada(sol, turn.scopes);
+        const deEseMes = await this.search.search(
+          turn.scopes,
+          { category: doc.category, period: mesPreguntado, folio: null, text: null, organizationId, excludeIds: [doc.id] },
+          MAX_OPCIONES + 1,
+        );
+        if (deEseMes.length === 1) {
+          await this.solicitudes.guardar(turn.ctx.conversationId, { category: doc.category, period: mesPreguntado.toISOString() });
+          return this.entregar(turn, deEseMes[0]!);
+        }
+        if (deEseMes.length > 1 && deEseMes.length <= MAX_OPCIONES) {
+          await this.guardarOpciones(turn, deEseMes);
+          return {
+            text: [
+              text,
+              voz.siHayDeEseMes(nombrePlural(doc.category), pedido),
+              ...deEseMes.map((d, i) => `${i + 1}. ${describe(d)}`),
+            ].join('\n'),
+            awaiting: 'CLIENTE',
+            topic: doc.category,
+          };
+        }
+        text = `${text} ${voz.noHayDeEseMes(nombrePlural(doc.category), pedido)}`;
+        await this.guardarOpciones(turn, [doc]);
+        return { text, awaiting: 'CLIENTE', topic: doc.category };
+      }
     }
 
     await this.guardarOpciones(turn, [doc]);
@@ -1325,8 +1388,17 @@ function preguntaSobreEntregado(texto: string): boolean {
 
   if (limpio.length > 90) return false;
 
-  return /\b(como sabes|como supiste|por que (esa|ese|esta|este|dices|crees|me mandas|me mandaste)|de que (mes|fecha|ano|anio) es|que (mes|fecha) (es|tiene|trae)|de cuando es|(estas|esta) segur[oa]|es (la|el) correct[oa]|es (la|el) de este mes)\b|^segur[oa]( que)?\s*\?|(?<!no )\bes de (este|ese) mes\??$|\bsi es de (este|ese) mes\b/.test(
-    limpio,
+  const M = '(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)';
+  // "¿es de abril o de mayo?", "esta factura es de abril?", "dice que es de
+  // abril", "es de abril, no de mayo", "yo te pedí la de mayo".
+  const conMes = new RegExp(
+    `\\b(es de ${M} o (de )?${M}|(esta|esa|la) (factura|cotizacion|contrato|reporte|poliza|documento)( que (me )?mandaste)? es de ${M}|dice que es de ${M}|es de ${M},? no (de|la de) ${M}|(yo )?te (pedi|habia pedido|dije) la de ${M})\\b`,
+  );
+
+  return (
+    /\b(como sabes|como supiste|por que (esa|ese|esta|este|dices|crees|me mandas|me mandaste)|de que (mes|fecha|ano|anio) es|que (mes|fecha) (es|tiene|trae)|de cuando es|(estas|esta) segur[oa]|es (la|el) correct[oa]|es (la|el) de este mes)\b|^segur[oa]( que)?\s*\?|(?<!no )\bes de (este|ese) mes\??$|\bsi es de (este|ese) mes\b/.test(
+      limpio,
+    ) || conMes.test(limpio)
   );
 }
 
@@ -1804,4 +1876,25 @@ function excluir(query: SearchQuery, sol: Solicitud): readonly string[] {
 function preguntaMeses(texto: string): boolean {
   const limpio = texto.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
   return /\b(que|cuales|de que|de cuales) (meses|fechas)\b/.test(limpio);
+}
+
+/**
+ * El mes que la persona reclama en una pregunta sobre lo entregado.
+ *
+ * "Yo te pedí la de mayo" → mayo, aunque antes diga "es de abril". Si solo
+ * menciona un mes, ese. Si menciona dos sin decir cuál pedía ("¿es de
+ * abril o de mayo?"), no se adivina: se contesta cuál es y ya.
+ */
+function mesReclamado(texto: string): Date | null {
+  const limpio = texto
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '');
+
+  const pedido = /\bte (pedi|habia pedido|dije|solicite) (la|el|lo) de (\w+)\b/.exec(limpio);
+  if (pedido) return parseQuery(pedido[3]!).period;
+
+  const meses = limpio.match(/\b(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b/g) ?? [];
+  if (new Set(meses).size !== 1) return null;
+  return parseQuery(meses[0]!).period;
 }
