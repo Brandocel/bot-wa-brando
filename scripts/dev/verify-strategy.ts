@@ -288,6 +288,32 @@ async function main(): Promise<void> {
     'y de marzo? te pedí la de marzo',
   ]);
 
+  // Un CFDI real: nombre con folio numérico y marca de descarga, y el
+  // nombre del cliente solo por dentro. Se pide por número y por cliente.
+  const flores = await prisma.organization.findFirstOrThrow({ where: { name: 'Flores de Paula' } });
+  const cfdi = await prisma.document.create({
+    data: {
+      organizationId: flores.id,
+      driveFileId: 'test-cfdi-15904',
+      driveVersion: '1',
+      name: 'factura_15904_1778770514351.pdf',
+      mimeType: 'application/pdf',
+      sizeBytes: 37000,
+      category: 'FACTURA',
+      period: new Date(Date.UTC(2026, 3, 1)),
+      folio: '15904',
+      status: 'INDEXED',
+      extractedText: 'megacable telefonia por cable cliente rfc: cesb030908ry6 brando antonio cel sanchez fecha de emision: 14 de abril de 2026',
+    },
+  });
+  await conversacion('CFDI real: por número y por nombre del cliente', [
+    'Me ayudarías con la factura 15904',
+    'Está de qué mes es?',
+    'El cliente es BRANDO ANTONIO CEL SÁNCHEZ',
+    'A perdón si es cierto es la misma',
+  ]);
+  await prisma.document.delete({ where: { id: cfdi.id } });
+
   // Palabras clave dentro del documento: "Parcia Ima" no está en ningún
   // nombre de archivo, pero sí en el texto de una factura.
   await prisma.document.updateMany({

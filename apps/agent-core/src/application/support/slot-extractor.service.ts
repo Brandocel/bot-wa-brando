@@ -133,7 +133,7 @@ export class SlotExtractorService {
         // Nombre de archivo o palabras clave ("Parcia Ima", "contable"):
         // lo que sobra después de leer tipo, mes y folio, para buscar en
         // el nombre y dentro del documento.
-        query: { ...byRules, text: hint ?? claves },
+        query: { ...byRules, text: hint ?? (byRules.folio ? null : claves) },
         companyHint: null,
         notADocumentRequest: false,
         source: 'reglas',
@@ -193,7 +193,7 @@ export class SlotExtractorService {
         folio: folio ?? byRules.folio,
         // Las palabras clave solo valen si el modelo vio una petición de
         // documento: "lo de la semana" no es un filtro sobre nada.
-        text: hint ?? (extracted.no_es_documento ? null : claves),
+        text: hint ?? (extracted.no_es_documento || folio || byRules.folio ? null : claves),
       },
       companyHint: toValue(extracted.empresa),
       notADocumentRequest: extracted.no_es_documento,

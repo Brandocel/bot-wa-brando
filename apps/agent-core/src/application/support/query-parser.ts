@@ -174,6 +174,10 @@ const RUIDO = new Set([
   'sera', 'seria', 'sean', 'este', 'esta', 'estos', 'estas', 'mio', 'nuestro',
   'alguna', 'alguno', 'algunas', 'algunos', 'cualquier', 'cualquiera', 'ninguna', 'ninguno',
   'informacion', 'info', 'datos', 'dato', 'detalle', 'detalles', 'referencia', 'tipo',
+  'ayudarias', 'ayudaria', 'ayudarme', 'ayudas', 'ayudar', 'apoyarme', 'apoyas', 'apoyarias', 'apoyar',
+  'echas', 'echarme', 'mano', 'pudieras', 'pudiera', 'serias', 'tan', 'amable', 'favorcito',
+  'gustaria', 'buscarme', 'buscas', 'encuentras', 'localizas', 'consigues', 'conseguir',
+  'consigueme', 'compartes', 'checas', 'revisas', 'revises', 'cheques', 'mandes', 'pases', 'envies',
 ]);
 
 export function palabrasClave(raw: string): string[] {

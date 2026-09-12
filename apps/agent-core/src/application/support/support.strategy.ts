@@ -353,7 +353,7 @@ export class SupportStrategy {
         asked,
         'empresa',
         voz.preguntaEmpresa(),
-        scopes.map((s, i) => `${i + 1}. ${s.organizationName}`),
+        scopes.map((s, i) => `*${i + 1}.* ${s.organizationName}`),
       );
     }
 
@@ -388,6 +388,24 @@ export class SupportStrategy {
       );
       if (conTodo.length > 0) {
         return this.resolverResultados(turn, query, conTodo, sol);
+      }
+
+      /**
+       * Las palabras clave son una ayuda, no una condición. Si con tipo y
+       * mes (o folio) sí hay algo y las palabras lo tiran, gana lo que
+       * sí es un dato: "me ayudarías con la factura de marzo" no debe
+       * fallar porque ningún archivo diga "ayudarías".
+       */
+      if (query.folio || (query.category && query.period)) {
+        const sinPalabras = { ...query, text: null };
+        const porDatos = await this.search.search(
+          scopes,
+          { ...sinPalabras, organizationId, excludeIds: excluir(sinPalabras, sol) },
+          MAX_OPCIONES + 1,
+        );
+        if (porDatos.length > 0) {
+          return this.resolverResultados(turn, sinPalabras, porDatos, sol);
+        }
       }
 
       const soloPalabras = await this.search.search(
@@ -463,7 +481,7 @@ export class SupportStrategy {
       return {
         text: [
           voz.encabezadoLista(results.length, que),
-          ...results.map((doc, i) => `${i + 1}. ${describe(doc)}`),
+          ...results.map((doc, i) => `*${i + 1}.* ${describe(doc)}`),
           '',
           voz.pieLista(),
         ].join('\n'),
@@ -559,7 +577,7 @@ export class SupportStrategy {
         return {
           text: [
             voz.seParecen(pedido),
-            ...porNombre.map((doc, i) => `${i + 1}. ${describe(doc)}`),
+            ...porNombre.map((doc, i) => `*${i + 1}.* ${describe(doc)}`),
             '',
             voz.pieParecidos(),
           ].join('\n'),
@@ -587,7 +605,7 @@ export class SupportStrategy {
         return {
           text: [
             voz.noEncontreParecidos(pedido),
-            ...otrosMeses.map((doc, i) => `${i + 1}. ${describe(doc)}`),
+            ...otrosMeses.map((doc, i) => `*${i + 1}.* ${describe(doc)}`),
             '',
             voz.pieParecidos(),
           ].join('\n'),
@@ -849,7 +867,7 @@ export class SupportStrategy {
     if (preguntaMeses(turn.message.body) && tipoEnJuego) {
       const meses = await this.search.mesesDe(scopes, tipoEnJuego, organizationId);
       if (meses.length === 0) {
-        return { text: voz.sinDocumentosDe(nombrePlural(tipoEnJuego), '', empresa, null), awaiting: 'NADIE' };
+        return { text: voz.sinDocumentosDe(nombrePlural(tipoEnJuego), null, empresa, null), awaiting: 'NADIE' };
       }
       // Los que tienen mes primero; los que no, al final como "y 2 sin mes".
       const conMes = meses.filter((m) => m.period !== null);
@@ -857,7 +875,7 @@ export class SupportStrategy {
       const partes = conMes.map((m) =>
         mesEnPalabras(m.period!) + (m.count > 1 ? ` (${m.count})` : ''),
       );
-      if (sinMes > 0) partes.push(`y ${sinMes} sin mes en el nombre`);
+      if (sinMes > 0) partes.push(`${sinMes} sin mes en el nombre`);
       return {
         text: voz.mesesDisponibles(nombrePlural(tipoEnJuego), partes),
         awaiting: 'NADIE',
@@ -875,7 +893,7 @@ export class SupportStrategy {
 
       if (docs.length === 0) {
         const que = category ? nombrePlural(category) : 'documentos';
-        const cuando = period ? ` de ${mesEnPalabras(period)}` : '';
+        const cuando = period ? mesEnPalabras(period) : null;
         const resto = await this.search.inventario(scopes, organizationId);
         return {
           text: voz.sinDocumentosDe(
@@ -895,7 +913,7 @@ export class SupportStrategy {
             period
               ? voz.encabezadoInventarioMes(mesEnPalabras(period), docs.length)
               : voz.encabezadoLista(docs.length, nombrePlural(category)),
-            ...docs.map((doc, i) => `${i + 1}. ${describe(doc)}`),
+            ...docs.map((doc, i) => `*${i + 1}.* ${describe(doc)}`),
             '',
             voz.pieInventario(),
           ].join('\n'),
@@ -1036,7 +1054,7 @@ export class SupportStrategy {
 
     const mesReal = mesDentro && porNombre.periodoDebil ? mesDentro : (mesIndice ?? mesNombre ?? mesDentro);
     if (mesReal && mesEntregado && mesEntregado !== mesReal) {
-      text = `${voz.perdonMesEquivocado(mesEntregado)} ${text}`;
+      text = `${voz.perdonMesEquivocado(mesEntregado)}\n${text}`;
     }
 
     /**
@@ -1048,7 +1066,7 @@ export class SupportStrategy {
     if (mesPreguntado && mesReal) {
       const pedido = mesEnPalabras(mesPreguntado);
       if (pedido === mesReal) {
-        text = `${voz.confirmaMes(pedido)} ${text}`;
+        text = `${voz.confirmaMes()}\n${text}`;
       } else {
         const organizationId =
           turn.scopes.length === 1 ? turn.scopes[0]!.organizationId : empresaGuardada(sol, turn.scopes);
@@ -1067,13 +1085,13 @@ export class SupportStrategy {
             text: [
               text,
               voz.siHayDeEseMes(nombrePlural(doc.category), pedido),
-              ...deEseMes.map((d, i) => `${i + 1}. ${describe(d)}`),
+              ...deEseMes.map((d, i) => `*${i + 1}.* ${describe(d)}`),
             ].join('\n'),
             awaiting: 'CLIENTE',
             topic: doc.category,
           };
         }
-        text = `${text} ${voz.noHayDeEseMes(nombrePlural(doc.category), pedido)}`;
+        text = `${text}\n\n${voz.noHayDeEseMes(nombrePlural(doc.category), pedido)}`;
         await this.guardarOpciones(turn, [doc]);
         return { text, awaiting: 'CLIENTE', topic: doc.category };
       }
@@ -1662,6 +1680,15 @@ function respuestaRapida(
   // cada acuse es justo lo que hace que un bot se sienta como bot.
   if (acuse.test(limpio) || (palabras <= 8 && cierre.test(limpio))) return '';
 
+  /**
+   * "A perdón, sí es cierto, es la misma", "tienes razón", "ya la vi":
+   * la persona reconoce algo. Se contesta con una línea amable, no con
+   * otra búsqueda — antes esto acababa en un ticket.
+   */
+  const reconoce =
+    /\b(es la misma|si es cierto|es cierto|tienes razon|tenias razon|ya la (tengo|vi|encontre)|ya lo (tengo|vi|encontre)|perdon|una disculpa|mi error|me equivoque|me confundi|no te preocupes|olvidalo|dejalo asi|ya no)\b/;
+  if (palabras <= 12 && reconoce.test(limpio)) return voz.sinProblema();
+
   return null;
 }
 
@@ -1708,9 +1735,10 @@ function readAsked(slots: unknown): AskedState {
   };
 }
 
+/** "FACTURA_2026-02_V3001.pdf — febrero de 2026, folio V3001": nombre en negritas, datos después. */
 function describe(doc: Document): string {
   const period = doc.period ? mesEnPalabras(doc.period) : 'sin mes';
-  return `${doc.name} (${period}${doc.folio ? `, folio ${doc.folio}` : ''})`;
+  return `*${doc.name}* — ${period}${doc.folio ? `, folio ${doc.folio}` : ''}`;
 }
 
 /** ¿Hay una solicitud a medias: tipo, mes o folio ya dichos? */
@@ -1751,11 +1779,11 @@ function describirInventario(
 ): string {
   const partes = lineas.map((l) => {
     const tipo = l.count === 1 ? nombre(l.category) : nombrePlural(l.category);
-    return `${l.count} ${tipo}${rangoMeses(l.from, l.to)}`;
+    return `*${l.count}* ${tipo}${rangoMeses(l.from, l.to)}`;
   });
 
-  const quien = empresa ? `De ${empresa} tengo` : 'Tengo';
-  return `${quien}: ${partes.join(', ')}.`;
+  const quien = empresa ? `De *${empresa}* tengo:` : 'Tengo:';
+  return [quien, ...partes.map((p) => `• ${p}`)].join('\n');
 }
 
 function rangoMeses(from: Date | null, to: Date | null): string {
