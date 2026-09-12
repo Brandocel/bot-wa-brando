@@ -715,9 +715,13 @@ export class SupportStrategy {
       if (meses.length === 0) {
         return { text: voz.sinDocumentosDe(nombrePlural(tipoEnJuego), '', empresa, null), awaiting: 'NADIE' };
       }
-      const partes = meses.map((m) =>
-        (m.period ? mesEnPalabras(m.period) : 'sin mes') + (m.count > 1 ? ` (${m.count})` : ''),
+      // Los que tienen mes primero; los que no, al final como "y 2 sin mes".
+      const conMes = meses.filter((m) => m.period !== null);
+      const sinMes = meses.filter((m) => m.period === null).reduce((n, m) => n + m.count, 0);
+      const partes = conMes.map((m) =>
+        mesEnPalabras(m.period!) + (m.count > 1 ? ` (${m.count})` : ''),
       );
+      if (sinMes > 0) partes.push(`y ${sinMes} sin mes en el nombre`);
       return {
         text: voz.mesesDisponibles(nombrePlural(tipoEnJuego), partes),
         awaiting: 'NADIE',
@@ -1446,7 +1450,7 @@ function esInventario(texto: string): boolean {
 
   if (limpio.length > 90) return false;
 
-  return /\b((que|cuales|cual) (documentos|docs|archivos|opciones|cosas|meses|fechas)\b|opciones de lo que tienes|(de que|de cuales) (meses|fechas)|que tienes\b|que hay\b|que( (doc|docs|documento|documentos|archivo|archivos))? me puedes (dar|entregar|mandar|pasar|enviar)|que puedes (darme|entregarme|mandarme|pasarme|enviarme)|lista(me)? (lo que|los documentos|todo)|catalogo|inventario|todo lo que (tienes|tengas|haya))/.test(
+  return /\b((que|cuales|cual) (documentos|docs|archivos|opciones|cosas|meses|fechas)\b|opciones de lo que tienes|cuales tienes|cuales hay|(de que|de cuales) (meses|fechas)|que tienes\b|que hay\b|que( (doc|docs|documento|documentos|archivo|archivos))? me puedes (dar|entregar|mandar|pasar|enviar)|que puedes (darme|entregarme|mandarme|pasarme|enviarme)|lista(me)? (lo que|los documentos|todo)|catalogo|inventario|todo lo que (tienes|tengas|haya))/.test(
     limpio,
   );
 }
