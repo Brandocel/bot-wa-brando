@@ -164,7 +164,11 @@ Sin agentes dados de alta, los tickets quedan en revisión sin asignar y se ven 
 ## 5. Drive
 
 - Una carpeta raíz por empresa; subcarpetas por tipo ayudan (`Facturas/`, `Cotizaciones/`), pero **el nombre del archivo manda** sobre la carpeta.
-- Nombres que el bot entiende: `FACTURA_2026-02_V3001.pdf`, `Cotizacion_Cliente_2026-01.pdf`, `Contrato marzo 2026.pdf`. Necesita tipo + mes para indexar; sin eso va a **cuarentena** y no se entrega (`/cuarentena` para verlos).
+- Nombres que el bot entiende: `FACTURA_2026-02_V3001.pdf`, `Cotizacion_Cliente_2026-01.pdf`, `Contrato marzo 2026.pdf`. Todo lo entregable se indexa aunque el nombre no diga nada; lo que no se entiende queda como "documento" sin mes.
+- **El bot lee por dentro los PDF** (y .txt/.csv) al indexarlos: saca el mes ("Fecha de emisión: 12/09/2026", "Periodo: junio 2026"), el folio y el tipo cuando el nombre no los trae, y guarda un extracto del texto. Con eso se puede pedir "la factura de Parcia Ima" o "el reporte contable de junio": busca esas palabras dentro de los documentos, no solo en el nombre. El nombre del archivo sigue mandando sobre el contenido, salvo cuando el nombre solo trae una marca de tiempo de descarga.
+- Antes de mandar un documento comprueba que sea del mes pedido. Si el único parecido es de otro mes o no trae mes, lo ofrece diciéndolo ("la única que veo es X, de mayo; ¿te la mando?") en vez de mandarlo a ciegas. Y si le preguntan "¿cómo sabes que es de este mes?", contesta de dónde lo sacó.
+- Imágenes y escaneos sin texto no se leen (no hay OCR): se indexan por nombre y carpeta nada más.
+- `npx tsx scripts/dev/verify-contenido.ts <idDeCarpeta>` enseña qué lee de cada archivo de una carpeta: útil cuando un documento sale "sin mes" y no debería.
 - Sincroniza cada 5 min (`DRIVE_SYNC_INTERVAL_MS`). `/sync` fuerza; `/resync` borra el cursor y rehace todo — úsalo después de cambiar reglas de clasificación o mover muchos archivos.
 - La cuenta de servicio de Google debe tener acceso de lectura a cada carpeta raíz (compartir la carpeta con el correo de la cuenta de servicio).
 - Tope de entrega: 15 MB (`MAX_DELIVERABLE_BYTES`). Más grande se escala.

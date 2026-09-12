@@ -47,6 +47,11 @@ const CATEGORY_WORDS: Record<string, DocCategory> = {
   recibos: 'FACTURA',
   comprobante: 'FACTURA',
   comprobantes: 'FACTURA',
+  presupuesto: 'COTIZACION',
+  presupuestos: 'COTIZACION',
+  quote: 'COTIZACION',
+  informe: 'REPORTE',
+  informes: 'REPORTE',
 };
 
 /** Sin acentos y en minúsculas: "Póliza" y "poliza" son la misma palabra. */
@@ -76,6 +81,9 @@ export function parseQuery(raw: string): SearchQuery {
       break;
     }
   }
+  // "cotizcion", "fatcura": una letra comida no debería costar una llamada
+  // al modelo ni un "¿qué documento?".
+  if (!category) category = categoriaConErrata(text);
 
   const parsedPeriod = parsePeriod(text);
 
@@ -107,17 +115,111 @@ export function parseQuery(raw: string): SearchQuery {
     };
   }
 
-  // Texto libre solo si no hubo ningún metadato: si ya sabemos categoría y
-  // periodo, agregar un LIKE sobre el nombre solo puede quitar resultados
-  // correctos.
+  /**
+   * Lo que sobra después de quitar tipo, mes, folio y las palabras de
+   * pedir ("necesito", "me pasas") son palabras clave: "la factura de
+   * Parcia Ima" → "parcia ima", "el reporte contable de junio" →
+   * "contable". Se buscan dentro del nombre Y del contenido del archivo.
+   * Sin ningún metadato, el texto completo se conserva para el modelo.
+   */
   const hasMetadata = category !== null || parsedPeriod !== null || folio !== null;
+  const claves = palabrasClave(text);
 
   return {
     category,
     period: parsedPeriod,
     folio: folio ? folio.toUpperCase() : null,
-    text: hasMetadata ? null : raw.trim() || null,
+    // Con folio no hacen falta palabras clave: el folio ya identifica el
+    // documento, y "información de B2001" no debe filtrar por "informacion".
+    text: folio ? null : claves.length > 0 ? claves.join(' ') : hasMetadata ? null : raw.trim() || null,
   };
+}
+
+/**
+ * Palabras que no dicen nada del documento: verbos de pedir, cortesía,
+ * conectores, y los términos que ya se leyeron como tipo, mes o folio.
+ */
+const RUIDO = new Set([
+  'hola', 'buenas', 'buenos', 'dias', 'tardes', 'noches', 'oye', 'oiga', 'que', 'tal',
+  'necesito', 'quiero', 'quisiera', 'ocupo', 'busco', 'dame', 'mandame', 'pasame', 'enviame',
+  'manda', 'pasa', 'envia', 'mandar', 'pasar', 'enviar', 'compartir', 'comparteme', 'tienes',
+  'tendras', 'tendra', 'tiene', 'habra', 'hay', 'puedes', 'podrias', 'puede', 'podria',
+  'favor', 'porfa', 'porfavor', 'gracias', 'ayuda', 'ayudame', 'apoyo', 'apoyame', 'urgente',
+  'urge', 'rapido', 'ahora', 'hoy', 'ayer', 'este', 'esta', 'estos', 'estas', 'ese', 'esa',
+  'esos', 'esas', 'aquel', 'aquella', 'mes', 'meses', 'ano', 'anos', 'pasado', 'pasada',
+  'anterior', 'actual', 'presente', 'ultimo', 'ultima', 'ultimos', 'ultimas', 'nuevo', 'nueva',
+  'del', 'los', 'las', 'una', 'uno', 'unos', 'unas', 'con', 'sin', 'para', 'por', 'como',
+  'donde', 'cuando', 'cual', 'cuales', 'quien', 'pero', 'tambien', 'ademas', 'solo', 'nada',
+  'algo', 'todo', 'toda', 'todos', 'todas', 'otra', 'otro', 'otras', 'otros', 'misma', 'mismo',
+  'documento', 'documentos', 'archivo', 'archivos', 'pdf', 'doc', 'docs', 'papel', 'papeles',
+  'copia', 'copias', 'version', 'folio', 'numero', 'num', 'nombre', 'fecha', 'fechas',
+  'empresa', 'cliente', 'proveedor', 'correspondiente', 'correspondientes', 'referente',
+  'sobre', 'acerca', 'respecto', 'entonces', 'ahi', 'aqui', 'alla', 'bien', 'mal', 'creo',
+  'digo', 'dije', 'decia', 'era', 'ser', 'estar', 'estan', 'son', 'fue', 'sea',
+  'tengo', 'tenia', 'tenemos', 'vez', 'sirve', 'sirven', 'ver',
+  'checar', 'revisar', 'buscar', 'encontrar', 'ubicar', 'localizar', 'mandaste', 'enviaste',
+  'pasaste', 'llego', 'recibi', 'faltaba', 'falta', 'faltan', 'igual',
+  'porfis', 'porfas', 'jefe', 'jefa', 'amigo', 'amiga', 'compa', 'brother', 'bro', 'rey',
+  'okay', 'vale', 'sale', 'listo', 'lista',
+  'facturado', 'facturada', 'facturar', 'facturame', 'cotizar', 'cotizado', 'cotizada',
+  'reportar', 'contratar', 'asegurar',
+  'sino', 'aunque', 'porque', 'hasta', 'desde', 'entre', 'tras', 'segun', 'contra',
+  'mio', 'mia', 'mios', 'mias', 'tuyo', 'tuya', 'suyo', 'suya', 'nuestro', 'nuestra',
+  'exactamente', 'exacto', 'exacta', 'correcto', 'correcta', 'equivocado', 'equivocada',
+  'corresponde', 'coincide', 'diferente', 'distinto', 'distinta',
+  'pasas', 'pasarme', 'mandas', 'mandarme', 'envias', 'enviarme', 'das', 'darme', 'dar',
+  'sabes', 'sabe', 'saben', 'dices', 'dice', 'crees', 'cree', 'mira', 'checa', 'ves',
+  'pueden', 'tienen', 'ocupamos', 'necesitamos', 'queremos', 'quieres', 'quiere',
+  'seguro', 'segura', 'verdad', 'cierto', 'claro', 'obvio', 'gracias', 'oye', 'hey',
+  'sera', 'seria', 'sean', 'este', 'esta', 'estos', 'estas', 'mio', 'nuestro',
+  'alguna', 'alguno', 'algunas', 'algunos', 'cualquier', 'cualquiera', 'ninguna', 'ninguno',
+  'informacion', 'info', 'datos', 'dato', 'detalle', 'detalles', 'referencia', 'tipo',
+]);
+
+export function palabrasClave(raw: string): string[] {
+  const text = normalize(raw);
+  const meses = new Set(Object.keys(MONTHS));
+  const tipos = new Set(Object.keys(CATEGORY_WORDS));
+
+  return [
+    ...new Set(
+      text
+        .split(/[^a-z0-9ñ]+/)
+        .filter((t) => t.length >= 3)
+        .filter((t) => !RUIDO.has(t))
+        .filter((t) => !meses.has(t) && !tipos.has(t))
+        .filter((t) => categoriaConErrata(t) === null)
+        // Números: son folios o años, y esos ya se leyeron aparte.
+        .filter((t) => !/^\d+$/.test(t)),
+    ),
+  ].slice(0, 4);
+}
+
+/** "cotizcion" → COTIZACION: una letra de diferencia en una palabra larga. */
+function categoriaConErrata(text: string): DocCategory | null {
+  for (const token of text.split(/[^a-z]+/)) {
+    if (token.length < 6) continue;
+    for (const [word, value] of Object.entries(CATEGORY_WORDS)) {
+      if (word.length < 6) continue;
+      if (Math.abs(word.length - token.length) > 1) continue;
+      if (distancia(token, word) <= 1) return value;
+    }
+  }
+  return null;
+}
+
+function distancia(a: string, b: string): number {
+  const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let diag = prev[0]!;
+    prev[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const temp = prev[j]!;
+      prev[j] = Math.min(prev[j]! + 1, prev[j - 1]! + 1, diag + (a[i - 1] === b[j - 1] ? 0 : 1));
+      diag = temp;
+    }
+  }
+  return prev[b.length]!;
 }
 
 /**
@@ -148,12 +250,17 @@ export function nombreDeArchivo(raw: string): string | null {
 function parsePeriod(text: string): Date | null {
   // "este mes", "mes pasado", "mes anterior": no hace falta modelo para esto.
   const now = new Date();
-  if (/\b(este mes|mes actual|del mes)\b/.test(text)) {
-    return period(now.getUTCFullYear(), now.getUTCMonth() + 1);
-  }
-  if (/\b(mes pasado|mes anterior|el pasado)\b/.test(text)) {
-    const anterior = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
-    return period(anterior.getUTCFullYear(), anterior.getUTCMonth() + 1);
+  // Con un mes escrito ("del mes de junio"), ese manda; lo relativo solo
+  // cuenta cuando no hay ninguno.
+  const mesEscrito = new RegExp(`\\b(${Object.keys(MONTHS).join('|')})\\b`).test(text);
+  if (!mesEscrito) {
+    if (/\b(mes pasado|mes anterior|el pasado)\b/.test(text)) {
+      const anterior = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+      return period(anterior.getUTCFullYear(), anterior.getUTCMonth() + 1);
+    }
+    if (/\b(este mes|mes actual|del mes|mes en curso)\b/.test(text)) {
+      return period(now.getUTCFullYear(), now.getUTCMonth() + 1);
+    }
   }
 
   // 2026-02 o 2026/02

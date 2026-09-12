@@ -10,7 +10,9 @@ import { DocumentDeliveryService } from './document-delivery.service';
 import { DocumentSearchService, type InventoryLine } from './document-search.service';
 import type { SearchQuery } from './document-search.service';
 import { ReplyWriterService } from './reply-writer.service';
-import { parseQuery } from './query-parser';
+import { nombreDeArchivo, parseQuery } from './query-parser';
+import { parseDocumentName } from './document-name.parser';
+import { parseDocumentContent } from './document-content.parser';
 import { SlotExtractorService, type SlotPendiente } from './slot-extractor.service';
 import {
   SolicitudService,
@@ -52,6 +54,9 @@ const MAX_QUESTIONS = 3;
  * contesta enseñando las dos, no preguntando "¿de qué mes?".
  */
 const MAX_OPCIONES = 5;
+
+/** Dentro de este tiempo, el mismo archivo no se vuelve a mandar sin que lo pidan. */
+const REPETIDA_MS = 30 * 60 * 1000;
 
 /**
  * Lo que la Strategy devuelve: el texto Y de quién queda el turno.
@@ -181,13 +186,37 @@ export class SupportStrategy {
     }
 
     /**
-     * "No veo el doc", "no me llegó", "no lo recibí".
+     * "No veo el doc", "no me llegó", "mándala otra vez".
      *
      * Es una queja sobre lo último que se entregó, no una petición nueva.
      */
     if (esQuejaDeNoRecibido(message.body)) {
       const reenviado = await this.reenviarUltimo(turn, sol);
       if (reenviado) return reenviado;
+    }
+
+    /**
+     * "¿Cómo sabes que es de este mes?", "¿de qué fecha es?", "¿seguro?".
+     *
+     * Es una pregunta sobre lo que se acaba de mandar, no una petición.
+     * Se contesta con lo que el bot de verdad sabe del archivo —lo que
+     * dice su nombre y lo que dice por dentro— y, si no lo sabe, lo dice.
+     * Antes esto volvía a mandar el mismo archivo por cuarta vez.
+     */
+    if (preguntaSobreEntregado(message.body)) {
+      const explicado = await this.explicarEntregado(turn);
+      if (explicado) return explicado;
+    }
+
+    /**
+     * "Sí es la cotización, pero esa no es de este mes": un rechazo que
+     * además trae datos. Lo rechazado se apunta para no volver a
+     * ofrecerlo, y el mensaje sigue su camino con lo que trae. Antes,
+     * como traía datos, no contaba como rechazo, y la búsqueda volvía a
+     * dar con el mismo archivo.
+     */
+    if (mencionaRechazo(message.body)) {
+      await this.apuntarRechazo(turn, sol);
     }
 
     /**
@@ -238,6 +267,10 @@ export class SupportStrategy {
     const empresaMencionada =
       empresaEnTexto ??
       this.resolveCompany(extraction.companyHint, scope.scopes);
+
+    // El nombre de la empresa no es palabra clave: "la factura de Pollos
+    // Pirata" busca facturas de esa empresa, no archivos que digan "pollos".
+    extraction.query.text = sinNombresDeEmpresa(extraction.query.text, scope.scopes);
 
     const aporta =
       extraction.query.category !== null ||
@@ -329,7 +362,7 @@ export class SupportStrategy {
      * mes. "La cotización BrandoCelSanchez_2026" tiene que encontrar ese
      * archivo aunque esté clasificado como factura o sea de otro mes.
      */
-    if (query.text) {
+    if (query.text && nombreDeArchivo(query.text)) {
       const porNombre = await this.search.search(scopes, {
         category: null,
         period: null,
@@ -339,6 +372,30 @@ export class SupportStrategy {
         excludeIds: excluir(query, sol),
       });
       return this.resolverResultados(turn, query, porNombre, sol);
+    }
+
+    /**
+     * Palabras clave ("Parcia Ima", "contable"): se buscan en el nombre y
+     * DENTRO del documento, junto con el tipo y el mes. Si con todo no
+     * hay nada, se prueba solo con las palabras: quizá el tipo o el mes
+     * estaban mal dichos, pero el nombre del cliente no.
+     */
+    if (query.text) {
+      const conTodo = await this.search.search(
+        scopes,
+        { ...query, organizationId, excludeIds: excluir(query, sol) },
+        MAX_OPCIONES + 1,
+      );
+      if (conTodo.length > 0) {
+        return this.resolverResultados(turn, query, conTodo, sol);
+      }
+
+      const soloPalabras = await this.search.search(
+        scopes,
+        { category: null, period: null, folio: null, text: query.text, organizationId, excludeIds: excluir(query, sol) },
+        MAX_OPCIONES + 1,
+      );
+      return this.resolverResultados(turn, query, soloPalabras, sol);
     }
 
     /**
@@ -387,6 +444,15 @@ export class SupportStrategy {
       return this.sinResultados(turn, query, sol);
     }
 
+    // Demasiados para enseñarlos: se pide el dato que más recorta.
+    if (results.length > MAX_OPCIONES) {
+      const asked = readAsked(sol);
+      if (!query.period) {
+        return this.ask(turn, asked, 'periodo', voz.preguntaMes(nombre(query.category)));
+      }
+      return this.ask(turn, asked, 'detalle', voz.faltaInformacion(describirPedido(query)));
+    }
+
     if (results.length > 1) {
       await this.guardarOpciones(turn, results);
 
@@ -406,7 +472,40 @@ export class SupportStrategy {
       };
     }
 
-    return this.entregar(turn, results[0]!);
+    return this.entregarSiCoincide(turn, query, results[0]!);
+  }
+
+  /**
+   * Antes de mandar UN documento, se comprueba que sea lo que pidió.
+   *
+   * La búsqueda exacta ya garantiza tipo y mes; pero las búsquedas de
+   * respaldo (por nombre parecido, por palabras clave) pueden dar con un
+   * archivo de otro mes, o de mes desconocido. Mandarlo sin decir nada es
+   * exactamente lo que hacía que "la cotización de este mes" llegara
+   * como una cotización de la que no se sabía el mes — y que la persona
+   * preguntara "¿cómo sabes que es de este mes?".
+   *
+   * Si contradice, no se entrega: se ofrece diciendo de qué mes es. Si
+   * no hay evidencia, se ofrece diciendo que no trae mes. Y con "sí"
+   * se manda.
+   */
+  private async entregarSiCoincide(
+    turn: Turn,
+    query: SearchQuery,
+    doc: Document,
+  ): Promise<StrategyReply> {
+    const veredicto = coincideMes(doc, query);
+    if (veredicto === 'coincide') return this.entregar(turn, doc);
+
+    await this.guardarOpciones(turn, [doc]);
+
+    const pedido = describirPedido(query);
+    const text =
+      veredicto === 'contradice'
+        ? voz.unicaDeOtroMes(pedido, doc.name, mesEnPalabras(doc.period!))
+        : voz.unicaSinMes(pedido, doc.name);
+
+    return { text, awaiting: 'CLIENTE', topic: query.category ?? doc.category };
   }
 
   /**
@@ -448,7 +547,12 @@ export class SupportStrategy {
       );
 
       if (porNombre.length === 1) {
-        return this.entregar(turn, porNombre[0]!, porNombre[0]!.name);
+        const unica = porNombre[0]!;
+        // Del mes pedido (o sin mes que lo contradiga): se manda. De otro
+        // mes: se ofrece diciendo cuál es, que para eso está el paso 2.
+        if (coincideMes(unica, query) !== 'contradice') {
+          return this.entregarSiCoincide(turn, query, unica);
+        }
       }
       if (porNombre.length > 1 && porNombre.length <= MAX_OPCIONES) {
         await this.guardarOpciones(turn, porNombre);
@@ -473,7 +577,12 @@ export class SupportStrategy {
         MAX_OPCIONES + 1,
       );
 
-      if (otrosMeses.length > 0 && otrosMeses.length <= MAX_OPCIONES) {
+      // Una sola de otro mes: se ofrece diciendo de qué mes es, sin lista.
+      if (otrosMeses.length === 1) {
+        return this.entregarSiCoincide(turn, query, otrosMeses[0]!);
+      }
+
+      if (otrosMeses.length > 1 && otrosMeses.length <= MAX_OPCIONES) {
         await this.guardarOpciones(turn, otrosMeses);
         return {
           text: [
@@ -500,7 +609,12 @@ export class SupportStrategy {
     // 3. Falta información. Es una pregunta; repetirla es escalar.
     const asked = readAsked(sol);
     if (!asked.slots.detalle) {
-      return this.ask(turn, asked, 'detalle', voz.faltaInformacion(pedido));
+      // Si ya rechazó lo único que había, decirlo así: "solo tenía esa".
+      const pregunta =
+        sol.rechazados.length > 0
+          ? voz.soloTeniaEsa(pedido, sol.rechazados.length)
+          : voz.faltaInformacion(pedido);
+      return this.ask(turn, asked, 'detalle', pregunta);
     }
 
     const denial = query.category
@@ -542,8 +656,30 @@ export class SupportStrategy {
     doc: Document,
     /** Cómo nombrarlo en la leyenda; por defecto, tipo y mes. */
     comoLlamarlo?: string,
+    /** true = la persona lo pidió a propósito ("sí, esa"): se manda aunque sea repetido. */
+    forzar = false,
   ): Promise<StrategyReply> {
     const { conversationId } = turn.ctx;
+
+    /**
+     * El mismo archivo que se acaba de mandar no se manda otra vez a
+     * menos que lo pidan. Una búsqueda distinta que cae en el mismo
+     * documento ("del mes de septiembre" justo después de recibir la de
+     * septiembre) se contesta señalándolo, no repitiéndolo: nadie del
+     * equipo mandaría el mismo PDF cuatro veces seguidas.
+     */
+    if (!forzar) {
+      const entregada = await this.solicitudes.ultimaEntrega(conversationId);
+      const haceNada =
+        entregada !== null &&
+        entregada.documentId === doc.id &&
+        Date.now() - new Date(entregada.at).getTime() < REPETIDA_MS;
+
+      if (haceNada) {
+        await this.guardarOpciones(turn, [doc]);
+        return { text: voz.esLaMisma(doc.name), awaiting: 'CLIENTE', topic: doc.category };
+      }
+    }
 
     await this.scope.audit({
       waId: turn.message.senderId,
@@ -624,7 +760,7 @@ export class SupportStrategy {
       await this.solicitudes.guardar(turn.ctx.conversationId, { opciones: null });
     }
 
-    const reply = await this.entregar(turn, documento);
+    const reply = await this.entregar(turn, documento, undefined, true);
 
     // Entregar cierra la solicitud, pero la lista sigue en la pantalla de
     // la persona: se conserva sola, para "también la 1".
@@ -833,6 +969,57 @@ export class SupportStrategy {
     };
   }
 
+  /**
+   * Apunta como rechazado lo último ofrecido o entregado, sin contestar
+   * nada: el mensaje trae datos y sigue su camino con ellos.
+   */
+  private async apuntarRechazo(turn: Turn, sol: Solicitud): Promise<void> {
+    const entregada = await this.solicitudes.ultimaEntrega(turn.ctx.conversationId);
+
+    const ids = sol.opciones?.length
+      ? sol.opciones.filter((o) => o.tipo === 'documento').map((o) => o.id)
+      : entregada
+        ? [entregada.documentId]
+        : [];
+    if (ids.length === 0) return;
+
+    await this.solicitudes.guardar(turn.ctx.conversationId, {
+      rechazados: [...new Set([...sol.rechazados, ...ids])],
+      opciones: null,
+      category: sol.category ?? entregada?.category ?? null,
+    });
+  }
+
+  /**
+   * Contesta de dónde salió el mes (o el tipo) de lo último entregado.
+   *
+   * Con la verdad: el nombre del archivo, la fecha que trae por dentro,
+   * o "no lo sé". Y se deja el archivo como opción para que un "no, otra"
+   * lo rechace o un "sí" lo confirme, sin volverlo a mandar.
+   */
+  private async explicarEntregado(turn: Turn): Promise<StrategyReply | null> {
+    const entregada = await this.solicitudes.ultimaEntrega(turn.ctx.conversationId);
+    if (!entregada) return null;
+
+    const doc = await this.search.byId(entregada.documentId);
+    if (!doc) return null;
+
+    const porNombre = parseDocumentName(doc.name);
+    const porDentro = parseDocumentContent(doc.extractedText);
+
+    let text: string;
+    if (porNombre.period) {
+      text = voz.mesPorNombre(doc.name, mesEnPalabras(porNombre.period));
+    } else if (porDentro.period) {
+      text = voz.mesPorContenido(doc.name, mesEnPalabras(porDentro.period));
+    } else {
+      text = voz.mesDesconocido(doc.name, nombre(doc.category));
+    }
+
+    await this.guardarOpciones(turn, [doc]);
+    return { text, awaiting: 'CLIENTE', topic: doc.category };
+  }
+
   /** Escala por petición explícita y dice quién atiende. */
   private async pasarAHumano(turn: Turn, sol: Solicitud): Promise<StrategyReply> {
     const { scopes } = turn;
@@ -976,7 +1163,7 @@ export class SupportStrategy {
 function mergeSlots(stored: unknown, fresh: SearchQuery): SearchQuery {
   // Un nombre de archivo identifica UN documento: no se hereda nada. El
   // mes que se dijo hace dos mensajes no tiene por qué ser el de este.
-  if (fresh.text) return { ...fresh };
+  if (fresh.text && nombreDeArchivo(fresh.text)) return { ...fresh };
 
   const previous = (typeof stored === 'object' && stored !== null
     ? stored
@@ -1047,11 +1234,9 @@ function mergeSlots(stored: unknown, fresh: SearchQuery): SearchQuery {
     period = fresh.period;
   }
 
-  // Sin nombre de archivo, el texto libre no se usa como filtro: "de pollos
-  // pirata" contestando a qué empresa no debe convertirse en un LIKE sobre
-  // el nombre, que es justo lo que hacía que el folio guardado dos mensajes
-  // atrás no encontrara nada.
-  return { category, period, folio, text: null };
+  // Las palabras clave son de ESTE mensaje: no se heredan. "La de Parcia"
+  // y luego "y la de marzo" no significa "la de Parcia de marzo".
+  return { category, period, folio, text: fresh.text };
 }
 
 /** Una consulta sin nada: para reanudar desde lo que el ticket ya guarda. */
@@ -1088,8 +1273,82 @@ function mesEnPalabras(period: Date): string {
 function describirPedido(query: SearchQuery): string {
   if (query.folio) return `el documento con folio ${query.folio}`;
 
-  const base = `la ${nombre(query.category)}`;
+  let base = `la ${nombre(query.category)}`;
+  if (query.text && !nombreDeArchivo(query.text)) base += ` de "${query.text}"`;
   return query.period ? `${base} de ${mesEnPalabras(query.period)}` : base;
+}
+
+/**
+ * ¿El documento es del mes que se pidió?
+ *
+ *  - coincide: no se pidió mes, o el documento es de ese mes.
+ *  - contradice: el documento es de otro mes.
+ *  - sin_evidencia: el documento no trae mes ni en el nombre ni por
+ *    dentro. Se ofrece, pero diciendo eso.
+ */
+function coincideMes(
+  doc: Document,
+  query: SearchQuery,
+): 'coincide' | 'contradice' | 'sin_evidencia' {
+  if (!query.period) return 'coincide';
+  if (!doc.period) return 'sin_evidencia';
+  return doc.period.getTime() === query.period.getTime() ? 'coincide' : 'contradice';
+}
+
+/**
+ * Quita de las palabras clave las que son nombre de alguna empresa del
+ * alcance. Devuelve null si no queda nada.
+ */
+function sinNombresDeEmpresa(
+  text: string | null,
+  scopes: readonly OrgScope[],
+): string | null {
+  if (!text || nombreDeArchivo(text)) return text;
+
+  const empresas = scopes.flatMap((s) => tokens(s.organizationName));
+  const restantes = text
+    .split(/\s+/)
+    .filter((p) => !empresas.some((e) => parecidas(p, e)));
+
+  return restantes.length > 0 ? restantes.join(' ') : null;
+}
+
+/**
+ * "¿Cómo sabes que es de este mes?", "¿de qué fecha es?", "¿seguro que
+ * es esa?", "¿por qué esa?": pregunta sobre lo que se acaba de mandar.
+ */
+function preguntaSobreEntregado(texto: string): boolean {
+  const limpio = texto
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '');
+
+  if (limpio.length > 90) return false;
+
+  return /\b(como sabes|como supiste|por que (esa|ese|esta|este|dices|crees|me mandas|me mandaste)|de que (mes|fecha|ano|anio) es|que (mes|fecha) (es|tiene|trae)|de cuando es|(estas|esta) segur[oa]|es (la|el) correct[oa]|es (la|el) de este mes)\b|^segur[oa]( que)?\s*\?|(?<!no )\bes de (este|ese) mes\??$|\bsi es de (este|ese) mes\b/.test(
+    limpio,
+  );
+}
+
+/**
+ * Un rechazo dentro de un mensaje que además trae datos: "sí es la
+ * cotización pero esa no es de este mes", "no es de septiembre, es de
+ * octubre", "esa no, la de marzo".
+ */
+function mencionaRechazo(texto: string): boolean {
+  const limpio = texto
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9ñ\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (limpio.length > 160) return false;
+
+  return /\b((esa|ese|esta|este) no( es| era)?\b|no (es|era) (de|del|la de|el de|esa|ese|esta|este)\b|no corresponde|no coincide|esta mal|es (la|el) equivocad[oa]|te equivocaste|no es (la|el) correct[oa]|otra distinta|otro distinto|no es la que|no es el que)/.test(
+    limpio,
+  );
 }
 
 /**
@@ -1254,7 +1513,7 @@ function esQuejaDeNoRecibido(texto: string): boolean {
 
   if (limpio.length > 60) return false;
 
-  return /\b(no (lo |la |me )?(veo|llego|llega|recibi|aparece|abre)|no me lo mandaste|donde esta|no vino|no esta el (doc|archivo|pdf))\b/.test(
+  return /\b(no (lo |la |me )?(veo|llego|llega|recibi|aparece|abre)|no me lo mandaste|donde esta|no vino|no esta el (doc|archivo|pdf)|(mandala|mandalo|pasala|pasalo|enviala|envialo) (otra vez|de nuevo)|(otra vez|de nuevo)$|reenvia(la|lo|me)?|vuelve(la|lo)? a (mandar|pasar|enviar))\b/.test(
     limpio,
   );
 }
@@ -1303,6 +1562,7 @@ function respuestaRapida(
 
     return voz.saludoInicial(
       turn.scopes.length === 1 ? turn.scopes[0]!.organizationName : null,
+      voz.nombreDePila(turn.message.senderName),
     );
   }
 
@@ -1377,7 +1637,7 @@ function readAsked(slots: unknown): AskedState {
 }
 
 function describe(doc: Document): string {
-  const period = doc.period ? doc.period.toISOString().slice(0, 7) : 'sin fecha';
+  const period = doc.period ? mesEnPalabras(doc.period) : 'sin mes';
   return `${doc.name} (${period}${doc.folio ? `, folio ${doc.folio}` : ''})`;
 }
 
@@ -1523,7 +1783,7 @@ function esRechazo(texto: string): boolean {
 
   return /\b(no (es|son) (esa|ese|esta|este|esas|esos|estas|estos|ninguna|ninguno)|(esa|ese|esas|esos) no( es| son)?|ningun[ao]( de (esas|esos|estas|estos|las dos|los dos))?|tampoco|no me sirve|no (es|era) (la|el) que|no son (esas|esos)|no es ninguna|nel|nop)\b/.test(
     limpio,
-  ) || /^(no|no no|que no)$/.test(limpio);
+  ) || /^(no|no no|que no|otra|otro|no otra|otra distinta|busca otra|buscamos otra|mejor otra|no esa|no ese|esa no|ese no|no gracias otra)$/.test(limpio);
 }
 
 /**
@@ -1536,7 +1796,8 @@ function esRechazo(texto: string): boolean {
  * de dos y luego nombrar uno de los dos es una conversación normal.
  */
 function excluir(query: SearchQuery, sol: Solicitud): readonly string[] {
-  return query.folio || query.text ? [] : sol.rechazados;
+  const explicito = query.folio !== null || (query.text !== null && nombreDeArchivo(query.text) !== null);
+  return explicito ? [] : sol.rechazados;
 }
 
 /** "¿De qué meses hay?", "qué meses tienes", "de qué fechas". */

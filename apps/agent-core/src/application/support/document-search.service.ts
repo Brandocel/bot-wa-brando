@@ -76,11 +76,19 @@ export class DocumentSearchService {
     if (query.excludeIds && query.excludeIds.length > 0) {
       filters.push({ id: { notIn: [...query.excludeIds] } });
     }
-    if (query.text) {
+    /**
+     * Texto libre: cada palabra tiene que aparecer en el nombre o DENTRO
+     * del documento. "Parcia Ima" da con la factura que dice "Parcia Ima
+     * S.A. de C.V." en su texto aunque el archivo se llame "invoice-6a6d".
+     * Palabra por palabra y no la frase entera, porque el nombre real
+     * lleva guiones bajos y el texto extraído lleva saltos de línea donde
+     * la persona escribió un espacio.
+     */
+    for (const palabra of palabrasDe(query.text)) {
       filters.push({
         OR: [
-          { name: { contains: query.text, mode: 'insensitive' } },
-          { extractedText: { contains: query.text, mode: 'insensitive' } },
+          { name: { contains: palabra, mode: 'insensitive' } },
+          { extractedText: { contains: palabra, mode: 'insensitive' } },
         ],
       });
     }
@@ -214,4 +222,24 @@ export class DocumentSearchService {
 
     return conditions;
   }
+}
+
+/**
+ * Las palabras con las que se filtra un texto libre: sin acentos (el
+ * texto extraído se guarda sin ellos), sin signos, y de tres letras o
+ * más. "Parcia Ima" → ["parcia", "ima"]; "BrandoCelSanchez_2026" →
+ * ["brandocelsanchez", "2026"].
+ */
+export function palabrasDe(text: string | null): string[] {
+  if (!text) return [];
+  return [
+    ...new Set(
+      text
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[̀-ͯ]/g, '')
+        .split(/[^a-z0-9ñ]+/)
+        .filter((t) => t.length >= 3),
+    ),
+  ].slice(0, 6);
 }

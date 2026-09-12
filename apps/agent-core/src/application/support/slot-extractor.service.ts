@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { LLM_PORT, type LlmPort } from '../ports/llm.port';
 import type { SearchQuery } from './document-search.service';
 import { formatHistory, type HistoryTurn } from './conversation-history.service';
-import { nombreDeArchivo, parseQuery } from './query-parser';
+import { nombreDeArchivo, palabrasClave, parseQuery } from './query-parser';
 
 /**
  * Extracción de slots: primero reglas, el modelo solo cuando hacen falta.
@@ -118,6 +118,8 @@ export class SlotExtractorService {
     // Un nombre de archivo (o algo que lo parece) identifica el documento
     // mejor que cualquier metadato, y no hay nada que interpretar.
     const hint = nombreDeArchivo(text);
+    const clavesLista = palabrasClave(text);
+    const claves = clavesLista.length > 0 ? clavesLista.join(' ') : null;
 
     const resueltoPorReglas =
       hint !== null ||
@@ -128,8 +130,10 @@ export class SlotExtractorService {
 
     if (resueltoPorReglas) {
       return {
-        // El nombre de la empresa no es texto para filtrar archivos.
-        query: { ...byRules, text: hint },
+        // Nombre de archivo o palabras clave ("Parcia Ima", "contable"):
+        // lo que sobra después de leer tipo, mes y folio, para buscar en
+        // el nombre y dentro del documento.
+        query: { ...byRules, text: hint ?? claves },
         companyHint: null,
         notADocumentRequest: false,
         source: 'reglas',
@@ -187,7 +191,9 @@ export class SlotExtractorService {
           byRules.category,
         period: periodo ?? byRules.period,
         folio: folio ?? byRules.folio,
-        text: hint,
+        // Las palabras clave solo valen si el modelo vio una petición de
+        // documento: "lo de la semana" no es un filtro sobre nada.
+        text: hint ?? (extracted.no_es_documento ? null : claves),
       },
       companyHint: toValue(extracted.empresa),
       notADocumentRequest: extracted.no_es_documento,

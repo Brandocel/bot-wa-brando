@@ -22,17 +22,31 @@ function una(opciones: readonly string[]): string {
 
 // ── Saludos y cortesía ─────────────────────────────────────────────────
 
-export function saludoInicial(empresa: string | null): string {
+export function saludoInicial(empresa: string | null, nombre: string | null = null): string {
+  // Por su nombre, si WhatsApp trae uno que parezca nombre. Es la diferencia
+  // entre "¡Hola!" de contestador y "¡Hola, Mariana!" de alguien del equipo.
+  const hola = nombre ? `¡Hola, ${nombre}!` : '¡Hola!';
   return empresa
     ? una([
-        `¡Hola! Qué gusto. Dime qué documento necesitas de ${empresa} y te lo busco enseguida.`,
-        `¡Hola! Aquí ando para lo que necesites de ${empresa}. ¿Qué documento te busco?`,
-        `¡Hola! Cuéntame qué documento de ${empresa} necesitas y en un momento te lo mando.`,
+        `${hola} Qué gusto. Dime qué documento necesitas de ${empresa} y te lo busco enseguida.`,
+        `${hola} Aquí ando para lo que necesites de ${empresa}. ¿Qué documento te busco?`,
+        `${hola} Cuéntame qué documento de ${empresa} necesitas y en un momento te lo mando.`,
       ])
     : una([
-        '¡Hola! Qué gusto. Dime qué documento necesitas y de qué empresa, y te lo busco.',
-        '¡Hola! Aquí ando. ¿Qué documento te busco y de qué empresa?',
+        `${hola} Qué gusto. Dime qué documento necesitas y de qué empresa, y te lo busco.`,
+        `${hola} Aquí ando. ¿Qué documento te busco y de qué empresa?`,
       ]);
+}
+
+/**
+ * El nombre de pila con el que saludar, o null si lo que trae WhatsApp no
+ * parece un nombre ("BM", "🌸🌸", un número, una empresa entera).
+ */
+export function nombreDePila(pushName: string | null | undefined): string | null {
+  if (!pushName) return null;
+  const primera = pushName.trim().split(/s+/)[0] ?? '';
+  if (!/^[A-Za-zÁÉÍÓÚÑáéíóúñ]{3,16}$/.test(primera)) return null;
+  return primera.charAt(0).toUpperCase() + primera.slice(1).toLowerCase();
 }
 
 export function saludoDeNuevo(): string {
@@ -302,5 +316,67 @@ export function mesesDisponibles(tipoPlural: string, meses: readonly string[]): 
   return una([
     `De ${tipoPlural} tengo de: ${meses.join(', ')}. ¿Cuál te mando?`,
     `Hay ${tipoPlural} de ${meses.join(', ')}. Dime el mes y te la busco.`,
+  ]);
+}
+
+// ── Leer antes de mandar ───────────────────────────────────────────────
+
+/** Solo hay un candidato y es de otro mes: se ofrece, no se manda. */
+export function unicaDeOtroMes(pedido: string, nombre: string, mes: string): string {
+  return una([
+    `${pedido.charAt(0).toUpperCase() + pedido.slice(1)} como tal no la tengo. La única que veo es ${nombre}, y esa es de ${mes}. ¿Te la mando o buscamos otra?`,
+    `De ese mes no tengo nada; lo más cercano es ${nombre}, que es de ${mes}. Si te sirve, dime "sí" y te la paso.`,
+  ]);
+}
+
+/** Solo hay un candidato y no se sabe de qué mes es: se dice tal cual. */
+export function unicaSinMes(pedido: string, nombre: string): string {
+  return una([
+    `Tengo ${nombre}, pero no trae mes ni en el nombre ni por dentro, así que no te puedo asegurar que sea ${pedido}. ¿Te la mando para que la revises?`,
+    `Lo único parecido es ${nombre}; no dice de qué mes es, así que no sé si es ${pedido}. Si quieres te la paso y la checas.`,
+  ]);
+}
+
+/** La búsqueda cayó en lo mismo que se acaba de mandar. */
+export function esLaMisma(nombre: string): string {
+  return una([
+    `Esa es la que te acabo de mandar: ${nombre}. ¿Buscas otra distinta? Si me das el folio o el mes exacto, la ubico.`,
+    `Es la misma de arriba (${nombre}). Si necesitas otra, dime el folio o el nombre y la busco; si era esa, ya la tienes.`,
+  ]);
+}
+
+/** Rechazó lo único que había: se dice así en vez de "no encontré". */
+export function soloTeniaEsa(pedido: string, cuantas: number): string {
+  return cuantas > 1
+    ? una([
+        `Fuera de las que ya viste, no tengo otra que sea ${pedido}. Si tienes el folio o el nombre del archivo, la busco por ahí; si no, lo reviso con el equipo.`,
+        `Ya te enseñé lo que tengo de eso y no hay más. Con un folio o un nombre de archivo lo puedo ubicar; si no, lo paso con alguien del equipo.`,
+      ])
+    : una([
+        `Entonces solo tenía esa. ¿Tienes el folio o el nombre del archivo de ${pedido}? Con eso la busco; si no está, lo veo con el equipo.`,
+        `Va, esa no. Para ${pedido} no veo otra; si me pasas el folio o el nombre la busco, y si no aparece lo reviso con el equipo.`,
+      ]);
+}
+
+// ── Explicar de dónde salió un dato ────────────────────────────────────
+
+export function mesPorNombre(nombre: string, mes: string): string {
+  return una([
+    `Por el nombre del archivo: ${nombre} trae ${mes}. Si tú sabes que es de otro mes, dime cuál y busco la correcta.`,
+    `Lo dice el nombre del archivo (${nombre}): ${mes}. Si no cuadra, dime de qué mes debería ser y la busco.`,
+  ]);
+}
+
+export function mesPorContenido(nombre: string, mes: string): string {
+  return una([
+    `Lo leí del documento: ${nombre} trae fecha de ${mes}. Si tú sabes que es de otro mes, dime cuál y busco la correcta.`,
+    `Por lo que dice adentro: ${nombre} está fechado en ${mes}. Si no es lo que esperabas, dime el mes y la busco.`,
+  ]);
+}
+
+export function mesDesconocido(nombre: string, tipo: string): string {
+  return una([
+    `La verdad, no lo sé con certeza: ${nombre} no trae mes ni en el nombre ni por dentro, y es la única ${tipo} que tengo. Si me dices de qué mes debería ser, busco otra o lo reviso con el equipo.`,
+    `No te lo puedo asegurar. ${nombre} no dice de qué mes es, y es lo único que hay de ese tipo. Dime el mes que necesitas y lo checo, o lo paso con alguien del equipo.`,
   ]);
 }

@@ -13,6 +13,8 @@ import {
   type SourceFile,
 } from '../ports/document-source.port';
 import { isDeliverable, parseDocumentName } from './document-name.parser';
+import { parseDocumentContent } from './document-content.parser';
+import { DocumentContentService } from './document-content.service';
 
 /**
  * Sincronizador Drive → índice local.
@@ -45,6 +47,7 @@ export class DriveSyncService implements OnModuleInit {
   constructor(
     private readonly prisma: PrismaService,
     @Inject(DOCUMENT_SOURCE_PORT) private readonly source: DocumentSourcePort,
+    private readonly contenido: DocumentContentService,
   ) {}
 
   onModuleInit(): void {
@@ -142,6 +145,10 @@ export class DriveSyncService implements OnModuleInit {
       // de nombre mejoran con el tiempo, y un archivo que ayer no se
       // entendía hoy puede entenderse sin que nadie lo vuelva a subir.
       await this.recuperarCuarentena(report);
+
+      // Y se lee por dentro lo que se indexó antes de que el bot supiera
+      // leer: un lote por pasada, sin /resync.
+      await this.leerPendientes(report);
 
       return report;
     } finally {
@@ -281,6 +288,22 @@ export class DriveSyncService implements OnModuleInit {
     }
 
     const parsed = parseDocumentName(file.name, file.folderPath);
+
+    /**
+     * El texto de adentro se lee una vez por versión del archivo. Si ya
+     * lo teníamos y el archivo no cambió, no se vuelve a bajar.
+     */
+    const previo = await this.prisma.document.findUnique({
+      where: { driveFileId: file.id },
+      select: { driveVersion: true, extractedText: true },
+    });
+    const extractedText =
+      previo && previo.driveVersion === file.version && previo.extractedText !== null
+        ? previo.extractedText
+        : ((await this.contenido.leer(file)) ?? '');
+
+    const meta = combinar(parsed, extractedText);
+
     /**
      * Todo lo entregable entra al índice, diga lo que diga el nombre.
      *
@@ -302,9 +325,10 @@ export class DriveSyncService implements OnModuleInit {
         name: file.name,
         mimeType: file.mimeType,
         sizeBytes: file.sizeBytes,
-        category: parsed.category ?? 'OTRO',
-        period: parsed.period,
-        folio: parsed.folio,
+        category: meta.category,
+        period: meta.period,
+        folio: meta.folio,
+        extractedText,
         status,
       },
       update: {
@@ -313,9 +337,10 @@ export class DriveSyncService implements OnModuleInit {
         name: file.name,
         mimeType: file.mimeType,
         sizeBytes: file.sizeBytes,
-        category: parsed.category ?? 'OTRO',
-        period: parsed.period,
-        folio: parsed.folio,
+        category: meta.category,
+        period: meta.period,
+        folio: meta.folio,
+        extractedText,
         status,
       },
     });
@@ -340,18 +365,65 @@ export class DriveSyncService implements OnModuleInit {
     });
 
     for (const doc of encuarentena) {
-      const parsed = parseDocumentName(doc.name);
+      const meta = combinar(parseDocumentName(doc.name), null);
 
       await this.prisma.document.update({
         where: { id: doc.id },
         data: {
-          category: parsed.category ?? 'OTRO',
-          period: parsed.period,
-          folio: parsed.folio,
+          category: meta.category,
+          period: meta.period,
+          folio: meta.folio,
           status: 'INDEXED',
         },
       });
       report.indexed += 1;
+    }
+  }
+
+  /**
+   * Lee por dentro los documentos que aún no se han leído.
+   *
+   * Es lo que hace que la lectura de contenido alcance a lo que ya
+   * estaba indexado cuando se estrenó, sin obligar a un /resync. Un lote
+   * chico por pasada: cada archivo es una descarga, y la sincronización
+   * no tiene por qué tardar minutos por esto. Lo que no se pudo leer se
+   * marca con texto vacío para no bajarlo en cada pasada.
+   */
+  private async leerPendientes(report: SyncReport): Promise<void> {
+    const pendientes = await this.prisma.document.findMany({
+      where: {
+        status: 'INDEXED',
+        extractedText: null,
+        mimeType: { in: ['application/pdf', 'text/plain', 'text/csv'] },
+      },
+      select: { id: true, driveFileId: true, name: true, mimeType: true, sizeBytes: true },
+      orderBy: { indexedAt: 'desc' },
+      take: 25,
+    });
+
+    for (const doc of pendientes) {
+      try {
+        const texto = await this.contenido.leer({
+          id: doc.driveFileId,
+          name: doc.name,
+          mimeType: doc.mimeType,
+          sizeBytes: doc.sizeBytes,
+        });
+        const meta = combinar(parseDocumentName(doc.name), texto);
+
+        await this.prisma.document.update({
+          where: { id: doc.id },
+          data: {
+            category: meta.category,
+            period: meta.period,
+            folio: meta.folio,
+            extractedText: texto ?? '',
+          },
+        });
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        report.errors.push(`leer "${doc.name}": ${detail}`);
+      }
     }
   }
 
@@ -367,4 +439,31 @@ export class DriveSyncService implements OnModuleInit {
       data: { lastScanAt: null },
     });
   }
+}
+
+/**
+ * Nombre primero, contenido después.
+ *
+ * El nombre lo puso una persona pensando en encontrarlo; el contenido trae
+ * fechas de todo tipo (pago, vencimiento, impresión). Así que el nombre
+ * manda y el texto solo rellena lo que el nombre dejó en blanco: el mes de
+ * "Cotizacion_Vega_2026", el folio de "invoice-6a6d58c7.pdf", el tipo de
+ * "REP-0045.pdf".
+ */
+function combinar(
+  nombre: ReturnType<typeof parseDocumentName>,
+  texto: string | null,
+): { category: NonNullable<ReturnType<typeof parseDocumentName>['category']>; period: Date | null; folio: string | null } {
+  const contenido = parseDocumentContent(texto);
+  // Una marca de tiempo en el nombre es la fecha de descarga: si el texto
+  // trae la fecha de emisión, esa es la buena.
+  const period = nombre.periodoDebil
+    ? (contenido.period ?? nombre.period)
+    : (nombre.period ?? contenido.period);
+
+  return {
+    category: nombre.category ?? contenido.category ?? 'OTRO',
+    period,
+    folio: nombre.folio ?? contenido.folio,
+  };
 }

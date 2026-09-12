@@ -17,6 +17,12 @@ export interface ParsedName {
   category: DocCategory | null;
   /** Primer día del mes, en UTC. */
   period: Date | null;
+  /**
+   * true = el mes salió de una marca de tiempo (1782860673094), que es la
+   * fecha de DESCARGA del archivo, no la del documento. Sirve si no hay
+   * nada mejor; lo que diga el contenido gana.
+   */
+  periodoDebil: boolean;
   folio: string | null;
 }
 
@@ -81,11 +87,20 @@ export function parseDocumentName(
     if (category) break;
   }
 
+  const period = parsePeriod(text);
+
   return {
     category,
-    period: parsePeriod(text),
+    period,
+    periodoDebil: period !== null && esMarcaDeTiempo(text),
     folio: parseFolio(text),
   };
+}
+
+/** ¿El mes viene de una marca de tiempo y no de una fecha escrita? */
+function esMarcaDeTiempo(text: string): boolean {
+  const compacta = /\b(20\d{2})(0[1-9]|1[0-2])([0-2]\d|3[01])\b/.test(text);
+  return !compacta && /\b(1[4-9]\d{11}|20\d{11})\b/.test(text);
 }
 
 function parsePeriod(text: string): Date | null {
@@ -116,10 +131,13 @@ function parsePeriod(text: string): Date | null {
     if (year) return utcMonth(Number(year[1]), month);
   }
 
-  // Solo el año: sirve para contratos y pólizas, que no son mensuales.
-  const onlyYear = /\b(20\d{2})\b/.exec(text);
-  if (onlyYear) return utcMonth(Number(onlyYear[1]), 1);
-
+  /**
+   * Solo el año NO es un mes. Antes "Cotizacion_Vega_2026" quedaba como
+   * enero de 2026, y el bot la entregaba a quien pedía "la cotización de
+   * enero" con toda seguridad. Sin mes en el nombre, el mes sale del
+   * contenido del archivo o se queda en blanco — y en blanco se ofrece
+   * diciendo que no trae mes, que es la verdad.
+   */
   return null;
 }
 

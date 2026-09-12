@@ -21,6 +21,10 @@ import {
   type StrategyReply,
 } from '../../apps/agent-core/src/application/support/support.strategy';
 import { TicketService } from '../../apps/agent-core/src/application/support/ticket.service';
+import { TicketAssignmentService } from '../../apps/agent-core/src/application/support/ticket-assignment.service';
+import { SolicitudService } from '../../apps/agent-core/src/application/support/solicitud.service';
+import { ConversationHistoryService } from '../../apps/agent-core/src/application/support/conversation-history.service';
+import { ReplyWriterService } from '../../apps/agent-core/src/application/support/reply-writer.service';
 import type { LlmPort } from '../../apps/agent-core/src/application/ports/llm.port';
 import type { IncomingMessage } from '../../apps/agent-core/src/domain/message/incoming-message';
 
@@ -40,7 +44,7 @@ const deadLlm: LlmPort = {
 
 const scope = new AccessScopeService(prisma as never);
 const search = new DocumentSearchService(prisma as never);
-const tickets = new TicketService(prisma as never);
+const tickets = new TicketService(prisma as never, new TicketAssignmentService(prisma as never));
 const slots = new SlotExtractorService(deadLlm);
 const delivery = new DocumentDeliveryService(prisma as never, {
   startCursor: async () => '',
@@ -51,7 +55,7 @@ const delivery = new DocumentDeliveryService(prisma as never, {
   download: async () => Buffer.from('PDF de prueba'),
 }, new DocumentLinkService());
 
-const strategy = new SupportStrategy(scope, slots, search, delivery, tickets, deadLlm);
+const strategy = new SupportStrategy(scope, slots, search, delivery, tickets, new SolicitudService(prisma as never), new ConversationHistoryService(prisma as never), new ReplyWriterService(deadLlm));
 
 interface Turn {
   waId: string;
@@ -135,8 +139,10 @@ async function conversacion(
 
   const conversation = await prisma.conversation.upsert({
     where: { chatId },
-    create: { chatId, contactId: contact.id },
-    update: {},
+    create: { chatId, contactId: contact.id, context: {} },
+    // Cada conversación arranca sin memoria: lo entregado en la anterior no
+    // debe contar como "la misma de arriba" en esta.
+    update: { contactId: contact.id, context: {} },
   });
 
   console.log(`=== ${titulo} ===\n`);
@@ -260,6 +266,33 @@ async function main(): Promise<void> {
     ['La de polos pirata', 'el documento B2001'],
     '5215500000099@c.us',
   );
+
+  // Lo de las capturas: pide la cotización de este mes, la única que hay es
+  // de otro mes. No se manda a ciegas: se ofrece diciendo de qué mes es.
+  // Y después no se repite, se explica de dónde salió el mes, y un rechazo
+  // con datos cuenta como rechazo.
+  await conversacion('Leer antes de mandar: no entrega a ciegas ni repite', [
+    'Si tienes la cotizacion de este mes',
+    'sí',
+    'Cómo sabes que es de este mes?',
+    'la cotización de febrero',
+    'Si es la cotizacion pero esa no es de este mes',
+  ]);
+
+  // Palabras clave dentro del documento: "Parcia Ima" no está en ningún
+  // nombre de archivo, pero sí en el texto de una factura.
+  await prisma.document.updateMany({
+    where: { name: 'FACTURA_2026-02_A1002.pdf' },
+    data: { extractedText: 'factura folio a1002 receptor: parcia ima s.a. de c.v. fecha 12/02/2026' },
+  });
+  await conversacion('Buscar por lo que dice el documento', [
+    'necesito la factura de Parcia Ima',
+    'y la de Flores de Paula de enero',
+  ]);
+  await prisma.document.updateMany({
+    where: { name: 'FACTURA_2026-02_A1002.pdf' },
+    data: { extractedText: null },
+  });
 
   // Y también al terminar: los tickets de prueba no deben quedar en la cola
   // del operador.
