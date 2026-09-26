@@ -20,6 +20,26 @@ import {
   type Solicitud,
 } from './solicitud.service';
 import { TicketService, type EscalationReason } from './ticket.service';
+import {
+  ACUSE,
+  CIERRE,
+  RECONOCE,
+  SALUDO,
+  clasificar,
+  esAfirmacion,
+  esInventario,
+  esQuejaDeNoRecibido,
+  esRechazo,
+  leerNumero,
+  mencionaRechazo,
+  normalizar,
+  parseQueryTieneDatos,
+  pideHumano,
+  preguntaMeses,
+  preguntaSobreEntregado,
+  quejaParaPersona,
+  type Clasificacion,
+} from './message-classifier';
 import * as voz from './voz';
 
 /**
@@ -70,6 +90,8 @@ export interface StrategyReply {
   awaiting: Awaiting;
   /** Tema del hilo, cuando este turno lo resolvió. */
   topic?: DocCategory | null;
+  /** Qué clase de mensaje era: se guarda en el mensaje entrante. */
+  clasificacion?: Clasificacion;
 }
 
 export interface StrategyContext {
@@ -111,6 +133,37 @@ export class SupportStrategy {
   async handle(
     message: IncomingMessage,
     ctx: StrategyContext,
+  ): Promise<StrategyReply | null> {
+    // Qué clase de mensaje es se decide primero: cambia qué se hace con él.
+    const clasificacion = clasificar(message.body);
+
+    const reply = await this.atender(message, ctx, clasificacion);
+    if (!reply) return null;
+
+    /**
+     * Si se nota molesto, la respuesta empieza reconociéndolo. No en las
+     * quejas ni en los escalados (sus plantillas ya lo hacen), ni en la
+     * cortesía, ni cuando no hay texto: la entrega va como leyenda del
+     * archivo.
+     */
+    const reconocer =
+      clasificacion.molesto &&
+      reply.text !== '' &&
+      reply.awaiting !== 'AGENTE' &&
+      clasificacion.tipo !== 'QUEJA' &&
+      clasificacion.tipo !== 'CORTESIA';
+
+    return {
+      ...reply,
+      text: reconocer ? `${voz.empatia()}\n${reply.text}` : reply.text,
+      clasificacion,
+    };
+  }
+
+  private async atender(
+    message: IncomingMessage,
+    ctx: StrategyContext,
+    clas: Clasificacion,
   ): Promise<StrategyReply | null> {
     const scope = await this.scope.resolve(message.senderId);
 
@@ -168,6 +221,38 @@ export class SupportStrategy {
     }
 
     /**
+     * Quejas que el bot no puede resolver solo —una factura con el RFC
+     * mal, alguien que lleva días esperando, "este bot no sirve"— y
+     * preguntas por un caso que ya tiene una persona. Se atienden ANTES de
+     * buscar nada: contestarle a una queja con otra búsqueda es lo que la
+     * convierte en dos quejas.
+     */
+    if (quejaParaPersona(clas) || clas.tipo === 'SEGUIMIENTO') {
+      const atendida = await this.atenderQueja(turn, sol, clas);
+      if (atendida) return atendida;
+    }
+
+    /**
+     * Molesto, y el bot ya le preguntó, no encontró o le ofreció lo que no
+     * era: no se hace una vuelta más. Pasa a una persona.
+     */
+    if (
+      clas.molesto &&
+      clas.tipo !== 'CORTESIA' &&
+      (sol.preguntas > 0 || sol.fallos > 0 || sol.rechazados.length > 0)
+    ) {
+      return this.escalarPorMolestia(turn, sol);
+    }
+
+    /**
+     * "Te equivocaste, eso no es lo que pedí", sin más datos: es un rechazo
+     * dicho como reclamo, y se atiende igual que "no es esa".
+     */
+    const reclamaEquivocado =
+      clas.motivo === 'documento_equivocado' &&
+      !parseQueryTieneDatos(normalizar(message.body));
+
+    /**
      * "Pásame con un agente", "quiero hablar con una persona". Se escala
      * directo: pedir humano es una instrucción, no una duda.
      */
@@ -176,7 +261,7 @@ export class SupportStrategy {
      * entregado. Antes esto caía en el modelo, que sacaba el tipo del
      * contexto, y el bot volvía a enseñar la misma lista tres veces.
      */
-    if (esRechazo(message.body)) {
+    if (esRechazo(message.body) || reclamaEquivocado) {
       const rechazado = await this.rechazar(turn, sol);
       if (rechazado) return rechazado;
     }
@@ -215,7 +300,7 @@ export class SupportStrategy {
      * como traía datos, no contaba como rechazo, y la búsqueda volvía a
      * dar con el mismo archivo.
      */
-    if (mencionaRechazo(message.body)) {
+    if (mencionaRechazo(message.body) || clas.motivo === 'documento_equivocado') {
       await this.apuntarRechazo(turn, sol);
     }
 
@@ -280,12 +365,26 @@ export class SupportStrategy {
       empresaMencionada !== null;
 
     /**
+     * Lo que las reglas no supieron clasificar: si aporta datos, es una
+     * solicitud; si no, vale la etiqueta del modelo. Solo cambia la
+     * etiqueta y el tono de la respuesta; lo que se hace lo decide el código.
+     */
+    if (clas.tipo === 'OTRO') {
+      if (aporta) {
+        clas.tipo = 'SOLICITUD';
+      } else if (extraction.tipoMensaje) {
+        clas.tipo = extraction.tipoMensaje;
+        clas.fuente = 'modelo';
+      }
+    }
+
+    /**
      * Sin ningún dato nuevo y sin pregunta en el aire, es charla — diga lo
      * que diga el modelo. Un mensaje que no aporta nada no puede cambiar
      * la búsqueda; lo único que haría es repetir la anterior.
      */
     if (!aporta) {
-      return { text: await this.smallTalk(turn, conocido), awaiting: 'NADIE' };
+      return { text: await this.smallTalk(turn, conocido, clas), awaiting: 'NADIE' };
     }
 
     /**
@@ -820,21 +919,47 @@ export class SupportStrategy {
   }
 
   /**
-   * Saludos, agradecimientos y preguntas generales. El modelo redacta
-   * viendo la conversación; sin modelo, sale una plantilla.
+   * Saludos, preguntas generales e inconformidades que las reglas no
+   * ubicaron. El modelo redacta viendo la conversación, con el tono que
+   * pide la clase de mensaje; sin modelo, sale una plantilla.
    */
-  private async smallTalk(turn: Turn, conocido: readonly string[]): Promise<string> {
+  private async smallTalk(
+    turn: Turn,
+    conocido: readonly string[],
+    clas: Clasificacion,
+  ): Promise<string> {
     const companies = turn.scopes.map((s) => s.organizationName).join(', ');
 
+    const brief =
+      clas.tipo === 'QUEJA'
+        ? {
+            intent: 'queja' as const,
+            facts: [
+              'La persona expresa una inconformidad que no es sobre un documento concreto.',
+              'Ofrece buscar el documento que necesite, o pasarla con alguien del equipo si escribe "quiero hablar con una persona".',
+            ],
+            fallback: voz.quejaSinModelo(),
+          }
+        : clas.tipo === 'CONSULTA'
+          ? {
+              intent: 'consulta' as const,
+              facts: [
+                'Es una pregunta que no pide ningún documento.',
+                'No inventes horarios, precios, trámites ni políticas. Si la respuesta no está en la conversación, di que eso no lo resuelves por aquí y ofrece pasarlo con alguien del equipo.',
+              ],
+              fallback: voz.consultaSinModelo(companies),
+            }
+          : {
+              intent: 'charla' as const,
+              facts: [
+                'El mensaje no pide ningún documento.',
+                'Si te preguntan algo que no sea sobre documentos, dilo y ofrece buscar uno.',
+              ],
+              fallback: voz.charlaSinModelo(companies),
+            };
+
     return this.writer.write(
-      {
-        intent: 'charla',
-        facts: [
-          'El mensaje no pide ningún documento.',
-          'Si te preguntan algo que no sea sobre documentos, dilo y ofrece buscar uno.',
-        ],
-        fallback: voz.charlaSinModelo(companies),
-      },
+      brief,
       {
         history: turn.history,
         incoming: turn.message.body,
@@ -1124,6 +1249,74 @@ export class SupportStrategy {
   }
 
   /**
+   * Una queja que necesita a una persona, o una pregunta por un caso.
+   *
+   * Si una persona ya tiene un caso de esta conversación, no se abre otro
+   * folio: se anota, se sube la prioridad y se le recuerda al agente. Si no
+   * lo hay, la queja nace como ticket de prioridad alta. Preguntar por un
+   * caso que no existe no es una queja: devuelve null y el mensaje sigue su
+   * camino normal.
+   */
+  private async atenderQueja(
+    turn: Turn,
+    sol: Solicitud,
+    clas: Clasificacion,
+  ): Promise<StrategyReply | null> {
+    const esSeguimiento = clas.tipo === 'SEGUIMIENTO';
+    const caso = await this.tickets.casoEnRevision(turn.ctx.conversationId);
+
+    if (caso) {
+      const agente = await this.tickets.insistir(
+        caso.id,
+        esSeguimiento ? 'seguimiento' : 'queja',
+        turn.message.body,
+      );
+      const folio = `#${caso.number}`;
+      return {
+        text: esSeguimiento
+          ? voz.seguimientoCaso(folio, agente)
+          : voz.quejaConCasoAbierto(folio, agente),
+        awaiting: 'AGENTE',
+      };
+    }
+
+    if (esSeguimiento) return null;
+
+    const { scopes } = turn;
+    const organizationId =
+      scopes.length === 1 ? scopes[0]!.organizationId : empresaGuardada(sol, scopes);
+
+    const { ticket, agente } = await this.escalar(turn, sol, 'queja', organizationId);
+
+    return {
+      text: voz.quejaEscalada(clas.motivo, `#${ticket.number}`, agente),
+      awaiting: 'AGENTE',
+      topic: sol.category,
+    };
+  }
+
+  /** Molesto y con vueltas encima: a una persona, sin otra pregunta. */
+  private async escalarPorMolestia(turn: Turn, sol: Solicitud): Promise<StrategyReply> {
+    const caso = await this.tickets.casoEnRevision(turn.ctx.conversationId);
+    if (caso) {
+      const agente = await this.tickets.insistir(caso.id, 'molesto', turn.message.body);
+      return { text: voz.quejaConCasoAbierto(`#${caso.number}`, agente), awaiting: 'AGENTE' };
+    }
+
+    const { scopes } = turn;
+    const organizationId =
+      scopes.length === 1 ? scopes[0]!.organizationId : empresaGuardada(sol, scopes);
+
+    const { ticket, agente } = await this.escalar(turn, sol, 'molesto', organizationId);
+
+    return {
+      text: voz.molestoEscalado(`#${ticket.number}`, agente),
+      awaiting: 'AGENTE',
+      topic: sol.category,
+    };
+  }
+
+  /**
    * Aquí, y solo aquí, nace un ticket: cuando hace falta una persona.
    *
    * Se lleva lo que la solicitud sabía (para que el agente vea qué se
@@ -1300,7 +1493,6 @@ function mergeSlots(stored: unknown, fresh: SearchQuery): SearchQuery {
     storedPeriod !== null &&
     fresh.period.getTime() !== storedPeriod.getTime();
 
-
   let category = fresh.category ?? storedCategory;
   let period = fresh.period ?? storedPeriod;
   let folio = fresh.folio ?? storedFolio;
@@ -1395,53 +1587,6 @@ function sinNombresDeEmpresa(
 }
 
 /**
- * "¿Cómo sabes que es de este mes?", "¿de qué fecha es?", "¿seguro que
- * es esa?", "¿por qué esa?": pregunta sobre lo que se acaba de mandar.
- */
-function preguntaSobreEntregado(texto: string): boolean {
-  const limpio = texto
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '');
-
-  if (limpio.length > 90) return false;
-
-  const M = '(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)';
-  // "¿es de abril o de mayo?", "esta factura es de abril?", "dice que es de
-  // abril", "es de abril, no de mayo", "yo te pedí la de mayo".
-  const conMes = new RegExp(
-    `\\b(es de ${M} o (de )?${M}|(esta|esa|la) (factura|cotizacion|contrato|reporte|poliza|documento)( que (me )?mandaste)? es de ${M}|dice que es de ${M}|es de ${M},? no (de|la de) ${M}|(yo )?te (pedi|habia pedido|dije) la de ${M})\\b`,
-  );
-
-  return (
-    /\b(como sabes|como supiste|por que (esa|ese|esta|este|dices|crees|me mandas|me mandaste)|de que (mes|fecha|ano|anio) es|que (mes|fecha) (es|tiene|trae)|de cuando es|(estas|esta) segur[oa]|es (la|el) correct[oa]|es (la|el) de este mes)\b|^segur[oa]( que)?\s*\?|(?<!no )\bes de (este|ese) mes\??$|\bsi es de (este|ese) mes\b/.test(
-      limpio,
-    ) || conMes.test(limpio)
-  );
-}
-
-/**
- * Un rechazo dentro de un mensaje que además trae datos: "sí es la
- * cotización pero esa no es de este mes", "no es de septiembre, es de
- * octubre", "esa no, la de marzo".
- */
-function mencionaRechazo(texto: string): boolean {
-  const limpio = texto
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/[^a-z0-9ñ\s]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  if (limpio.length > 160) return false;
-
-  return /\b((esa|ese|esta|este) no( es| era)?\b|no (es|era) (de|del|la de|el de|esa|ese|esta|este)\b|no corresponde|no coincide|esta mal|es (la|el) equivocad[oa]|te equivocaste|no es (la|el) correct[oa]|otra distinta|otro distinto|no es la que|no es el que)/.test(
-    limpio,
-  );
-}
-
-/**
  * Los slots del ticket en palabras, para enseñárselos al modelo.
  *
  * Es la parte de la memoria que NO está en el historial de mensajes: lo
@@ -1477,7 +1622,6 @@ function describirSlots(
 
   return out;
 }
-
 
 /** Palabras con peso de un texto: sin acentos, sin artículos ni conectores. */
 function tokens(text: string): string[] {
@@ -1540,75 +1684,6 @@ function empresaGuardada(
 }
 
 /**
- * El número de una lista, si el mensaje viene a eso.
- *
- * "1", "el 2", "la 2", "y la 2", "me pasas el 1", "dame la primera". Es
- * una frase corta cuyo único dato es un número chico o un ordinal. Un
- * número dentro de una frase con más información no cuenta: "necesito la
- * factura 2026" no es elegir la opción 2026, y "la factura 3 de marzo"
- * trae tipo y mes, así que va por el flujo normal.
- *
- * Antes solo se aceptaba el número pelado. "Oye me puedes dar el 1" caía
- * en el modelo, que lo resolvía adivinando a partir del historial: a
- * veces bien, a veces pidiendo un documento que no existía.
- */
-function leerNumero(texto: string): number | null {
-  const limpio = texto
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/[^a-z0-9ñ\s]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  const palabras = limpio.split(' ').filter(Boolean);
-  if (palabras.length === 0 || palabras.length > 8) return null;
-
-  // Con tipo, mes, año o folio no es una elección: es una petición.
-  if (/\b(factura|contrato|cotizacion|reporte|poliza|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|mes|meses|20\d\d)\b/.test(limpio)) {
-    return null;
-  }
-  if (/\b[a-z]{1,3}\d{3,}\b/.test(limpio)) return null;
-
-  const ORDINALES: Record<string, number> = {
-    primero: 1, primera: 1, segundo: 2, segunda: 2, tercero: 3, tercera: 3,
-    cuarto: 4, cuarta: 4, quinto: 5, quinta: 5,
-    // "es el número dos", "la tres": con letra también.
-    uno: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5,
-  };
-
-  const numeros = palabras
-    .map((p) => (/^[1-9]$/.test(p) ? Number(p) : ORDINALES[p] ?? null))
-    .filter((n): n is number => n !== null);
-
-  // Exactamente uno: "el 1 y el 2" no se puede resolver con una entrega.
-  return numeros.length === 1 ? numeros[0]! : null;
-}
-
-/**
- * ¿Está diciendo que no le llegó lo que mandamos?
- *
- * Deliberadamente por reglas y no por modelo: es una frase corta y muy
- * repetida, y acertar aquí importa más que cubrir todas las variantes. Lo
- * que no case cae en el flujo normal, que ya funciona.
- *
- * El tope de longitud evita que un mensaje largo que mencione "no lo veo"
- * de pasada se lleve por delante una petición nueva.
- */
-function esQuejaDeNoRecibido(texto: string): boolean {
-  const limpio = texto
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '');
-
-  if (limpio.length > 60) return false;
-
-  return /\b(no (lo |la |me )?(veo|llego|llega|recibi|aparece|abre)|no me lo mandaste|donde esta|no vino|no esta el (doc|archivo|pdf)|(mandala|mandalo|pasala|pasalo|enviala|envialo) (otra vez|de nuevo)|(otra vez|de nuevo)$|reenvia(la|lo|me)?|vuelve(la|lo)? a (mandar|pasar|enviar))\b/.test(
-    limpio,
-  );
-}
-
-/**
  * Respuesta a saludos, agradecimientos y acuses, sin modelo.
  *
  * Devuelve el texto, '' para no contestar nada, o null si el mensaje no es
@@ -1637,10 +1712,7 @@ function respuestaRapida(
   // Si trae un dato de documento, no es charla por corta que sea.
   if (parseQueryTieneDatos(limpio)) return null;
 
-  const saludo =
-    /^(hola|holi|buenas|buenos dias|buen dia|buenas tardes|buenas noches|que tal|hey|que onda|como estas|como andas)( (buenas|que tal|como estas|como andas|buen dia|buenos dias|buenas tardes|brother|bro|amigo|amiga|jefe|jefa|compa|hermano|buenas buenas|que hay|todo bien))?$/;
-
-  if (saludo.test(limpio)) {
+  if (SALUDO.test(limpio)) {
     // Con una pregunta en el aire se repite, sin gastar presupuesto: la
     // persona volvió y no tiene por qué acordarse de dónde se quedó.
     if (pendiente) return voz.saludoConPendiente(voz.PREGUNTA_PENDIENTE[pendiente]);
@@ -1671,34 +1743,18 @@ function respuestaRapida(
     return voz.deNada();
   }
 
-  const cierre =
-    /\b(es todo|eso es todo|con eso (esta bien|basta|es suficiente|me sirve|quedo)|asi esta bien|esta bien asi|ya quedo|ya con eso|nada mas|por ahora no|no gracias)\b/;
-  const acuse =
-    /^(ok|okay|okey|oki|va|vale|sale|listo|perfecto|excelente|genial|de acuerdo|entendido|enterado|recibido|ya|si|dale|orale|ah ok|va bien|esta bien|muy bien)$/;
-
   // Un "ok" no se contesta: ya quedó marcado como leído, y responderle a
   // cada acuse es justo lo que hace que un bot se sienta como bot.
-  if (acuse.test(limpio) || (palabras <= 8 && cierre.test(limpio))) return '';
+  if (ACUSE.test(limpio) || (palabras <= 8 && CIERRE.test(limpio))) return '';
 
   /**
    * "A perdón, sí es cierto, es la misma", "tienes razón", "ya la vi":
    * la persona reconoce algo. Se contesta con una línea amable, no con
    * otra búsqueda — antes esto acababa en un ticket.
    */
-  const reconoce =
-    /\b(es la misma|si es cierto|es cierto|tienes razon|tenias razon|ya la (tengo|vi|encontre)|ya lo (tengo|vi|encontre)|perdon|una disculpa|mi error|me equivoque|me confundi|no te preocupes|olvidalo|dejalo asi|ya no)\b/;
-  if (palabras <= 12 && reconoce.test(limpio)) return voz.sinProblema();
+  if (palabras <= 12 && RECONOCE.test(limpio)) return voz.sinProblema();
 
   return null;
-}
-
-/** ¿El texto trae tipo, mes, año o folio? Entonces no es charla. */
-function parseQueryTieneDatos(limpio: string): boolean {
-  return (
-    /\b(factura|facturas|contrato|contratos|cotizacion|cotizaciones|reporte|reportes|poliza|polizas|cfdi|recibo|comprobante|documento|archivo|pdf)\b/.test(limpio) ||
-    /\b(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|20\d\d)\b/.test(limpio) ||
-    /\b[a-z]{1,3}\d{3,}\b/.test(limpio)
-  );
 }
 
 /** Los datos que el bot sabe pedir cuando faltan. */
@@ -1798,55 +1854,6 @@ function mesCorto(d: Date): string {
 }
 
 /**
- * ¿Pregunta qué hay? "qué documentos tienes", "dame las opciones", "qué me
- * puedes entregar", "qué hay de este mes". Se contesta con el inventario,
- * sin modelo y sin abrir ticket.
- */
-function esInventario(texto: string): boolean {
-  const limpio = texto
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '');
-
-  if (limpio.length > 90) return false;
-
-  return /\b((que|cuales|cual) (documentos|docs|archivos|opciones|cosas|meses|fechas)\b|opciones de lo que tienes|cuales tienes|cuales hay|(de que|de cuales) (meses|fechas)|que tienes\b|que hay\b|que( (doc|docs|documento|documentos|archivo|archivos))? me puedes (dar|entregar|mandar|pasar|enviar)|que puedes (darme|entregarme|mandarme|pasarme|enviarme)|lista(me)? (lo que|los documentos|todo)|catalogo|inventario|todo lo que (tienes|tengas|haya))/.test(
-    limpio,
-  );
-}
-
-/** "sí", "esa", "ese mismo", "dale": para cuando solo se ofreció una opción. */
-function esAfirmacion(texto: string): boolean {
-  const limpio = texto
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/[^a-z\s]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  return /^(si|sip|simon|claro|dale|va|sale|ok|esa|ese|esa misma|ese mismo|esa esta bien|ese esta bien|si esa|si ese|si por favor|si porfa|si mandala|si mandalo|mandala|mandalo|pasala|pasalo|esa por favor|ese por favor|esa me sirve|ese me sirve|me sirve|si me sirve)$/.test(
-    limpio,
-  );
-}
-
-/** "Pásame con un agente", "quiero hablar con alguien", "una persona por favor". */
-function pideHumano(texto: string): boolean {
-  const limpio = texto
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '');
-
-  if (limpio.length > 120) return false;
-
-  const alguien = /\b(agente|persona|humano|humana|alguien|asesor|asesora|ejecutivo|ejecutiva|encargado|encargada|operador|operadora|soporte|un ser humano)\b/;
-  const accion = /\b(pasa|pasame|pasarme|comunica|comunicame|comunicarme|hablar|hable|atienda|atiendan|contacte|contacten|llame|llamen|quiero|necesito|me puede|me pueden|con un|con una|con el|con la)\b/;
-
-  return alguien.test(limpio) && accion.test(limpio);
-}
-
-
-/**
  * La raíz con la que se busca un tipo dentro de los NOMBRES de archivo:
  * "cotizacion" da con "Cotizacion_Vega_2026.pdf" aunque esté clasificado
  * como factura. Sin acentos, porque los nombres de archivo rara vez los
@@ -1864,29 +1871,6 @@ function raizNombre(category: DocCategory): string {
 }
 
 /**
- * "No es esa", "ninguna de esas", "esa no", "tampoco", "no me sirve",
- * "te digo que ninguna": rechazo de lo ofrecido o lo entregado. Corto y
- * sin datos de documento; con datos ("no, la de marzo") va por el flujo
- * normal, que ya sabe que es otra petición.
- */
-function esRechazo(texto: string): boolean {
-  const limpio = texto
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/[^a-z0-9ñ\s]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  if (limpio.length === 0 || limpio.split(' ').length > 9) return false;
-  if (parseQueryTieneDatos(limpio)) return false;
-
-  return /\b(no (es|son) (esa|ese|esta|este|esas|esos|estas|estos|ninguna|ninguno)|(esa|ese|esas|esos) no( es| son)?|ningun[ao]( de (esas|esos|estas|estos|las dos|los dos))?|tampoco|no me sirve|no (es|era) (la|el) que|no son (esas|esos)|no es ninguna|nel|nop)\b/.test(
-    limpio,
-  ) || /^(no|no no|que no|otra|otro|no otra|otra distinta|busca otra|buscamos otra|mejor otra|no esa|no ese|esa no|ese no|no gracias otra)$/.test(limpio);
-}
-
-/**
  * Qué documentos no volver a ofrecer.
  *
  * Lo rechazado ("no es esa") se excluye de las búsquedas por tipo y mes,
@@ -1898,12 +1882,6 @@ function esRechazo(texto: string): boolean {
 function excluir(query: SearchQuery, sol: Solicitud): readonly string[] {
   const explicito = query.folio !== null || (query.text !== null && nombreDeArchivo(query.text) !== null);
   return explicito ? [] : sol.rechazados;
-}
-
-/** "¿De qué meses hay?", "qué meses tienes", "de qué fechas". */
-function preguntaMeses(texto: string): boolean {
-  const limpio = texto.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-  return /\b(que|cuales|de que|de cuales) (meses|fechas)\b/.test(limpio);
 }
 
 /**

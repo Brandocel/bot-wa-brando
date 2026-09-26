@@ -27,6 +27,8 @@
  * colgar. Sin emojis: en un canal de facturas sobran.
  */
 
+import type { MotivoQueja } from './message-classifier';
+
 export interface Agente {
   name: string;
 }
@@ -444,4 +446,75 @@ export function sinProblema(): string {
     'No te preocupes. Cualquier otro documento, me dices.',
     'Todo bien. Si necesitas algo más, aquí estoy.',
   ]);
+}
+
+// ── Quejas y seguimiento ───────────────────────────────────────────────
+//
+// Primero se reconoce lo que pasó, luego se dice quién lo atiende. Nunca
+// una excusa larga ni "entendemos su frustración": una frase honesta y
+// qué sigue.
+
+/** Quién atiende, como cierre de los mensajes de queja. */
+function quienAtiende(folio: string, agente: Agente | null): string {
+  return agente
+    ? `Ya se lo pasé a ${n(agente.name)} con el folio ${n(folio)}, como *prioridad alta*.\nTe escribe por aquí.`
+    : `Quedó registrado con el folio ${n(folio)}, como *prioridad alta*.\nAlguien del equipo te escribe por aquí.`;
+}
+
+/** Una queja que el bot no puede resolver: se reconoce y pasa a una persona. */
+export function quejaEscalada(motivo: MotivoQueja | null, folio: string, agente: Agente | null): string {
+  const cabeza =
+    motivo === 'error_en_documento'
+      ? una([
+          'Gracias por avisar. Si el documento trae un dato mal, hay que corregirlo.\nEso yo no lo puedo hacer desde aquí.',
+          'Tienes razón en reclamarlo: un documento con datos mal no se puede quedar así.\nYo no lo puedo corregir, pero sí moverlo rápido.',
+        ])
+      : motivo === 'demora'
+        ? una([
+            'Perdón por la espera. No está bien que lleves tanto tiempo sin respuesta.',
+            'Tienes toda la razón, ya esperaste demasiado. Una disculpa.',
+          ])
+        : una([
+            'Perdón, no te estoy ayudando como debería.',
+            'Tienes razón, y lamento las vueltas que te he hecho dar.',
+          ]);
+
+  return `${cabeza}\n${quienAtiende(folio, agente)}`;
+}
+
+/** Se queja de un caso que ya tiene alguien: no hay folio nuevo, hay prisa. */
+export function quejaConCasoAbierto(folio: string, agente: Agente | null): string {
+  return agente
+    ? `Tienes razón, y perdón por la espera.\nTu caso ${n(folio)} lo tiene ${n(agente.name)}. Ya le avisé otra vez y lo subí a *prioridad alta*.`
+    : `Tienes razón, y perdón por la espera.\nTu caso ${n(folio)} sigue con el equipo. Lo subí a *prioridad alta* para que lo vean primero.`;
+}
+
+/** "¿Ya revisaron mi caso?" con un caso abierto. */
+export function seguimientoCaso(folio: string, agente: Agente | null): string {
+  return agente
+    ? una([
+        `Tu caso ${n(folio)} sigue abierto y lo tiene ${n(agente.name)}.\nYa sabe que estás esperando; te escribe por aquí.`,
+        `${n(agente.name)} sigue con tu caso ${n(folio)}.\nLe dejé dicho que preguntaste. En cuanto tenga algo, te escribe.`,
+      ])
+    : `Tu caso ${n(folio)} sigue en revisión con el equipo.\nDejé anotado que preguntaste; te escriben por aquí.`;
+}
+
+/** Molesto y el bot ya dio vueltas: no más preguntas, pasa a una persona. */
+export function molestoEscalado(folio: string, agente: Agente | null): string {
+  return `Perdón, veo que esto te está costando más de lo que debería.\n${quienAtiende(folio, agente)}`;
+}
+
+/** Va antes de la respuesta cuando la persona se nota molesta. */
+export function empatia(): string {
+  return una(['Perdón por la molestia.', 'Una disculpa por la vuelta.', 'Entiendo, y perdón por el inconveniente.']);
+}
+
+/** Una pregunta que no es de documentos, sin modelo que la conteste. */
+export function consultaSinModelo(empresas: string): string {
+  return `Eso no lo puedo resolver por aquí; yo te ayudo con los documentos de ${n(empresas)}.\nSi necesitas a alguien del equipo, escribe *"quiero hablar con una persona"*.`;
+}
+
+/** Una inconformidad que las reglas no ubicaron, sin modelo. */
+export function quejaSinModelo(): string {
+  return 'Entiendo, y perdón por el inconveniente.\nSi quieres que lo vea alguien del equipo, escribe *"quiero hablar con una persona"*. Si es un documento, dime cuál y lo busco.';
 }

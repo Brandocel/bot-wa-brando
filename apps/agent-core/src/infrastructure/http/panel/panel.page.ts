@@ -251,12 +251,27 @@ document.getElementById('nav-velo').addEventListener('click', () => menuMovil(fa
 
 // ── Hilo de conversación ────────────────────────────────────────────────
 
+// Qué clase de mensaje escribió el cliente, como la clasificó el bot.
+const ETIQUETAS = {
+  SOLICITUD: 'solicitud', QUEJA: 'queja', CONSULTA: 'consulta',
+  SEGUIMIENTO: 'seguimiento', PIDE_HUMANO: 'pide persona', CORTESIA: 'cortesía',
+};
+
+function etiqueta(m) {
+  if (m.direction !== 'IN' || !ETIQUETAS[m.intent]) return '';
+  const texto = ETIQUETAS[m.intent] +
+    (m.motivo ? ' · ' + m.motivo.replace(/_/g, ' ') : '') +
+    (m.molesto ? ' · molesto' : '');
+  return '<span class="pill tipo tipo-' + m.intent.toLowerCase() + (m.molesto ? ' molesto' : '') + '">' + esc(texto) + '</span>';
+}
+
 function pintarMensajes(datos) {
   const caja = document.getElementById('hilo-mensajes');
   const abajo = caja.scrollHeight - caja.scrollTop - caja.clientHeight < 40;
 
   const burbujas = datos.messages.map((m) =>
     '<div class="burbuja ' + (m.direction === 'IN' ? 'entra' : 'sale') + '">' +
+      etiqueta(m) +
       esc(m.body).slice(0, 1200) +
       '<span class="hora">' + hora(m.createdAt) + '</span>' +
     '</div>');
@@ -483,6 +498,7 @@ const VISTAS = {
               '<div class="fila-abajo"><span class="muted recorte">' + esc(ultimo) + '</span></div>' +
               '<div class="fila-pills">' + estado +
                 (c.topic ? ' <span class="pill">' + esc(c.topic) + '</span>' : '') +
+                (c.quejas ? ' <span class="pill tipo-queja">queja</span>' : '') +
                 (c.tickets[0] ? ' <span class="muted small">#' + c.tickets[0].number + '</span>' : '') +
               '</div>' +
             '</div>' +
@@ -961,6 +977,9 @@ const STYLES = `<style>
   td.acciones { white-space: nowrap; }
 
   .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; background: #232733; white-space: nowrap; }
+  .burbuja .pill.tipo { display: table; margin-bottom: 5px; }
+  .pill.tipo-queja, .pill.molesto { background: #3d1a1a; color: #ffb4b4; }
+  .pill.tipo-seguimiento, .pill.tipo-pide_humano { background: #3a2f12; color: #ffd98a; }
   .ABIERTO { background: #123a52; color: #7cc7f0; }
   .EN_REVISION { background: #33270f; color: #e8c07d; }
   .CERRADO { background: #232733; color: var(--suave); }

@@ -31,7 +31,9 @@ export type EscalationReason =
   | 'molesto'
   | 'sla_vencido'
   | 'tema_sensible'
-  | 'reasignado';
+  | 'reasignado'
+  | 'queja'
+  | 'seguimiento';
 
 /** El nivel al que sube cada motivo. Tabla, no `if` desperdigados. */
 const ESCALATION_LEVEL: Record<EscalationReason, number> = {
@@ -42,8 +44,20 @@ const ESCALATION_LEVEL: Record<EscalationReason, number> = {
   molesto: 1,
   tema_sensible: 1,
   reasignado: 1,
+  queja: 1,
+  seguimiento: 1,
   sla_vencido: 2,
 };
+
+/**
+ * Motivos que entran con prioridad alta. Alguien que pidió una persona, se
+ * quejó o ya está molesto no puede quedar detrás de un "no encontré la
+ * cotización".
+ */
+const PRIORIDAD_ALTA: ReadonlySet<EscalationReason> = new Set(['pidio_humano', 'queja', 'molesto']);
+
+/** Entre dos recordatorios al agente sobre el mismo ticket, al menos esto. */
+const RECORDATORIO_MS = 15 * 60 * 1000;
 
 @Injectable()
 export class TicketService {
@@ -174,7 +188,7 @@ export class TicketService {
         contactId: input.contactId,
         organizationId: input.organizationId,
         subject: input.subject.slice(0, 120),
-        priority: input.reason === 'pidio_humano' ? 'ALTA' : 'MEDIA',
+        priority: PRIORIDAD_ALTA.has(input.reason) ? 'ALTA' : 'MEDIA',
         slots: input.slots as Prisma.InputJsonValue,
         slaDueAt: new Date(Date.now() + TTL_MS),
       },
@@ -214,6 +228,64 @@ export class TicketService {
       : await this.assignment.asignar(ticketId, reason);
 
     return { ticket, agente };
+  }
+
+  /** El caso que una persona ya tiene en esta conversación, si hay uno. */
+  async casoEnRevision(conversationId: string) {
+    return this.prisma.ticket.findFirst({
+      where: { conversationId, state: 'EN_REVISION' },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, number: true },
+    });
+  }
+
+  /**
+   * La persona vuelve a escribir sobre un caso que ya tiene alguien: se
+   * queja, insiste molesta o pregunta cómo va.
+   *
+   * No se abre otro folio: dos tickets del mismo asunto parten el trabajo
+   * en dos. Se anota en la bitácora, una queja sube el caso a prioridad
+   * alta, y se le recuerda al agente. El recordatorio tiene freno: diez
+   * "¿ya?" seguidos no pueden ser diez avisos en el WhatsApp del agente.
+   */
+  async insistir(
+    ticketId: string,
+    reason: 'queja' | 'molesto' | 'seguimiento',
+    texto: string,
+  ): Promise<AssignedAgent | null> {
+    const ticket = await this.prisma.ticket.findUnique({
+      where: { id: ticketId },
+      select: { priority: true, updatedAt: true },
+    });
+    if (!ticket) return null;
+
+    if (reason !== 'seguimiento' && ticket.priority !== 'ALTA') {
+      await this.prisma.ticket.update({
+        where: { id: ticketId },
+        // updatedAt se conserva a propósito: es el reloj del SLA. Que el
+        // cliente se queje no cuenta como que alguien lo atendió.
+        data: { priority: 'ALTA', updatedAt: ticket.updatedAt },
+      });
+      await this.record(ticketId, 'prioridad', 'bot', { to: 'ALTA', reason });
+    }
+
+    await this.record(ticketId, 'nota', 'bot', { reason, texto: texto.slice(0, 500) });
+
+    const avisoReciente = await this.prisma.ticketEvent.findFirst({
+      where: {
+        ticketId,
+        type: 'recordatorio',
+        createdAt: { gte: new Date(Date.now() - RECORDATORIO_MS) },
+      },
+      select: { id: true },
+    });
+
+    const agente = await this.assignment.recordar(ticketId, reason, {
+      avisar: !avisoReciente,
+    });
+    if (!avisoReciente) await this.record(ticketId, 'recordatorio', 'bot', { reason });
+
+    return agente;
   }
 
   /**

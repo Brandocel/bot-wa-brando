@@ -329,6 +329,21 @@ async function main(): Promise<void> {
     data: { extractedText: null },
   });
 
+  // Una queja que el bot no puede resolver pasa a una persona con prioridad
+  // alta. Lo que la persona escriba después sobre ese caso NO abre otro
+  // folio: se anota y se le recuerda al agente.
+  await conversacion('Queja: pasa a persona y no duplica el folio', [
+    'la factura de febrero viene con el RFC mal',
+    '¿ya revisaron mi caso?',
+    'sigo esperando',
+  ]);
+
+  // Molesto después de que el bot ya preguntó: no se hace otra pregunta.
+  await conversacion('Molesto con vueltas encima: a una persona', [
+    'necesito un documento',
+    'LA FACTURA QUE TE PEDI ???',
+  ]);
+
   // Y también al terminar: los tickets de prueba no deben quedar en la cola
   // del operador.
   await limpiar();

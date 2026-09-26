@@ -110,6 +110,18 @@ model Conversation {
   @@index([awaiting, lastInboundAt])
 }
 
+/// Qué clase de mensaje escribió el cliente. Lo decide
+/// message-classifier.ts por reglas; guía la respuesta y la bandeja.
+enum MessageIntent {
+  SOLICITUD // pide un documento o sigue pidiéndolo
+  QUEJA // inconformidad: no llegó, viene mal, tardan, no sirve
+  CONSULTA // pregunta que no pide un documento
+  SEGUIMIENTO // pregunta por un caso que ya atiende una persona
+  PIDE_HUMANO
+  CORTESIA // saludo, gracias, "ok"
+  OTRO
+}
+
 model Message {
   // El id ES el messageId de WhatsApp. Esa es toda la idempotencia:
   // si open-wa reentrega, el insert choca con la PK y lo descartamos.
@@ -120,6 +132,14 @@ model Message {
   body           String      @db.Text
   raw            Json? // payload original, para depurar el ACL
   createdAt      DateTime    @default(now())
+
+  /// Solo entrantes. null = no se clasificó (un comando, un mensaje previo
+  /// a la clasificación).
+  intent  MessageIntent?
+  /// De qué se queja, cuando intent = QUEJA: no_recibido, error_en_documento...
+  motivo  String?
+  /// Se notaba molesto, fuera cual fuera el tipo.
+  molesto Boolean        @default(false)
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 

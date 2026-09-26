@@ -12,6 +12,8 @@ import { AgentCommandsService } from '../commands/agent-commands.service';
 import { SupportCommandsService } from '../support/support-commands.service';
 import { ConversationStateService } from '../support/conversation-state.service';
 import { SupportStrategy } from '../support/support.strategy';
+import { clasificar, type Clasificacion } from '../support/message-classifier';
+import type { TransactionClient } from '../../infrastructure/persistence/prisma.service';
 import { SourceFilter } from '../pipeline/filters/source.filter';
 import { runPipeline, type MessageFilter, type PipelineContext } from '../pipeline/pipeline';
 
@@ -168,11 +170,15 @@ export class HandleIncomingMessageUseCase {
         }));
 
       // Un comando que nadie reclamó es un error de tecleo, no un mensaje
-      // para el agente.
+      // para el agente. Solo se le avisa a quien está en el directorio: a
+      // un desconocido, "no conozco ese comando" ya le confirma que del
+      // otro lado hay un bot.
       const isCommand = looksLikeCommand(message.body);
 
       const unknownCommand =
-        supportReply === null && isCommand
+        supportReply === null &&
+        isCommand &&
+        (await enElDirectorio(tx, contactId, message.senderId, role))
           ? `No conozco ${message.body.trim().split(/\s+/)[0]}. Usa /ayuda para ver la lista.`
           : null;
 
@@ -183,6 +189,9 @@ export class HandleIncomingMessageUseCase {
       // voces en el mismo chat es lo que más desconcierta a un cliente. Lo
       // que llega se registra igual, para que la persona lo vea.
       if (enManosDePersona && supportReply === null && !isCommand) {
+        // Se clasifica igual: una queja mientras la atiende una persona es
+        // justo lo que esa persona tiene que ver resaltado.
+        await etiquetar(tx, message.id, clasificar(message.body));
         await this.conversations.onOutbound({ conversationId, awaiting: 'AGENTE', tx });
         return;
       }
@@ -195,11 +204,21 @@ export class HandleIncomingMessageUseCase {
             })
           : null;
 
-      const reply =
-        supportReply ??
-        unknownCommand ??
-        strategyReply?.text ??
-        `eco (${role?.toLowerCase()}): ${message.body}`;
+      /**
+       * Sin nada que decir, no se dice nada.
+       *
+       * Antes salía un eco con el mensaje de vuelta. A un número que no
+       * está en el directorio eso le contestaba —y le confirmaba que del
+       * otro lado hay algo automático— cuando lo correcto es guardar lo que
+       * escribió y dejar que una persona lo vea. El hilo se queda esperando
+       * por nosotros, así que sale en la bandeja como "sin responder".
+       */
+      const reply = supportReply ?? unknownCommand ?? strategyReply?.text ?? null;
+
+      if (reply === null) {
+        if (!isCommand) await etiquetar(tx, message.id, clasificar(message.body));
+        return;
+      }
 
       // Texto vacío = la Strategy ya encoló lo que había que mandar (un
       // archivo con su leyenda) y no quiere un mensaje aparte.
@@ -210,19 +229,63 @@ export class HandleIncomingMessageUseCase {
       }
 
       // De quién queda el turno. Solo la Strategy sabe si lo que acaba de
-      // decir era una pregunta, una entrega o un escalado; un comando o un
-      // eco no dejan nada pendiente.
+      // decir era una pregunta, una entrega o un escalado; un comando no
+      // deja nada pendiente.
       await this.conversations.onOutbound({
         conversationId,
         awaiting: strategyReply?.awaiting ?? 'NADIE',
         topic: strategyReply?.topic ?? null,
         tx,
       });
+
+      if (strategyReply?.clasificacion) {
+        await etiquetar(tx, message.id, strategyReply.clasificacion);
+      }
     });
 
     // Fuera de la transacción: la red no va dentro de un lock.
     await this.outbox.drain();
   }
+}
+
+/**
+ * ¿Este número es alguien del sistema: el dueño, un agente de soporte o un
+ * contacto con membresía viva?
+ *
+ * Es la frontera de a quién le habla el bot. Al resto no se le contesta
+ * nada —ni un eco, ni "no conozco ese comando"—: su mensaje se guarda y
+ * aparece en el panel para que una persona decida qué hacer con él.
+ */
+async function enElDirectorio(
+  tx: TransactionClient,
+  contactId: string,
+  waId: string,
+  role: string | null | undefined,
+): Promise<boolean> {
+  if (role === 'OWNER') return true;
+
+  const [membresias, agentes] = await Promise.all([
+    tx.membership.count({ where: { contactId, revokedAt: null } }),
+    tx.supportAgent.count({ where: { waId, active: true } }),
+  ]);
+
+  return membresias > 0 || agentes > 0;
+}
+
+/**
+ * Guarda en el mensaje entrante qué clase de mensaje fue. Es lo que deja
+ * ver en la bandeja quién vino a pedir algo y quién vino a quejarse.
+ */
+async function etiquetar(
+  tx: TransactionClient,
+  messageId: string,
+  c: Clasificacion,
+): Promise<void> {
+  await tx.message.update({
+    where: { id: messageId },
+    data: { intent: c.tipo, motivo: c.motivo, molesto: c.molesto },
+    select: { id: true },
+  });
 }
 
 /**

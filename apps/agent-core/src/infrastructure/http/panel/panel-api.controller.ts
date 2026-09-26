@@ -307,6 +307,19 @@ export class PanelApiController {
           take: 1,
           select: { body: true, direction: true, createdAt: true },
         },
+        // Quejas (o mensajes molestos) de la última semana: la bandeja las
+        // marca aunque el último mensaje ya sea una respuesta del bot.
+        _count: {
+          select: {
+            messages: {
+              where: {
+                direction: 'IN',
+                createdAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+                OR: [{ intent: 'QUEJA' }, { molesto: true }],
+              },
+            },
+          },
+        },
       },
     });
 
@@ -346,6 +359,7 @@ export class PanelApiController {
       esperando: quietFor(row.lastInboundAt),
       enManosDePersona: enManos.has(clave),
       ultimo: row.messages[0] ?? null,
+      quejas: row._count.messages,
     }));
   }
 
@@ -428,7 +442,16 @@ export class PanelApiController {
       where: { conversationId: { in: ids } },
       orderBy: { createdAt: 'desc' },
       take: 80,
-      select: { id: true, direction: true, kind: true, body: true, createdAt: true },
+      select: {
+        id: true,
+        direction: true,
+        kind: true,
+        body: true,
+        createdAt: true,
+        intent: true,
+        motivo: true,
+        molesto: true,
+      },
     });
 
     /**

@@ -28,6 +28,8 @@ const MOTIVOS: Record<EscalationReason, string> = {
   sla_vencido: 'lleva demasiado tiempo sin que nadie lo atienda',
   tema_sensible: 'es un tema delicado',
   reasignado: 'lo tenía otro agente que ya no está disponible',
+  queja: 'el cliente presentó una queja',
+  seguimiento: 'el cliente pregunta cómo va su caso',
 };
 
 const NOMBRES: Record<DocCategory, string> = {
@@ -123,25 +125,41 @@ export class TicketAssignmentService {
     return { waId: elegido.waId, name: elegido.name };
   }
 
-  /**
-   * Recordatorio cuando un ticket asignado venció su SLA. Si nadie lo
-   * tenía, se reparte ahora: que haya vencido sin dueño es exactamente el
-   * caso en el que más urge que alguien lo vea.
-   */
+  /** Recordatorio cuando un ticket asignado venció su SLA. */
   async recordarVencido(ticketId: string): Promise<void> {
+    await this.recordar(ticketId, 'sla_vencido');
+  }
+
+  /**
+   * Le recuerda el ticket al agente que lo tiene, con el motivo: venció el
+   * SLA, el cliente se quejó, pregunta cómo va. Si nadie lo tenía, se
+   * reparte ahora: que el cliente insista sobre un caso sin dueño es
+   * exactamente cuando más urge que alguien lo vea.
+   *
+   * Devuelve quién quedó a cargo, para que la respuesta al cliente pueda
+   * decir su nombre.
+   */
+  async recordar(
+    ticketId: string,
+    reason: EscalationReason,
+    opciones: { avisar?: boolean } = {},
+  ): Promise<AssignedAgent | null> {
     const ticket = await this.prisma.ticket.findUnique({
       where: { id: ticketId },
       select: { assignedTo: true },
     });
 
-    if (!ticket) return;
+    if (!ticket) return null;
 
     if (!ticket.assignedTo || !ticket.assignedTo.active) {
-      await this.asignar(ticketId, 'sla_vencido');
-      return;
+      return this.asignar(ticketId, reason);
     }
 
-    await this.avisar(ticketId, ticket.assignedTo, MOTIVOS.sla_vencido);
+    if (opciones.avisar !== false) {
+      await this.avisar(ticketId, ticket.assignedTo, MOTIVOS[reason]);
+    }
+
+    return { waId: ticket.assignedTo.waId, name: ticket.assignedTo.name };
   }
 
   /**

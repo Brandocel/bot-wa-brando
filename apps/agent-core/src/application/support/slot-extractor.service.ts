@@ -37,6 +37,7 @@ const ExtractedSlots = z.object({
   empresa: z.string(),
   /** true = el mensaje no es una petición de documento. */
   no_es_documento: z.boolean(),
+  tipo_mensaje: z.enum(['SOLICITUD', 'QUEJA', 'CONSULTA', 'CORTESIA', 'OTRO']),
 });
 
 const SCHEMA = {
@@ -53,8 +54,12 @@ const SCHEMA = {
       type: 'boolean',
       description: 'true si el mensaje no pide ningún documento.',
     },
+    tipo_mensaje: {
+      type: 'string',
+      enum: ['SOLICITUD', 'QUEJA', 'CONSULTA', 'CORTESIA', 'OTRO'],
+    },
   },
-  required: ['categoria', 'periodo', 'folio', 'empresa', 'no_es_documento'],
+  required: ['categoria', 'periodo', 'folio', 'empresa', 'no_es_documento', 'tipo_mensaje'],
   additionalProperties: false,
 };
 
@@ -67,6 +72,11 @@ export interface ExtractionResult {
   companyHint: string | null;
   /** true = no pedía un documento; hay que responder otra cosa. */
   notADocumentRequest: boolean;
+  /**
+   * Qué clase de mensaje cree el modelo que es. Solo etiqueta lo que las
+   * reglas dejaron como OTRO, y solo cambia el tono: nunca escala nada.
+   */
+  tipoMensaje: 'SOLICITUD' | 'QUEJA' | 'CONSULTA' | 'CORTESIA' | null;
   /** De dónde salieron los slots. Solo para logs y depuración. */
   source: 'reglas' | 'modelo' | 'ninguno';
 }
@@ -136,6 +146,7 @@ export class SlotExtractorService {
         query: { ...byRules, text: hint ?? (byRules.folio ? null : claves) },
         companyHint: null,
         notADocumentRequest: false,
+        tipoMensaje: null,
         source: 'reglas',
       };
     }
@@ -162,6 +173,7 @@ export class SlotExtractorService {
         query: { ...byRules, text: hint },
         companyHint: null,
         notADocumentRequest: false,
+        tipoMensaje: null,
         source: 'ninguno',
       };
     }
@@ -197,6 +209,7 @@ export class SlotExtractorService {
       },
       companyHint: toValue(extracted.empresa),
       notADocumentRequest: extracted.no_es_documento,
+      tipoMensaje: extracted.tipo_mensaje === 'OTRO' ? null : extracted.tipo_mensaje,
       source: 'modelo',
     };
   }
@@ -242,6 +255,7 @@ function systemPrompt(
     '- Lo que el mensaje no diga: NINGUNO/NINGUNA. No inventes.',
     '- recibo, nota, comprobante = FACTURA. "documento"/"archivo" a secas = NINGUNA.',
     '- Saludo, queja o pregunta general: no_es_documento true. Seguir con la misma solicitud ("y la de marzo", "sí, esa"): false.',
+    '- tipo_mensaje: SOLICITUD pide o sigue pidiendo un documento; QUEJA expresa inconformidad; CONSULTA pregunta algo que no es un documento; CORTESIA saludo o gracias; OTRO lo demás.',
     ...(pendiente ? [contexto[pendiente]] : []),
     ...(history.length > 0 ? ['', 'Conversación previa (solo contexto):', formatHistory(history)] : []),
     ...(known.length > 0 ? ['', 'Ya se sabe (no lo repitas si el mensaje no lo dice):', ...known.map((k) => `- ${k}`)] : []),

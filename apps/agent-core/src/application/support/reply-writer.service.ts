@@ -23,7 +23,7 @@ import { formatHistory, type HistoryTurn } from './conversation-history.service'
 
 export interface ReplyBrief {
   /** Qué está haciendo el bot en este turno. Guía el tono. */
-  intent: 'charla';
+  intent: 'charla' | 'consulta' | 'queja';
   /** Qué tiene que transmitir, en frases sueltas. El modelo lo redacta. */
   facts: readonly string[];
   /** Literales que el texto DEBE contener, tal cual. */
@@ -98,6 +98,8 @@ function persona(ctx: ReplyContext): string {
 
 const TONO: Record<ReplyBrief['intent'], string> = {
   charla: 'No pide documento. Contesta corto y, si viene al caso, ofrece buscar algo.',
+  consulta: 'Pregunta algo que no es un documento. Contesta solo lo que se sepa por la conversación; si no, dilo con honestidad.',
+  queja: 'Expresa una inconformidad. Reconócela primero, en una frase y sin excusas; luego di qué sí puedes hacer.',
 };
 
 function instruction(brief: ReplyBrief): string {
