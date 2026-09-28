@@ -157,7 +157,22 @@ Sin agentes dados de alta, los tickets quedan en revisión sin asignar y se ven 
 
 ### 4.6 Panel web
 
-`https://agent-core.onrender.com/panel`. Usuarios con `npm run panel:user` (rol ADMIN o AGENTE). Muestra bandeja por conversación, tickets, mensajes recientes, empresas y documentos. Es de lectura, salvo cerrar tickets.
+`https://agent-core.onrender.com/panel`. Usuarios con `npm run panel:user` (rol ADMIN o AGENTE). Muestra bandeja por conversación, tickets, mensajes recientes, empresas y documentos.
+
+**Borrar una conversación** (icono de bote de basura, arriba a la derecha del hilo; solo ADMIN). Dos opciones, y ninguna se puede deshacer:
+
+| | Qué se borra | Qué se queda | Cuándo usarla |
+|---|---|---|---|
+| **Borrar los mensajes** | Historial del chat, lo que el bot recordaba de la petición en curso y lo que estaba pendiente de enviar | Los tickets, el contacto y sus permisos | Después de una prueba, o cuando la charla se enredó y conviene empezar de cero |
+| **Eliminar todo** | La conversación entera: mensajes **y** tickets | El contacto y sus permisos | Limpiar un chat de prueba que ya no aporta nada |
+
+Detalles que importan:
+
+- Se borran **todos los hilos de esa persona**, no solo el que tienes abierto: el mismo cliente puede tener uno por número y otro por LID, y dejar la mitad es peor que no borrar nada.
+- Si tiene **tickets sin cerrar**, el panel avisa y hay que confirmar otra vez. Ciérralos antes si de verdad son trabajo pendiente de alguien.
+- **Nadie pierde el acceso** por esto. Para quitarle permisos a un número se usa el directorio; borrar el chat es limpieza, no una baja.
+- La persona **no se entera**: en su teléfono el historial sigue intacto. Esto borra lo que el bot recuerda, no lo que WhatsApp guarda.
+- Queda registrado en los logs del core quién borró qué y cuándo.
 
 ---
 

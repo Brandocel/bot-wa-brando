@@ -33,6 +33,7 @@ const TRAZOS: Record<string, string> = {
   cerrar: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
   atras: '<path d="m15 18-6-6 6-6"/>',
   plegar: '<path d="m11 17-5-5 5-5"/><path d="m18 17-5-5 5-5"/>',
+  basura: '<path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
   bot: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>',
 };
 
@@ -130,6 +131,7 @@ export function panelPage(): string {
       </div>
       <button class="ghost small" id="hilo-tickets-btn" title="Tickets de esta persona">${icono('ticket')}<span id="hilo-tickets-n"></span></button>
       <button class="ghost small" id="hilo-atender"></button>
+      <button class="icon peligro" id="hilo-borrar" title="Borrar esta conversación" hidden>${icono('basura')}</button>
       <button class="icon no-movil" id="hilo-cerrar" title="Cerrar">${icono('cerrar')}</button>
     </div>
     <div id="hilo-estado" class="hilo-estado"></div>
@@ -137,6 +139,22 @@ export function panelPage(): string {
     <div id="hilo-tickets" class="hilo-drawer" hidden>
       <div class="drawer-head"><strong>Tickets</strong><span class="spacer"></span><button class="icon" id="hilo-tickets-cerrar" title="Cerrar">${icono('cerrar')}</button></div>
       <div id="hilo-tickets-lista" class="drawer-lista"></div>
+    </div>
+    <div id="hilo-borrar-cajon" class="hilo-drawer" hidden>
+      <div class="drawer-head"><strong>Borrar conversación</strong><span class="spacer"></span><button class="icon" id="hilo-borrar-cancelar" title="Cancelar">${icono('cerrar')}</button></div>
+      <div class="drawer-lista">
+        <p class="muted small">Esto afecta a <strong id="hilo-borrar-quien"></strong> y a todos sus hilos (número y LID). No se puede deshacer.</p>
+        <div class="opcion-borrar">
+          <strong>Borrar los mensajes</strong>
+          <p class="muted small">Se va el historial del chat y lo que el bot recordaba de la petición en curso. Los tickets y los permisos se quedan. La próxima vez que escriba, empieza de cero.</p>
+          <button class="mini" id="borrar-mensajes">Borrar los mensajes</button>
+        </div>
+        <div class="opcion-borrar peligro-caja">
+          <strong>Eliminar todo</strong>
+          <p class="muted small">Desaparece la conversación completa: mensajes <em>y</em> tickets. La persona sigue dada de alta y con sus permisos; solo se borra el rastro de la charla.</p>
+          <button class="mini peligro" id="borrar-todo">Eliminar todo</button>
+        </div>
+      </div>
     </div>
     <div id="hilo-mensajes" class="chat"></div>
     <form id="hilo-form" class="hilo-form">
@@ -354,6 +372,12 @@ async function abrirHilo(chatId, silencioso) {
       ).join('')
     : '<p class="muted centro">Esta persona no ha necesitado soporte.</p>';
 
+  // Borrar es de ADMIN. El servidor lo comprueba igual; esconder el botón
+  // es para no ofrecerle a un agente algo que le va a rebotar.
+  document.getElementById('hilo-borrar').hidden = yo?.role !== 'ADMIN';
+  document.getElementById('hilo-borrar-quien').textContent =
+    datos.contact?.displayName || numeroBonito(datos.contact?.waId) || datos.chatId;
+
   pintarMensajes(datos);
   ultimoHilo = datos;
 
@@ -370,6 +394,8 @@ async function abrirHilo(chatId, silencioso) {
 function cerrarHilo() {
   chatAbierto = null;
   ultimoHilo = null;
+  document.getElementById('hilo-borrar-cajon').hidden = true;
+  document.getElementById('hilo-tickets').hidden = true;
   document.getElementById('hilo').hidden = true;
   app.classList.remove('con-hilo');
   document.querySelectorAll('[data-chat].abierta').forEach((el) => el.classList.remove('abierta'));
@@ -384,6 +410,59 @@ document.getElementById('hilo-tickets-cerrar').addEventListener('click', () => {
   document.getElementById('hilo-tickets').hidden = true;
 });
 document.getElementById('hilo-volver').addEventListener('click', cerrarHilo);
+
+// ── Borrar la conversación ──────────────────────────────────────────────
+
+const cajonBorrar = document.getElementById('hilo-borrar-cajon');
+document.getElementById('hilo-borrar').addEventListener('click', () => {
+  document.getElementById('hilo-tickets').hidden = true;
+  cajonBorrar.hidden = !cajonBorrar.hidden;
+});
+document.getElementById('hilo-borrar-cancelar').addEventListener('click', () => {
+  cajonBorrar.hidden = true;
+});
+
+/**
+ * Pide confirmación, borra, y si había tickets abiertos vuelve a preguntar.
+ *
+ * El servidor es quien sabe si hay tickets sin cerrar, así que el segundo
+ * aviso sale de su respuesta y no de una cuenta que el navegador tendría
+ * que mantener al día.
+ */
+async function borrarConversacion(modo) {
+  if (!chatAbierto) return;
+
+  const quien = document.getElementById('hilo-borrar-quien').textContent;
+  const texto = modo === 'todo'
+    ? 'Se elimina la conversación completa de ' + quien + ', mensajes y tickets incluidos.\\n\\nNo se puede deshacer. ¿Seguimos?'
+    : 'Se borran los mensajes de ' + quien + ' y lo que el bot recordaba. Los tickets se quedan.\\n\\nNo se puede deshacer. ¿Seguimos?';
+  if (!confirm(texto)) return;
+
+  try {
+    let resultado;
+    try {
+      resultado = await enviar('conversacion/borrar', { chatId: chatAbierto, modo });
+    } catch (err) {
+      if (!err.message.includes('sin cerrar')) throw err;
+      if (!confirm(err.message + '\\n\\n¿Borrar de todos modos?')) return;
+      resultado = await enviar('conversacion/borrar', { chatId: chatAbierto, modo, forzar: true });
+    }
+
+    cajonBorrar.hidden = true;
+    aviso(resultado.modo === 'todo'
+      ? 'Conversación eliminada (' + resultado.mensajes + ' mensajes, ' + resultado.tickets + ' tickets).'
+      : 'Listo: ' + resultado.mensajes + ' mensajes borrados. El hilo queda limpio.');
+
+    if (resultado.modo === 'todo') cerrarHilo();
+    else await abrirHilo(chatAbierto, true);
+
+    pintar(vistaActual, true);
+    pintarResumen();
+  } catch (err) { aviso(err.message, 'error'); }
+}
+
+document.getElementById('borrar-mensajes').addEventListener('click', () => borrarConversacion('mensajes'));
+document.getElementById('borrar-todo').addEventListener('click', () => borrarConversacion('todo'));
 
 document.getElementById('hilo-atender').addEventListener('click', async () => {
   if (!chatAbierto || !ultimoHilo) return;
@@ -1038,6 +1117,11 @@ const STYLES = `<style>
   .ticket-fila.cerrado { opacity: .6; }
   .ticket-fila-arriba { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
   .ticket-fila-asunto { font-size: 13px; }
+  .opcion-borrar { background: var(--caja2); border: 1px solid var(--borde); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 6px; }
+  .opcion-borrar p { margin: 0; }
+  .opcion-borrar.peligro-caja { border-color: rgba(224,108,108,.4); }
+  .mini.peligro, .icon.peligro { color: var(--rojo, #e06c6c); }
+  .icon.peligro:hover { border-color: rgba(224,108,108,.5); }
   #hilo-tickets-btn { display: inline-flex; align-items: center; gap: 5px; }
   #hilo-tickets-btn.con-abiertos { border-color: rgba(232,185,90,.45); color: var(--ambar); }
   .ico { width: 18px; height: 18px; flex-shrink: 0; }

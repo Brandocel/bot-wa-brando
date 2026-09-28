@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Logger,
   Post,
   Query,
   Req,
@@ -35,6 +36,8 @@ const HANDOFF_MS = 4 * 60 * 60 * 1000;
 
 @Controller('panel/api')
 export class PanelApiController {
+  private readonly logger = new Logger(PanelApiController.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly auth: PanelAuthService,
@@ -543,6 +546,110 @@ export class PanelApiController {
     });
 
     return { ok: true, handoffUntil, por: req.panelUser?.email };
+  }
+
+  /**
+   * Borra la conversación de una persona. No se puede deshacer.
+   *
+   * Dos modos, porque son dos necesidades distintas:
+   *
+   *  - `mensajes`: se va el historial y la solicitud en curso, pero el
+   *    hilo y sus tickets se quedan. Es lo que hace falta después de una
+   *    prueba, o cuando la charla se enredó y conviene empezar de cero
+   *    sin perder el rastro de soporte.
+   *  - `todo`: desaparece la conversación entera. Los mensajes y los
+   *    tickets se van con ella (la base los borra en cascada), así que
+   *    también se pierde el historial de soporte de esa persona.
+   *
+   * Se borran TODOS los hilos del contacto, no solo el del chatId: el
+   * mismo cliente puede tener uno por número y otro por LID, y dejar la
+   * mitad es peor que no borrar nada.
+   *
+   * Lo que NO se toca: el contacto, sus membresías ni sus permisos. Para
+   * quitarle el acceso a alguien está el directorio; borrar el chat es
+   * limpieza, no una baja. Y con tickets sin cerrar hay que insistir con
+   * `forzar`, porque eso es trabajo de alguien que todavía está pendiente.
+   */
+  @UseGuards(PanelGuard)
+  @Post('conversacion/borrar')
+  async deleteThread(
+    @Req() req: PanelRequest,
+    @Body() body: { chatId?: string; modo?: 'mensajes' | 'todo'; forzar?: boolean },
+  ) {
+    const email = this.requireAdmin(req);
+    if (!body.chatId) throw new BadRequestException('falta chatId');
+
+    const modo = body.modo === 'todo' ? 'todo' : 'mensajes';
+    const contactId = await this.contactoDe(body.chatId);
+
+    const hilos = await this.prisma.conversation.findMany({
+      where: { contactId },
+      select: { id: true, chatId: true },
+    });
+    const ids = hilos.map((h) => h.id);
+    const chatIds = hilos.map((h) => h.chatId);
+
+    const abiertos = await this.prisma.ticket.count({
+      where: { conversationId: { in: ids }, state: { not: 'CERRADO' } },
+    });
+    if (abiertos > 0 && body.forzar !== true) {
+      throw new BadRequestException(
+        `esta persona tiene ${abiertos} ticket(s) sin cerrar. Ciérralos primero, o vuelve a intentarlo confirmando que quieres borrar de todos modos.`,
+      );
+    }
+
+    // Lo que estaba encolado para salir ya no tiene a dónde ir: mandarlo
+    // después de borrar el hilo es contestar a una charla que ya no existe.
+    const pendientes = await this.prisma.outboxMessage.deleteMany({
+      where: { chatId: { in: chatIds }, status: { in: ['PENDING', 'FAILED'] } },
+    });
+
+    const mensajes = await this.prisma.message.deleteMany({
+      where: { conversationId: { in: ids } },
+    });
+
+    let tickets = 0;
+    let conversaciones = 0;
+
+    if (modo === 'todo') {
+      tickets = await this.prisma.ticket.count({ where: { conversationId: { in: ids } } });
+      conversaciones = (
+        await this.prisma.conversation.deleteMany({ where: { id: { in: ids } } })
+      ).count;
+    } else {
+      /**
+       * El hilo sigue, pero sin memoria: ni solicitud en curso, ni tema,
+       * ni turno de nadie, ni handoff. La próxima vez que esa persona
+       * escriba, el bot la atiende como si fuera la primera vez.
+       */
+      await this.prisma.conversation.updateMany({
+        where: { id: { in: ids } },
+        data: {
+          context: {},
+          topic: null,
+          awaiting: 'NADIE',
+          handoffUntil: null,
+          seenAt: null,
+          lastInboundAt: null,
+          lastOutboundAt: null,
+        },
+      });
+    }
+
+    this.logger.warn(
+      `${email} borró (${modo}) el chat ${body.chatId}: ${mensajes.count} mensaje(s)` +
+        (modo === 'todo' ? `, ${conversaciones} hilo(s) y ${tickets} ticket(s)` : ''),
+    );
+
+    return {
+      ok: true,
+      modo,
+      mensajes: mensajes.count,
+      tickets,
+      conversaciones,
+      pendientes: pendientes.count,
+      por: email,
+    };
   }
 
   // ── Escritura ───────────────────────────────────────────────────────────
