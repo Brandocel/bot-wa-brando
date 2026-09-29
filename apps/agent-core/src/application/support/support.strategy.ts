@@ -22,12 +22,13 @@ import {
 import { TicketService, type EscalationReason } from './ticket.service';
 import {
   ACUSE,
-  CIERRE,
+  esCierre,
   RECONOCE,
   SALUDO,
   clasificar,
   esAfirmacion,
   esInventario,
+  esPausa,
   esQuejaDeNoRecibido,
   esRechazo,
   leerNumero,
@@ -200,7 +201,34 @@ export class SupportStrategy {
       return { text: voz.archivoNoLeible(), awaiting: 'CLIENTE' };
     }
 
-    const sol = await this.solicitudes.actual(ctx.conversationId);
+    let sol = await this.solicitudes.actual(ctx.conversationId);
+
+    // "Olvida eso, dame otra factura" abandona la solicitud anterior,
+    // pero conserva y procesa los datos nuevos del mismo mensaje. El cierre
+    // de SolicitudService solo borra la petición; no toca última entrega,
+    // conversación, identidad ni alcance autorizado.
+    if (abandonaConNuevaSolicitud(message.body)) {
+      await this.solicitudes.cerrar(ctx.conversationId);
+      sol = await this.solicitudes.actual(ctx.conversationId);
+    }
+
+    // Un cierre explícito abandona solo la solicitud que sigue esperando
+    // respuesta. SolicitudService.cerrar conserva el resto del contexto,
+    // incluida la última entrega.
+    if (
+      sol.ultimaPregunta &&
+      esCierre(message.body) &&
+      !parseQueryTieneDatos(normalizar(message.body))
+    ) {
+      await this.solicitudes.cerrar(ctx.conversationId);
+      return { text: voz.cierreSolicitud(), awaiting: 'NADIE' };
+    }
+
+    // Una pausa es una respuesta al flujo en curso, no un número de opción.
+    // Va antes de leerNumero() para que "Dame un segundo" nunca elija la 2.
+    if (esPausa(message.body) && (tieneDatos(sol) || (sol.opciones?.length ?? 0) > 0)) {
+      return { text: voz.respuestaPausa(), awaiting: 'CLIENTE' };
+    }
 
     /**
      * Respuesta a una lista numerada: "1", "la 2", "el número dos".
@@ -405,12 +433,39 @@ export class SupportStrategy {
      */
     const query = mergeSlots(contexto, extraction.query);
 
+    // Como con el mes y el folio: dar el tipo por primera vez completa la
+    // búsqueda en curso, no la cambia. Solo un tipo DISTINTO es otra.
+    const cambioCategoria =
+      extraction.query.category !== null &&
+      sol.category !== null &&
+      extraction.query.category !== sol.category;
+    const cambioPeriodo =
+      extraction.query.period !== null &&
+      sol.period !== null &&
+      extraction.query.period.toISOString() !== sol.period;
+    const cambioFolio =
+      extraction.query.folio !== null && sol.folio !== null && extraction.query.folio !== sol.folio;
+    const invalidaBusquedaAnterior = cambioCategoria || cambioPeriodo || cambioFolio;
+
     const patch: Partial<Solicitud> = {
       category: query.category,
       period: query.period?.toISOString() ?? null,
       folio: query.folio,
     };
     if (empresaMencionada) patch.organizationId = empresaMencionada;
+
+    // Una categoría, un periodo o un folio distintos identifican otra
+    // búsqueda. No arrastres opciones, preguntas ni fallos de la anterior.
+    if (invalidaBusquedaAnterior) {
+      Object.assign(patch, {
+        opciones: null,
+        preguntas: 0,
+        preguntado: {},
+        ultimaPregunta: null,
+        fallos: 0,
+        rechazados: [],
+      } satisfies Partial<Solicitud>);
+    }
 
     // Otro tipo de documento es otra solicitud: los fallos de la anterior
     // no cuentan, o el segundo "no encontré" escalaría por acumulación.
@@ -1433,6 +1488,13 @@ function pideReinicio(texto: string): boolean {
   return /^(?:por favor )?(?:(?:empecemos|comencemos|(?:quiero|vamos a) (?:empezar|comenzar)) (?:de nuevo|desde cero)|(?:reinicia|reiniciemos) (?:la|mi|esta) solicitud|(?:ignora|olvida) (?:todo )?lo anterior)(?: (?:y )?(?:ignora|olvida) (?:todo )?lo anterior)?(?: por favor)?$/.test(limpio);
 }
 
+/** Un abandono seguido de slots explícitos no debe descartar el nuevo pedido. */
+function abandonaConNuevaSolicitud(texto: string): boolean {
+  if (!/\b(?:olvida|ignora)\s+(?:eso|lo anterior)\b/.test(normalizar(texto))) return false;
+  const nuevos = parseQuery(texto);
+  return nuevos.category !== null || nuevos.period !== null || nuevos.folio !== null;
+}
+
 /**
  * Fusiona lo que el ticket ya sabía con lo que trajo este mensaje.
  *
@@ -1732,9 +1794,9 @@ function respuestaRapida(
   if (parseQueryTieneDatos(limpio)) return null;
 
   if (SALUDO.test(limpio)) {
-    // Con una pregunta en el aire se repite, sin gastar presupuesto: la
-    // persona volvió y no tiene por qué acordarse de dónde se quedó.
-    if (pendiente) return voz.saludoConPendiente(voz.PREGUNTA_PENDIENTE[pendiente]);
+    // La cortesía responde al saludo; la solicitud queda en memoria para que
+    // la persona la continúe cuando esté lista.
+    if (pendiente) return voz.respuestaSocial(limpio);
 
     const yaSaludo = turn.history.some(
       (t) => t.role === 'bot' && /\bhola\b/i.test(t.text),
@@ -1747,24 +1809,27 @@ function respuestaRapida(
     );
   }
 
-  // Lo de abajo solo sin pregunta pendiente: "ok" contestando a "¿de qué
-  // mes?" tiene que pasar por el flujo normal.
-  if (pendiente) return null;
-
   /**
    * Gracias y cierres: "gracias", "va con eso está bien gracias", "es
-   * todo", "con eso basta". Frases cortas sin ningún dato de documento.
-   * Antes "va con eso está bien gracias" caía en el modelo y acababa en
-   * una entrega repetida.
+   * todo", "con eso basta". Se puede responder aunque haya una pregunta
+   * pendiente: no aporta slots y no debe consumir un intento de respuesta.
    */
   const palabras = limpio.split(' ').length;
   if (palabras <= 8 && /\bgracias\b/.test(limpio)) {
     return voz.deNada();
   }
 
+  // Un acuse simple no aporta datos. Se reconoce incluso con una pregunta
+  // pendiente; la confirmación de una opción única ya se resolvió antes aquí.
+  if (ACUSE.test(limpio)) return '';
+
+  // Lo de abajo solo sin pregunta pendiente: "ok" contestando a "¿de qué
+  // mes?" tiene que pasar por el flujo normal.
+  if (pendiente) return null;
+
   // Un "ok" no se contesta: ya quedó marcado como leído, y responderle a
   // cada acuse es justo lo que hace que un bot se sienta como bot.
-  if (ACUSE.test(limpio) || (palabras <= 8 && CIERRE.test(limpio))) return '';
+  if (esCierre(texto)) return '';
 
   /**
    * "A perdón, sí es cierto, es la misma", "tienes razón", "ya la vi":

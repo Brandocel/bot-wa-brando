@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { esInventario, preguntaMeses } from './message-classifier';
+import { esCierre, esInventario, preguntaMeses } from './message-classifier';
 import { palabrasClave, parseQuery } from './query-parser';
 
 for (const text of [
@@ -94,3 +94,21 @@ test('desconocer el folio se detecta igual en llamadas repetidas', () => {
     assert.equal(parseQuery('No sé el folio').text, null);
   }
 });
+
+for (const text of ['es todo', 'no gracias', 'ya está', 'ya está, gracias', 'con eso basta']) {
+  test(`"${text}" cierra la conversación`, () => {
+    assert.equal(esCierre(text), true);
+  });
+}
+
+for (const text of [
+  '¿ya está?',
+  'ya está?',
+  'nada más quería saber si ya está',
+  'ya está lista',
+  'cuándo ya está',
+]) {
+  test(`"${text}" pregunta por el pedido, no lo cierra`, () => {
+    assert.equal(esCierre(text), false);
+  });
+}

@@ -136,7 +136,12 @@ export function parseQuery(raw: string): SearchQuery {
    * Sin ningún metadato, el texto completo se conserva para el modelo.
    */
   const hasMetadata = category !== null || parsedPeriod !== null || folio !== null;
-  const claves = palabrasClave(text);
+  const textoDeBusqueda = textoSinMarcadoresConversacionales(text, {
+    category,
+    period: parsedPeriod,
+    folio,
+  });
+  const claves = palabrasClave(textoDeBusqueda);
 
   return {
     category,
@@ -281,6 +286,23 @@ export function nombreDeArchivo(raw: string): string | null {
 }
 
 function parsePeriod(text: string): Date | null {
+  // En una corrección explícita gana el dato que sigue a "era":
+  // "no era febrero, era marzo". Fuera de esta forma se conserva el parseo
+  // habitual y no se cambia globalmente a "usar siempre el último mes".
+  const meses = Object.keys(MONTHS).join('|');
+  const correccion = new RegExp(
+    `\\bno era (?:de )?(${meses})(?: de (20\\d{2}))?\\s*,?\\s*era (?:de )?(${meses})(?: de (20\\d{2}))?\\b`,
+  ).exec(text);
+  if (correccion) {
+    const month = MONTHS[correccion[3]!];
+    const yearText = correccion[4] ?? correccion[2];
+    if (yearText) return period(Number(yearText), month!);
+    const now = new Date();
+    const currentYear = now.getUTCFullYear();
+    const guessed = month! <= now.getUTCMonth() + 1 ? currentYear : currentYear - 1;
+    return period(guessed, month!);
+  }
+
   // "este mes", "mes pasado", "mes anterior": no hace falta modelo para esto.
   const now = new Date();
   // Con un mes escrito ("del mes de junio"), ese manda; lo relativo solo
@@ -320,4 +342,16 @@ function parsePeriod(text: string): Date | null {
   }
 
   return null;
+}
+
+/** Quita marcadores solo cuando acompañan slots documentales reconocidos. */
+function textoSinMarcadoresConversacionales(
+  text: string,
+  slots: { category: DocCategory | null; period: Date | null; folio: string | null },
+): string {
+  if (slots.category === null && slots.period === null && slots.folio === null) return text;
+
+  return text
+    .replace(/^\s*(?:no\s*,?\s*)?mejor\s+(?:(?:quiero|quisiera|necesito)\s+)?/, '')
+    .replace(/\b(?:olvida|ignora)\s+(?:eso|lo anterior)\b/, ' ');
 }

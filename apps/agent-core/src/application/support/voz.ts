@@ -91,11 +91,28 @@ export function saludoDeNuevo(): string {
   ]);
 }
 
-export function saludoConPendiente(pregunta: string): string {
-  return una([
-    `Aquí sigo. ${pregunta}`,
-    `Qué bueno que volviste. ${pregunta}`,
-  ]);
+/** Responde el saludo sin reabrir una solicitud documental pendiente. */
+export function respuestaSocial(mensaje: string): string {
+  if (/\bcomo estas\b/.test(mensaje)) {
+    return una([
+      '¡Todo bien, gracias! Qué gusto saludarte.',
+      'Muy bien, gracias por preguntar. ¡Hola!',
+    ]);
+  }
+
+  if (/\bbuenos dias\b|\bbuen dia\b/.test(mensaje)) {
+    return una(['¡Buenos días! Qué gusto saludarte.', '¡Buenos días!']);
+  }
+
+  if (/\bbuenas tardes\b/.test(mensaje)) {
+    return una(['¡Buenas tardes! Qué gusto saludarte.', '¡Buenas tardes!']);
+  }
+
+  if (/\bbuenas noches\b/.test(mensaje)) {
+    return una(['¡Buenas noches! Qué gusto saludarte.', '¡Buenas noches!']);
+  }
+
+  return '¡Hola! Qué gusto saludarte.';
 }
 
 export function deNada(): string {
@@ -118,6 +135,15 @@ export function charlaSinModelo(empresas: string): string {
     `Aquí ando. Puedo buscarte documentos de ${n(empresas)}.\nDime cuál necesitas y de qué mes.`,
     `Cuenta conmigo para los documentos de ${n(empresas)}. ¿Cuál te busco?`,
   ]);
+}
+
+/** Cierre breve cuando la persona abandona una solicitud pendiente. */
+export function cierreSolicitud(): string {
+  return 'Entendido, lo dejamos aquí. Cuando necesites otro documento, dime.';
+}
+
+export function respuestaPausa(): string {
+  return 'Claro, tómate tu tiempo.';
 }
 
 // ── Preguntas ──────────────────────────────────────────────────────────
