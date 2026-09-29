@@ -338,6 +338,13 @@ export function esInventario(texto: string): boolean {
 
   if (limpio.length > 90) return false;
 
+  // Las preguntas de disponibilidad admiten detalles entre el interrogativo
+  // y la consulta: "qué contratos tengo disponibles".
+  if (/\b(que|cuales|cual)\b.{0,50}\b(tengo|tienes|disponible|disponibles|opciones)\b/.test(limpio)) {
+    return true;
+  }
+  if (preguntaMeses(texto)) return true;
+
   return /\b((que|cuales|cual) (documentos|docs|archivos|opciones|cosas|meses|fechas)\b|opciones de lo que tienes|cuales tienes|cuales hay|(de que|de cuales) (meses|fechas)|que tienes\b|que hay\b|que( (doc|docs|documento|documentos|archivo|archivos))? me puedes (dar|entregar|mandar|pasar|enviar)|que puedes (darme|entregarme|mandarme|pasarme|enviarme)|lista(me)? (lo que|los documentos|todo)|catalogo|inventario|todo lo que (tienes|tengas|haya))/.test(
     limpio,
   );
@@ -399,5 +406,5 @@ export function esRechazo(texto: string): boolean {
 /** "¿De qué meses hay?", "qué meses tienes", "de qué fechas". */
 export function preguntaMeses(texto: string): boolean {
   const limpio = texto.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-  return /\b(que|cuales|de que|de cuales) (meses|fechas)\b/.test(limpio);
+  return /\b(que|cuales|de que|de cuales)(?:\s+\w+){0,4}\s+(meses|fechas)\b/.test(limpio);
 }

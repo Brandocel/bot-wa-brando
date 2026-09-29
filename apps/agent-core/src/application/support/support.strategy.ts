@@ -171,6 +171,17 @@ export class SupportStrategy {
     // más adelante, la Strategy de ventas.
     if (scope.decision !== 'ALLOW') return null;
 
+    // Reiniciar abandona la solicitud entera, antes de interpretar opciones
+    // o acumular reintentos. cerrar conserva la última entrega y el resto
+    // del contexto de la conversación.
+    if (pideReinicio(message.body)) {
+      await this.solicitudes.cerrar(ctx.conversationId);
+      return {
+        text: 'Va, empezamos de nuevo. Dime qué documento necesitas.',
+        awaiting: 'CLIENTE',
+      };
+    }
+
     // El mensaje actual ya está guardado (fase 1 del caso de uso); se
     // excluye para que no aparezca dos veces en el prompt.
     const turn: Turn = {
@@ -1414,6 +1425,12 @@ export class SupportStrategy {
 
     return { text, awaiting: 'CLIENTE' };
   }
+}
+
+/** Solo instrucciones explícitas de reinicio; "mándamela de nuevo" no lo es. */
+function pideReinicio(texto: string): boolean {
+  const limpio = normalizar(texto);
+  return /^(?:por favor )?(?:(?:empecemos|comencemos|(?:quiero|vamos a) (?:empezar|comenzar)) (?:de nuevo|desde cero)|(?:reinicia|reiniciemos) (?:la|mi|esta) solicitud|(?:ignora|olvida) (?:todo )?lo anterior)(?: (?:y )?(?:ignora|olvida) (?:todo )?lo anterior)?(?: por favor)?$/.test(limpio);
 }
 
 /**

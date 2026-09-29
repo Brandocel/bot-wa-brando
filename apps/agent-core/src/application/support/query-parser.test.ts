@@ -3,10 +3,35 @@ import test from 'node:test';
 import { esInventario, preguntaMeses } from './message-classifier';
 import { palabrasClave, parseQuery } from './query-parser';
 
-test('no recuerda el nombre no aporta "recuerdo" como filtro libre', () => {
-  const query = parseQuery('No recuerdo el nombre');
-  assert.equal(query.text?.includes('recuerdo') ?? false, false);
-  assert.equal(palabrasClave('No recuerdo el nombre').includes('recuerdo'), false);
+for (const text of [
+  'No recuerdo el nombre',
+  'No me acuerdo del nombre',
+  'No sé el folio',
+  'No conozco el nombre del archivo',
+]) {
+  test(`"${text}" no aporta filtros de búsqueda`, () => {
+    assert.deepEqual(parseQuery(text), {
+      category: null, period: null, folio: null, text: null,
+    });
+    assert.deepEqual(palabrasClave(text), []);
+  });
+}
+
+test('pedir el acuerdo de confidencialidad conserva las palabras del documento', () => {
+  const text = 'Necesito el acuerdo de confidencialidad';
+  assert.equal(parseQuery(text).text, 'acuerdo confidencialidad');
+  assert.deepEqual(palabrasClave(text), ['acuerdo', 'confidencialidad']);
+});
+
+test('buscar un acuerdo comercial conserva "acuerdo" como palabra clave', () => {
+  assert.ok(palabrasClave('Busca el acuerdo comercial').includes('acuerdo'));
+  assert.match(parseQuery('Busca el acuerdo comercial').text ?? '', /\bacuerdo comercial\b/);
+});
+
+test('desconocer el nombre no descarta una descripción útil del documento', () => {
+  const text = 'No conozco el nombre del archivo. Necesito el acuerdo de confidencialidad';
+  assert.equal(parseQuery(text).text, 'acuerdo confidencialidad');
+  assert.deepEqual(palabrasClave(text), ['acuerdo', 'confidencialidad']);
 });
 
 test('preguntar qué contratos hay disponibles se reconoce como inventario', () => {
