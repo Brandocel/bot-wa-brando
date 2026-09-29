@@ -83,6 +83,8 @@ export function clasificar(texto: string): Clasificacion {
   if (preguntaPorSuCaso(limpio)) return con('SEGUIMIENTO');
   if (esInventario(texto) || preguntaSobreEntregado(texto)) return con('CONSULTA');
 
+  if (esPausa(limpio)) return con('CORTESIA');
+
   if (parseQueryTieneDatos(limpio) || leerNumero(texto) !== null) return con('SOLICITUD');
   if (esCortesia(limpio)) return con('CORTESIA');
   if (esAfirmacion(texto) || esRechazo(texto) || mencionaRechazo(texto)) return con('SOLICITUD');
@@ -169,7 +171,15 @@ export const SALUDO =
   /^(hola|holi|buenas|buenos dias|buen dia|buenas tardes|buenas noches|que tal|hey|que onda|como estas|como andas)( (buenas|que tal|como estas|como andas|buen dia|buenos dias|buenas tardes|brother|bro|amigo|amiga|jefe|jefa|compa|hermano|buenas buenas|que hay|todo bien))?$/;
 
 export const CIERRE =
-  /\b(es todo|eso es todo|con eso (esta bien|basta|es suficiente|me sirve|quedo)|asi esta bien|esta bien asi|ya quedo|ya con eso|nada mas|por ahora no|no gracias)\b/;
+  /\b(es todo|eso es todo|con eso (esta bien|basta|es suficiente|me sirve|quedo)|asi esta bien|esta bien asi|ya (quedo|esta)|ya con eso|nada mas|por ahora no|no gracias)\b/;
+
+/** Construcciones para pedir tiempo: se exige una frase, nunca un ordinal aislado. */
+export const PAUSA =
+  /^(?:espera(?:me)?(?: (?:tantito|un moment(?:o|ito)))?|aguanta(?:me)?(?: (?:tantito|un moment(?:o|ito)))?|un moment(?:o|ito)|dame un (?:moment(?:o|ito)|segundo)|ahorita (?:te digo|veo)|dejame (?:ver|checar))(?: (?:tantito|por favor))?$/;
+
+export function esPausa(texto: string): boolean {
+  return PAUSA.test(normalizar(texto));
+}
 
 export const ACUSE =
   /^(ok|okay|okey|oki|va|vale|sale|listo|perfecto|excelente|genial|de acuerdo|entendido|enterado|recibido|ya|si|dale|orale|ah ok|va bien|esta bien|muy bien)$/;

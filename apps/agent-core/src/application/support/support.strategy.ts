@@ -28,6 +28,7 @@ import {
   clasificar,
   esAfirmacion,
   esInventario,
+  esPausa,
   esQuejaDeNoRecibido,
   esRechazo,
   leerNumero,
@@ -201,6 +202,26 @@ export class SupportStrategy {
     }
 
     const sol = await this.solicitudes.actual(ctx.conversationId);
+
+    // Un cierre explícito abandona solo la solicitud que sigue esperando
+    // respuesta. SolicitudService.cerrar conserva el resto del contexto,
+    // incluida la última entrega.
+    const mensajeNormalizado = normalizar(message.body);
+    if (
+      sol.ultimaPregunta &&
+      mensajeNormalizado.split(' ').length <= 8 &&
+      CIERRE.test(mensajeNormalizado) &&
+      !parseQueryTieneDatos(mensajeNormalizado)
+    ) {
+      await this.solicitudes.cerrar(ctx.conversationId);
+      return { text: voz.cierreSolicitud(), awaiting: 'NADIE' };
+    }
+
+    // Una pausa es una respuesta al flujo en curso, no un número de opción.
+    // Va antes de leerNumero() para que "Dame un segundo" nunca elija la 2.
+    if (esPausa(message.body) && (tieneDatos(sol) || (sol.opciones?.length ?? 0) > 0)) {
+      return { text: voz.respuestaPausa(), awaiting: 'CLIENTE' };
+    }
 
     /**
      * Respuesta a una lista numerada: "1", "la 2", "el número dos".
@@ -1730,9 +1751,9 @@ function respuestaRapida(
   if (parseQueryTieneDatos(limpio)) return null;
 
   if (SALUDO.test(limpio)) {
-    // Con una pregunta en el aire se repite, sin gastar presupuesto: la
-    // persona volvió y no tiene por qué acordarse de dónde se quedó.
-    if (pendiente) return voz.saludoConPendiente(voz.PREGUNTA_PENDIENTE[pendiente]);
+    // La cortesía responde al saludo; la solicitud queda en memoria para que
+    // la persona la continúe cuando esté lista.
+    if (pendiente) return voz.respuestaSocial(limpio);
 
     const yaSaludo = turn.history.some(
       (t) => t.role === 'bot' && /\bhola\b/i.test(t.text),
@@ -1745,24 +1766,27 @@ function respuestaRapida(
     );
   }
 
-  // Lo de abajo solo sin pregunta pendiente: "ok" contestando a "¿de qué
-  // mes?" tiene que pasar por el flujo normal.
-  if (pendiente) return null;
-
   /**
    * Gracias y cierres: "gracias", "va con eso está bien gracias", "es
-   * todo", "con eso basta". Frases cortas sin ningún dato de documento.
-   * Antes "va con eso está bien gracias" caía en el modelo y acababa en
-   * una entrega repetida.
+   * todo", "con eso basta". Se puede responder aunque haya una pregunta
+   * pendiente: no aporta slots y no debe consumir un intento de respuesta.
    */
   const palabras = limpio.split(' ').length;
   if (palabras <= 8 && /\bgracias\b/.test(limpio)) {
     return voz.deNada();
   }
 
+  // Un acuse simple no aporta datos. Se reconoce incluso con una pregunta
+  // pendiente; la confirmación de una opción única ya se resolvió antes aquí.
+  if (ACUSE.test(limpio)) return '';
+
+  // Lo de abajo solo sin pregunta pendiente: "ok" contestando a "¿de qué
+  // mes?" tiene que pasar por el flujo normal.
+  if (pendiente) return null;
+
   // Un "ok" no se contesta: ya quedó marcado como leído, y responderle a
   // cada acuse es justo lo que hace que un bot se sienta como bot.
-  if (ACUSE.test(limpio) || (palabras <= 8 && CIERRE.test(limpio))) return '';
+  if (palabras <= 8 && CIERRE.test(limpio)) return '';
 
   /**
    * "A perdón, sí es cierto, es la misma", "tienes razón", "ya la vi":
