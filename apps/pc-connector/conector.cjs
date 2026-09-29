@@ -326,10 +326,46 @@ async function emparejar(incrustada) {
 
 // ── Una sola copia corriendo ────────────────────────────────────────────
 
-function yaCorriendo() {
-  const pid = Number(leerJson(LOCK_PATH, {}).pid);
+/**
+ * ¿Ese pid es de verdad otro conector? Que el proceso exista no basta: si
+ * uno anterior murió sin limpiar el candado (cerrado a la fuerza, un
+ * apagón), Windows reutiliza su pid y el conector nuevo creía que ya había
+ * uno trabajando. Se quedaba esperando en una consola invisible y la
+ * carpeta nunca se subía.
+ */
+function esConector(pid) {
   if (!pid || pid === process.pid) return false;
-  try { process.kill(pid, 0); return true; } catch { return false; }
+  try { process.kill(pid, 0); } catch { return false; }
+  if (process.platform !== 'win32') return true;
+  try {
+    const salida = execFileSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], {
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    return salida.toLowerCase().includes(`"${basename(process.execPath).toLowerCase()}"`);
+  } catch {
+    return true;
+  }
+}
+
+function yaCorriendo() {
+  return esConector(Number(leerJson(LOCK_PATH, {}).pid));
+}
+
+/**
+ * Tras un emparejamiento nuevo, el conector que siguiera corriendo trae en
+ * memoria el token y la carpeta de antes: se detiene para que arranque el
+ * nuevo (y para poder reemplazar el .exe instalado, que está en uso).
+ */
+function detenerAnterior() {
+  const pid = Number(leerJson(LOCK_PATH, {}).pid);
+  if (esConector(pid)) {
+    try {
+      process.kill(pid);
+      log(`se detuvo el conector anterior (pid ${pid})`);
+    } catch { /* ya terminó */ }
+  }
+  try { unlinkSync(LOCK_PATH); } catch { /* no había candado */ }
 }
 
 function tomarCandado() {
@@ -547,6 +583,8 @@ async function main() {
 
   // Doble clic con el conector ya funcionando: solo avisar.
   if (config?.token && yaCorriendo()) {
+    // También al log: si esto pasa en segundo plano, nadie ve la consola.
+    log(`ya hay un conector trabajando (pid ${leerJson(LOCK_PATH, {}).pid}); este no hace nada`);
     console.log(`El conector ya está funcionando en segundo plano.`);
     console.log(`Empresa: ${config.organization}\nCarpeta: ${config.folder}`);
     return pausa();
@@ -554,6 +592,7 @@ async function main() {
 
   if (!config?.token) {
     config = await emparejar(configIncrustada());
+    detenerAnterior();
 
     // Como .exe: se copia a su lugar, se registra para arrancar con
     // Windows y se lanza sin ventana. Esta ventana ya puede cerrarse.
