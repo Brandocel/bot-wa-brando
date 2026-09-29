@@ -5,7 +5,8 @@ import type { ConnectorDevice, Organization } from '@prisma/client';
 import { PrismaService } from '../../infrastructure/persistence/prisma.service';
 import { PC_FILE_PREFIX } from '../../infrastructure/storage/routing-document-source';
 import { isDeliverable } from './document-name.parser';
-import { DriveSyncService } from './drive-sync.service';
+import { esSensible } from './document-safety';
+import { DriveSyncService, type Resultado } from './drive-sync.service';
 
 /**
  * Conector de PC: empareja computadoras y recibe lo que suben.
@@ -184,7 +185,8 @@ export class ConnectorService {
 
     for (const entry of entries) {
       const path = normalizarRuta(entry.path);
-      if (!path) continue;
+      // Lo sensible cuenta como ausente: si ya estaba guardado, se borra.
+      if (!path || esSensible(path)) continue;
       deseados.set(fileIdFor(organizationId, path), { ...entry, path });
     }
 
@@ -194,8 +196,21 @@ export class ConnectorService {
     });
     const porId = new Map(guardados.map((g) => [g.id, g.sha256]));
 
+    // Lo que resultó tener credenciales adentro se borró al llegar. Sin
+    // esto, cada manifiesto lo vería "nuevo" y lo pediría otra vez.
+    const sensibles = await this.prisma.document.findMany({
+      where: { organizationId, docClass: 'SENSIBLE', status: { not: 'DELETED' } },
+      select: { driveFileId: true, driveVersion: true },
+    });
+    const descartado = new Map(sensibles.map((d) => [d.driveFileId, d.driveVersion]));
+
     const upload = [...deseados.entries()]
-      .filter(([id, entry]) => porId.get(id) !== entry.sha256 && entry.size <= MAX_UPLOAD_BYTES)
+      .filter(
+        ([id, entry]) =>
+          porId.get(id) !== entry.sha256 &&
+          descartado.get(id) !== entry.sha256 &&
+          entry.size <= MAX_UPLOAD_BYTES,
+      )
       .map(([, entry]) => entry.path);
 
     const sobrantes = guardados.filter((g) => !deseados.has(g.id)).map((g) => g.id);
@@ -207,12 +222,15 @@ export class ConnectorService {
   async subir(
     device: AuthenticatedDevice,
     input: { path: string; mimeType: string; sha256?: string; bytes: Buffer },
-  ): Promise<{ indexed: boolean }> {
+  ): Promise<{ indexed: boolean; resultado: Resultado }> {
     const path = normalizarRuta(input.path);
     if (!path) throw new ConnectorError('ruta inválida');
 
     if (input.bytes.length > MAX_UPLOAD_BYTES) {
       throw new ConnectorError('archivo demasiado grande', 413);
+    }
+    if (esSensible(path)) {
+      throw new ConnectorError('este archivo parece contener credenciales y no se guarda', 415);
     }
     if (!isDeliverable(input.mimeType)) {
       throw new ConnectorError(`tipo de archivo no soportado: ${input.mimeType}`, 415);
@@ -235,7 +253,7 @@ export class ConnectorService {
 
     const carpetas = posix.dirname(path) === '.' ? [] : posix.dirname(path).split('/');
 
-    const indexed = await this.sync.indexarArchivo(
+    const resultado = await this.sync.indexarArchivo(
       {
         id,
         version: sha256,
@@ -250,7 +268,7 @@ export class ConnectorService {
       device.organization,
     );
 
-    return { indexed };
+    return { indexed: resultado === 'indexado', resultado };
   }
 
   async borrar(device: AuthenticatedDevice, rawPath: string): Promise<void> {

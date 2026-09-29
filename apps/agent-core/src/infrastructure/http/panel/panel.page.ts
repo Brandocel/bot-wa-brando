@@ -169,6 +169,7 @@ const contenido = document.getElementById('contenido');
 const app = document.getElementById('app');
 let vistaActual = 'bandeja';
 let filtroBandeja = 'todas';
+let filtroCuarentena = 'revision';
 let yo = null;
 let chatAbierto = null;
 let ultimoHilo = null;
@@ -227,7 +228,7 @@ const iniciales = (nombre) => String(nombre ?? '?').trim().split(/\\s+/).slice(0
 // Un color por persona, estable: el mismo nombre siempre se ve igual.
 const tono = (nombre) => { let h = 0; for (const ch of String(nombre ?? '')) h = (h * 31 + ch.charCodeAt(0)) % 360; return h; };
 
-const CATEGORIAS = ['FACTURA', 'CONTRATO', 'COTIZACION', 'REPORTE', 'POLIZA', 'OTRO'];
+const CATEGORIAS = ['FACTURA', 'CONTRATO', 'COTIZACION', 'REPORTE', 'POLIZA', 'ESTADO_CUENTA', 'CONTABLE', 'OTRO'];
 
 function tabla(columnas, filas, vacio) {
   if (!filas || filas.length === 0) return '<p class="vacio">' + vacio + '</p>';
@@ -530,6 +531,26 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
+  const filtroCuar = e.target.closest('[data-filtro-cuarentena]');
+  if (filtroCuar) {
+    filtroCuarentena = filtroCuar.dataset.filtroCuarentena;
+    pintar('cuarentena');
+    return;
+  }
+
+  const revisar = e.target.closest('[data-revisar]');
+  if (revisar) {
+    const aprobar = revisar.dataset.decision === 'aprobar';
+    if (aprobar && !confirm('¿Aprobar este archivo? El bot podrá mandarlo por WhatsApp a quien tenga permiso.')) return;
+    try {
+      await enviar('cuarentena/revisar', { id: revisar.dataset.revisar, decision: revisar.dataset.decision });
+      aviso(aprobar ? 'Aprobado: ya se puede entregar' : 'Rechazado: no se entregará');
+      pintar('cuarentena');
+      pintarResumen();
+    } catch (err) { aviso(err.message, 'error'); }
+    return;
+  }
+
   const filtro = e.target.closest('[data-filtro]');
   if (filtro) {
     filtroBandeja = filtro.dataset.filtro;
@@ -736,19 +757,46 @@ const VISTAS = {
   },
 
   async cuarentena() {
-    const filas = await api('cuarentena');
-    return '<p class="muted">Documentos que Drive tiene y el bot no pudo clasificar. ' +
-      'Les falta tipo o mes en el nombre; mientras estén aquí, no se entregan. ' +
-      'Formato esperado: <code>FACTURA_2026-02_A1234.pdf</code></p>' +
+    const filas = await api('cuarentena?vista=' + filtroCuarentena);
+    const esAdmin = yo?.role === 'ADMIN';
+
+    const chips = [
+      ['revision', 'Por revisar'], ['descartados', 'Descartados'],
+    ].map(([valor, texto]) =>
+      '<button class="chip' + (filtroCuarentena === valor ? ' activo' : '') + '" data-filtro-cuarentena="' + valor + '">' + texto + '</button>',
+    ).join('');
+
+    const explicacion = filtroCuarentena === 'revision'
+      ? 'Archivos que el clasificador no pudo decidir solo. Mientras estén aquí, no se entregan. ' +
+        'Aprueba los que sí son documentos del cliente; rechaza lo interno o ajeno.'
+      : 'Archivos que el clasificador dejó fuera por ser internos o ajenos a la empresa (código, logs, ' +
+        'imágenes del sitio...). Si alguno sí es del cliente, apruébalo. Los que traen credenciales no se listan.';
+
+    const motivo = (d) => esc(d.classification?.motivo ?? (d.docClass ? '' : 'el clasificador no respondió; se reintenta solo'));
+    const periodo = (d) => d.period
+      ? new Date(d.period).toLocaleDateString('es-MX', { month: 'short', year: 'numeric', timeZone: 'UTC' })
+      : '';
+
+    const acciones = (d) => !esAdmin ? '' :
+      '<button class="mini" data-revisar="' + d.id + '" data-decision="aprobar">Aprobar</button> ' +
+      (filtroCuarentena === 'revision'
+        ? '<button class="mini peligro" data-revisar="' + d.id + '" data-decision="rechazar">Rechazar</button>'
+        : '');
+
+    return '<div class="chips">' + chips + '</div>' +
+      '<p class="muted">' + explicacion + '</p>' +
       tabla(
-        ['Archivo', 'Empresa', 'Tipo', 'Indexado'],
+        ['Archivo', 'Empresa', 'Qué parece', 'Motivo', 'Llegó', ''],
         filas.map((d) => '<tr>' +
-          '<td>' + esc(d.name) + '</td>' +
+          '<td>' + esc(d.name) + (d.summary ? '<div class="muted small">' + esc(d.summary) + '</div>' : '') + '</td>' +
           '<td>' + esc(d.organization.name) + '</td>' +
-          '<td class="muted">' + esc(d.mimeType) + '</td>' +
+          '<td><span class="pill">' + esc(d.category) + '</span> <span class="muted small">' + periodo(d) +
+            (d.counterpart ? ' · ' + esc(d.counterpart) : '') + '</span></td>' +
+          '<td class="muted small">' + motivo(d) + (d.reviewedBy ? '<div>revisó ' + esc(d.reviewedBy) + '</div>' : '') + '</td>' +
           '<td class="muted">' + fecha(d.indexedAt) + '</td>' +
+          '<td class="acciones">' + acciones(d) + '</td>' +
         '</tr>'),
-        'Nada en cuarentena.',
+        filtroCuarentena === 'revision' ? 'Nada por revisar.' : 'No hay archivos descartados.',
       );
   },
 
@@ -1028,7 +1076,7 @@ async function pintarResumen() {
     ['Sin responder', r.abiertos, r.abiertos > 0 ? 'warn' : ''],
     ['Esperan a una persona', r.revision, r.revision > 0 ? 'warn' : ''],
     ['Prioridad alta', r.alta, r.alta > 0 ? 'warn' : ''],
-    ['Sin clasificar en Drive', r.cuarentena, r.cuarentena > 0 ? 'warn' : ''],
+    ['Documentos por revisar', r.cuarentena, r.cuarentena > 0 ? 'warn' : ''],
     ['Entregas 24h', r.entregas24h, ''],
     ['Negados 24h', r.denegados24h, ''],
   ].map(([etiqueta, valor, clase]) =>

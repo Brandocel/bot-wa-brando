@@ -28,6 +28,19 @@ const MONTHS: Record<string, number> = {
 };
 
 const CATEGORY_WORDS: Record<string, DocCategory> = {
+  // Primero lo de varias palabras y lo contable: gana la primera entrada
+  // que case, y "el reporte contable" no es un reporte cualquiera.
+  'estado de cuenta': 'ESTADO_CUENTA',
+  'estados de cuenta': 'ESTADO_CUENTA',
+  'reporte contable': 'CONTABLE',
+  'reportes contables': 'CONTABLE',
+  contable: 'CONTABLE',
+  contables: 'CONTABLE',
+  contabilidad: 'CONTABLE',
+  balanza: 'CONTABLE',
+  balanzas: 'CONTABLE',
+  declaracion: 'CONTABLE',
+  declaraciones: 'CONTABLE',
   factura: 'FACTURA',
   facturas: 'FACTURA',
   cfdi: 'FACTURA',

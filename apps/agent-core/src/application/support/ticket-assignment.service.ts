@@ -38,6 +38,8 @@ const NOMBRES: Record<DocCategory, string> = {
   COTIZACION: 'cotización',
   REPORTE: 'reporte',
   POLIZA: 'póliza',
+  ESTADO_CUENTA: 'estado de cuenta',
+  CONTABLE: 'documento contable',
   OTRO: 'documento',
 };
 

@@ -92,7 +92,8 @@ export class DriveCommandsService {
 
     const lines = [
       `Indexados: ${report.indexed}`,
-      `En cuarentena: ${report.quarantined}`,
+      `Por revisar: ${report.quarantined}`,
+      `Descartados (internos o sensibles): ${report.excluded}`,
       `Borrados: ${report.deleted}`,
       `Ignorados: ${report.skipped}`,
     ];
@@ -127,7 +128,7 @@ export class DriveCommandsService {
       `Cuenta de servicio: ${account.client_email}`,
       `Última sincronización: ${state?.lastSyncAt.toISOString() ?? 'nunca'}`,
       `Documentos entregables: ${indexed}`,
-      `En cuarentena: ${quarantined}`,
+      `Por revisar en el panel: ${quarantined}`,
       '',
       'Empresas:',
       ...organizations.map((o) =>
@@ -155,14 +156,14 @@ export class DriveCommandsService {
       orderBy: { indexedAt: 'desc' },
     });
 
-    if (documents.length === 0) return 'No hay documentos en cuarentena.';
+    if (documents.length === 0) return 'No hay documentos por revisar.';
 
     return [
-      'Sin clasificar (no se pueden entregar):',
+      'Por revisar (no se entregan hasta que alguien los apruebe):',
       ...documents.map((d) => `• [${d.organization.name}] ${d.name}`),
       '',
-      'Les falta categoría o periodo en el nombre.',
-      'Formato esperado: FACTURA_2026-02_A1234.pdf',
+      'El clasificador no pudo decidir si son documentos del cliente.',
+      'Apruébalos o recházalos en el panel, sección Cuarentena.',
     ].join('\n');
   }
 

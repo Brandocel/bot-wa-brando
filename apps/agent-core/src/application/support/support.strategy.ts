@@ -1539,6 +1539,8 @@ const NOMBRES: Record<DocCategory, [string, string]> = {
   COTIZACION: ['cotización', 'cotizaciones'],
   REPORTE: ['reporte', 'reportes'],
   POLIZA: ['póliza', 'pólizas'],
+  ESTADO_CUENTA: ['estado de cuenta', 'estados de cuenta'],
+  CONTABLE: ['documento contable', 'documentos contables'],
   OTRO: ['documento', 'documentos'],
 };
 
@@ -1883,6 +1885,8 @@ function raizNombre(category: DocCategory): string {
     COTIZACION: 'cotizacion',
     REPORTE: 'reporte',
     POLIZA: 'poliza',
+    ESTADO_CUENTA: 'estado',
+    CONTABLE: 'contab',
     OTRO: 'documento',
   }[category];
 }

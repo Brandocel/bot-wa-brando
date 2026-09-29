@@ -14,7 +14,13 @@ import { PrismaService } from '../../infrastructure/persistence/prisma.service';
  */
 
 /** Categorías que exigen un número verificado. Fiscal y legal, básicamente. */
-const SENSITIVE: readonly DocCategory[] = ['FACTURA', 'CONTRATO', 'POLIZA'];
+const SENSITIVE: readonly DocCategory[] = [
+  'FACTURA',
+  'CONTRATO',
+  'POLIZA',
+  'ESTADO_CUENTA',
+  'CONTABLE',
+];
 
 export type AccessDecision =
   | 'ALLOW'
@@ -208,5 +214,7 @@ const ALL_CATEGORIES: readonly DocCategory[] = [
   'COTIZACION',
   'REPORTE',
   'POLIZA',
+  'ESTADO_CUENTA',
+  'CONTABLE',
   'OTRO',
 ];

@@ -25,6 +25,8 @@ const CATEGORIES = [
   'COTIZACION',
   'REPORTE',
   'POLIZA',
+  'ESTADO_CUENTA',
+  'CONTABLE',
   'OTRO',
 ] as const;
 

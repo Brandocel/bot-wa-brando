@@ -4,7 +4,13 @@ import {
   Logger,
   type OnModuleInit,
 } from '@nestjs/common';
-import type { DocStatus, Organization } from '@prisma/client';
+import {
+  Prisma,
+  type DocCategory,
+  type DocClass,
+  type DocStatus,
+  type Organization,
+} from '@prisma/client';
 import { config } from '../../config';
 import { PrismaService } from '../../infrastructure/persistence/prisma.service';
 import {
@@ -15,6 +21,9 @@ import {
 import { isDeliverable, parseDocumentName } from './document-name.parser';
 import { parseDocumentContent } from './document-content.parser';
 import { DocumentContentService } from './document-content.service';
+import { CATEGORIAS, type Clasificacion } from './document-classification';
+import { DocumentClassifierService } from './document-classifier.service';
+import { contenidoSensible, esSensible } from './document-safety';
 
 /**
  * Sincronizador Drive → índice local.
@@ -31,9 +40,21 @@ import { DocumentContentService } from './document-content.service';
 
 const SYNC_STATE_ID = 'singleton';
 
+/** Documentos que se clasifican por pasada, de los que quedaron pendientes. */
+const LOTE_CLASIFICACION = 20;
+
+/** Sin Drive, cada cuánto se revisan los pendientes de clasificar. */
+const PENDIENTES_MS = 2 * 60 * 1000;
+
+/** Qué pasó con un archivo al indexarlo. */
+export type Resultado = 'indexado' | 'revision' | 'excluido' | 'sensible' | 'omitido';
+
 export interface SyncReport {
   indexed: number;
+  /** Esperan revisión en el panel. */
   quarantined: number;
+  /** Clasificados como no entregables: internos, ajenos o sensibles. */
+  excluded: number;
   deleted: number;
   skipped: number;
   errors: string[];
@@ -48,6 +69,7 @@ export class DriveSyncService implements OnModuleInit {
     private readonly prisma: PrismaService,
     @Inject(DOCUMENT_SOURCE_PORT) private readonly source: DocumentSourcePort,
     private readonly contenido: DocumentContentService,
+    private readonly clasificador: DocumentClassifierService,
   ) {}
 
   onModuleInit(): void {
@@ -55,6 +77,15 @@ export class DriveSyncService implements OnModuleInit {
       this.logger.warn(
         'Sin GOOGLE_SERVICE_ACCOUNT_JSON: la sincronización con Drive queda apagada.',
       );
+
+      // Aunque no haya Drive, lo que suben los conectores de PC también
+      // tiene documentos por clasificar.
+      const timer = setInterval(() => {
+        this.clasificarPendientes().catch((err: unknown) =>
+          this.logger.error(`clasificación de pendientes falló: ${String(err)}`),
+        );
+      }, PENDIENTES_MS);
+      timer.unref();
       return;
     }
 
@@ -75,13 +106,7 @@ export class DriveSyncService implements OnModuleInit {
    * completo de su carpeta; después solo cambios.
    */
   async sync(): Promise<SyncReport> {
-    const report: SyncReport = {
-      indexed: 0,
-      quarantined: 0,
-      deleted: 0,
-      skipped: 0,
-      errors: [],
-    };
+    const report = reporteVacio();
 
     // Un solo sync a la vez: dos pasadas concurrentes se pisan el cursor.
     if (this.running) {
@@ -99,6 +124,7 @@ export class DriveSyncService implements OnModuleInit {
 
       if (organizations.length === 0) {
         report.errors.push('no hay organizaciones activas registradas');
+        await this.clasificarLote(report);
         return report;
       }
 
@@ -143,14 +169,10 @@ export class DriveSyncService implements OnModuleInit {
         await this.incremental(state.pageToken, organizations, report);
       }
 
-      // Y una segunda oportunidad a lo que quedó en cuarentena: las reglas
-      // de nombre mejoran con el tiempo, y un archivo que ayer no se
-      // entendía hoy puede entenderse sin que nadie lo vuelva a subir.
-      await this.recuperarCuarentena(report);
-
-      // Y se lee por dentro lo que se indexó antes de que el bot supiera
-      // leer: un lote por pasada, sin /resync.
-      await this.leerPendientes(report);
+      // Y se clasifica lo pendiente: lo indexado antes de que existiera el
+      // clasificador y lo que el modelo no alcanzó a contestar. Lo que está
+      // en cuarentena ya NO se promueve solo: ahí espera a una persona.
+      await this.clasificarLote(report);
 
       return report;
     } finally {
@@ -282,167 +304,302 @@ export class DriveSyncService implements OnModuleInit {
   /**
    * Indexa un archivo que llegó por fuera del barrido de Drive (el conector
    * de PC). Mismas reglas que Drive: mismo parser, misma lectura de
-   * contenido, mismo destino. true = quedó en el índice.
+   * contenido, misma clasificación, mismo destino.
    */
-  async indexarArchivo(file: SourceFile, organization: Organization): Promise<boolean> {
-    const report: SyncReport = { indexed: 0, quarantined: 0, deleted: 0, skipped: 0, errors: [] };
-    await this.upsert(file, organization, report);
-    return report.indexed + report.quarantined > 0;
+  async indexarArchivo(file: SourceFile, organization: Organization): Promise<Resultado> {
+    return this.upsert(file, organization, reporteVacio());
   }
 
   /**
-   * Escribe el archivo en el índice. Cuando falta la categoría o el periodo,
-   * la fila entra igual pero en QUARANTINE: queda visible para el operador
-   * e invisible para la búsqueda.
+   * Escribe el archivo en el índice, ya clasificado.
+   *
+   * El orden importa: primero las reglas duras (nombre y contenido con
+   * credenciales), después el clasificador, y al final lo que haya decidido
+   * una persona. Nada de lo que venga después de las reglas duras puede
+   * volver entregable algo que ellas bloquearon.
    */
   private async upsert(
     file: SourceFile,
     organization: Organization,
     report: SyncReport,
-  ): Promise<void> {
+  ): Promise<Resultado> {
     if (!isDeliverable(file.mimeType)) {
       report.skipped += 1;
-      return;
+      return 'omitido';
     }
 
-    const parsed = parseDocumentName(file.name, file.folderPath);
+    const previo = await this.prisma.document.findUnique({
+      where: { driveFileId: file.id },
+      select: {
+        driveVersion: true,
+        extractedText: true,
+        status: true,
+        docClass: true,
+        classifiedBy: true,
+        classifiedVersion: true,
+        classification: true,
+      },
+    });
+    const mismaVersion = previo !== null && previo.driveVersion === file.version;
+
+    // Credenciales por nombre o carpeta: ni se lee ni se le pregunta a nadie.
+    if (esSensible([...file.folderPath, file.name].join('/'))) {
+      return this.descartarSensible(file, organization, 'el nombre o la carpeta indican credenciales', 'reglas', report);
+    }
+    if (mismaVersion && previo.docClass === 'SENSIBLE') {
+      return this.descartarSensible(file, organization, motivoDe(previo.classification), 'reglas', report);
+    }
 
     /**
      * El texto de adentro se lee una vez por versión del archivo. Si ya
      * lo teníamos y el archivo no cambió, no se vuelve a bajar.
      */
-    const previo = await this.prisma.document.findUnique({
-      where: { driveFileId: file.id },
-      select: { driveVersion: true, extractedText: true },
-    });
-    const extractedText =
-      previo && previo.driveVersion === file.version && previo.extractedText !== null
-        ? previo.extractedText
+    const contenido =
+      mismaVersion && previo.extractedText !== null
+        ? sinCarpeta(previo.extractedText)
         : ((await this.contenido.leer(file)) ?? '');
 
-    const meta = combinar(parsed, extractedText);
+    // Y por contenido, antes de mandárselo al modelo: un secreto no se le
+    // enseña a nadie para preguntarle si es un secreto.
+    if (contenidoSensible(contenido)) {
+      return this.descartarSensible(file, organization, 'el contenido trae contraseñas o llaves', 'reglas', report);
+    }
 
-    /**
-     * Todo lo entregable entra al índice, diga lo que diga el nombre.
-     *
-     * La empresa sale de la carpeta raíz, nunca del nombre, así que un
-     * archivo mal nombrado no puede acabar en manos de otro cliente: lo
-     * peor que le pasa es quedar como OTRO y sin mes. Y así se encuentra
-     * igual, por folio, por nombre o preguntando "qué tienes". Dejarlo en
-     * cuarentena era dejar fuera justo los CFDI reales, que nunca traen
-     * "FACTURA_2026-02" en el nombre.
-     */
-    const status: DocStatus = 'INDEXED';
+    // Una clasificación se hace una vez por versión. La de reglas se repite
+    // cuando ya hay modelo: fue un "no sé" por falta de él.
+    const guardada =
+      mismaVersion &&
+      previo.classifiedVersion === file.version &&
+      !(previo.classifiedBy === 'reglas' && this.clasificador.conModelo)
+        ? clasificacionGuardada(previo.classification)
+        : null;
+
+    const clas =
+      guardada ??
+      (await this.clasificador.clasificar({
+        name: file.name,
+        folderPath: file.folderPath,
+        mimeType: file.mimeType,
+        sizeBytes: file.sizeBytes,
+        texto: contenido,
+        organizacion: organization.name,
+      }));
+
+    if (clas?.clase === 'SENSIBLE') {
+      return this.descartarSensible(file, organization, clas.motivo, clas.fuente, report);
+    }
+
+    // Lo que decidió una persona se respeta aunque el archivo cambie de
+    // versión: aprobó "el Excel del contador", no una versión concreta.
+    let clase: DocClass | null = clas?.clase ?? null;
+    let classifiedBy: string | null = clas?.fuente ?? null;
+    if (
+      previo?.classifiedBy === 'operador' &&
+      (previo.docClass === 'ENTREGABLE' || previo.docClass === 'INTERNO')
+    ) {
+      clase = previo.docClass;
+      classifiedBy = 'operador';
+    }
+
+    const status: DocStatus =
+      clase === 'ENTREGABLE'
+        ? 'INDEXED'
+        : clase === 'INTERNO'
+          ? 'EXCLUDED'
+          : clase === 'DUDOSO'
+            ? 'QUARANTINE'
+            : // El modelo no contestó: lo que ya estaba no se degrada por un
+              // fallo de la API, y lo nuevo espera sin entregarse.
+              mismaVersion && previo.status !== 'DELETED'
+              ? previo.status
+              : 'QUARANTINE';
+
+    const meta = combinar(parseDocumentName(file.name, file.folderPath), contenido, clas);
+
+    // Las carpetas también se buscan: "la foto del cenote" tiene que dar con
+    // Cenote/galeria/vista.png aunque el archivo no diga nada de cenotes.
+    const extractedText = conCarpeta(contenido, file.folderPath);
+
+    const datos = {
+      organizationId: organization.id,
+      driveVersion: file.version,
+      name: file.name,
+      mimeType: file.mimeType,
+      sizeBytes: file.sizeBytes,
+      category: meta.category,
+      period: meta.period,
+      folio: meta.folio,
+      extractedText,
+      status,
+      docClass: clase,
+      summary: clas?.resumen ?? null,
+      counterpart: clas?.contraparte ?? null,
+      classifiedBy,
+      // Sin respuesta del modelo queda sin versión: se reintenta después.
+      classifiedVersion: clas ? file.version : null,
+      classification: clas ? guardarClasificacion(clas) : Prisma.DbNull,
+    };
 
     await this.prisma.document.upsert({
       where: { driveFileId: file.id },
-      create: {
-        organizationId: organization.id,
-        driveFileId: file.id,
-        driveVersion: file.version,
-        name: file.name,
-        mimeType: file.mimeType,
-        sizeBytes: file.sizeBytes,
-        category: meta.category,
-        period: meta.period,
-        folio: meta.folio,
-        extractedText,
-        status,
-      },
-      update: {
-        organizationId: organization.id,
-        driveVersion: file.version,
-        name: file.name,
-        mimeType: file.mimeType,
-        sizeBytes: file.sizeBytes,
-        category: meta.category,
-        period: meta.period,
-        folio: meta.folio,
-        extractedText,
-        status,
-      },
+      create: { driveFileId: file.id, ...datos },
+      update: datos,
     });
 
-    if (status === 'INDEXED') report.indexed += 1;
-    else report.quarantined += 1;
-  }
-
-  /**
-   * Reintenta clasificar lo que está en cuarentena con las reglas actuales.
-   *
-   * Solo por nombre (la ruta de carpetas no se guarda), y solo cambia de
-   * estado lo que ahora sí se entiende. Es lo que hace que subir un
-   * "FACTURA_1782860673094_365...pdf" no exija un /resync a mano después
-   * de cada mejora del clasificador.
-   */
-  private async recuperarCuarentena(report: SyncReport): Promise<void> {
-    const encuarentena = await this.prisma.document.findMany({
-      where: { status: 'QUARANTINE' },
-      select: { id: true, name: true },
-      take: 500,
-    });
-
-    for (const doc of encuarentena) {
-      const meta = combinar(parseDocumentName(doc.name), null);
-
-      await this.prisma.document.update({
-        where: { id: doc.id },
-        data: {
-          category: meta.category,
-          period: meta.period,
-          folio: meta.folio,
-          status: 'INDEXED',
-        },
-      });
+    if (status === 'INDEXED') {
       report.indexed += 1;
+      return 'indexado';
     }
+    if (status === 'EXCLUDED') {
+      report.excluded += 1;
+      return 'excluido';
+    }
+    report.quarantined += 1;
+    return 'revision';
   }
 
   /**
-   * Lee por dentro los documentos que aún no se han leído.
-   *
-   * Es lo que hace que la lectura de contenido alcance a lo que ya
-   * estaba indexado cuando se estrenó, sin obligar a un /resync. Un lote
-   * chico por pasada: cada archivo es una descarga, y la sincronización
-   * no tiene por qué tardar minutos por esto. Lo que no se pudo leer se
-   * marca con texto vacío para no bajarlo en cada pasada.
+   * Un archivo con credenciales: la fila queda para la auditoría y para
+   * que el conector no lo vuelva a subir, pero sin texto, sin resumen y,
+   * si vino de una PC, sin los bytes.
    */
-  private async leerPendientes(report: SyncReport): Promise<void> {
+  private async descartarSensible(
+    file: SourceFile,
+    organization: Organization,
+    motivo: string,
+    fuente: 'modelo' | 'reglas',
+    report: SyncReport,
+  ): Promise<Resultado> {
+    const datos = {
+      organizationId: organization.id,
+      driveVersion: file.version,
+      name: file.name,
+      mimeType: file.mimeType,
+      sizeBytes: file.sizeBytes,
+      category: 'OTRO' as const,
+      period: null,
+      folio: null,
+      extractedText: null,
+      status: 'EXCLUDED' as const,
+      docClass: 'SENSIBLE' as const,
+      summary: null,
+      counterpart: null,
+      classifiedBy: fuente,
+      classifiedVersion: file.version,
+      classification: { clase: 'SENSIBLE', fuente, motivo },
+    };
+
+    // Los de Drive no tienen bytes aquí: el deleteMany no encuentra nada.
+    await this.prisma.$transaction([
+      this.prisma.document.upsert({
+        where: { driveFileId: file.id },
+        create: { driveFileId: file.id, ...datos },
+        update: datos,
+      }),
+      this.prisma.storedFile.deleteMany({
+        where: { id: file.id, organizationId: organization.id },
+      }),
+    ]);
+
+    this.logger.warn(`${organization.name}: "${file.name}" descartado como sensible (${motivo})`);
+    report.excluded += 1;
+    return 'sensible';
+  }
+
+  /**
+   * Clasifica lo que se indexó antes de que existiera el clasificador, lo
+   * que el modelo no alcanzó a contestar y lo que se decidió por reglas a
+   * falta de modelo. Un lote chico por pasada: cada archivo es una
+   * descarga y una llamada al modelo.
+   */
+  private async clasificarLote(report: SyncReport): Promise<void> {
     const pendientes = await this.prisma.document.findMany({
       where: {
-        status: 'INDEXED',
-        extractedText: null,
-        mimeType: { in: ['application/pdf', 'text/plain', 'text/csv'] },
+        status: { in: ['INDEXED', 'QUARANTINE'] },
+        OR: [
+          { classifiedVersion: null },
+          ...(this.clasificador.conModelo ? [{ classifiedBy: 'reglas' }] : []),
+        ],
       },
-      select: { id: true, driveFileId: true, name: true, mimeType: true, sizeBytes: true },
+      include: { organization: true },
       orderBy: { indexedAt: 'desc' },
-      take: 25,
+      take: LOTE_CLASIFICACION,
     });
 
     for (const doc of pendientes) {
       try {
-        const texto = await this.contenido.leer({
-          id: doc.driveFileId,
-          name: doc.name,
-          mimeType: doc.mimeType,
-          sizeBytes: doc.sizeBytes,
-        });
-        const meta = combinar(parseDocumentName(doc.name), texto);
-
-        await this.prisma.document.update({
-          where: { id: doc.id },
-          data: {
-            category: meta.category,
-            period: meta.period,
-            folio: meta.folio,
-            extractedText: texto ?? '',
+        await this.upsert(
+          {
+            id: doc.driveFileId,
+            version: doc.driveVersion,
+            name: doc.name,
+            mimeType: doc.mimeType,
+            sizeBytes: doc.sizeBytes,
+            parentIds: [],
+            folderPath: carpetasDe(doc.extractedText),
+            removed: false,
           },
-        });
+          doc.organization,
+          report,
+        );
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
-        report.errors.push(`leer "${doc.name}": ${detail}`);
+        report.errors.push(`clasificar "${doc.name}": ${detail}`);
       }
     }
+  }
+
+  /**
+   * Solo el lote de clasificación, para cuando no hay Drive que sondear:
+   * las empresas con conector de PC también tienen documentos por revisar.
+   */
+  async clasificarPendientes(): Promise<SyncReport> {
+    const report = reporteVacio();
+    if (this.running) return report;
+    this.running = true;
+    try {
+      await this.clasificarLote(report);
+      return report;
+    } finally {
+      this.running = false;
+    }
+  }
+
+  /**
+   * Lo que una persona decide desde el panel sobre un documento en
+   * revisión. Aprobar nunca pasa por encima de las reglas duras: un
+   * archivo con credenciales no se vuelve entregable ni a mano.
+   */
+  async revisar(
+    documentId: string,
+    decision: 'aprobar' | 'rechazar',
+    por: string,
+  ): Promise<{ status: DocStatus }> {
+    const doc = await this.prisma.document.findUnique({ where: { id: documentId } });
+    if (!doc || doc.status === 'DELETED') throw new RevisionError('el documento ya no existe');
+
+    if (decision === 'aprobar') {
+      const ruta = [...carpetasDe(doc.extractedText), doc.name].join('/');
+      if (doc.docClass === 'SENSIBLE' || esSensible(ruta) || contenidoSensible(doc.extractedText)) {
+        throw new RevisionError('parece contener credenciales: no se puede entregar');
+      }
+    }
+
+    const status: DocStatus = decision === 'aprobar' ? 'INDEXED' : 'EXCLUDED';
+    await this.prisma.document.update({
+      where: { id: doc.id },
+      data: {
+        status,
+        docClass: decision === 'aprobar' ? 'ENTREGABLE' : 'INTERNO',
+        classifiedBy: 'operador',
+        classifiedVersion: doc.driveVersion,
+        reviewedBy: por,
+        reviewedAt: new Date(),
+      },
+    });
+
+    this.logger.log(`"${doc.name}" ${decision === 'aprobar' ? 'aprobado' : 'rechazado'} por ${por}`);
+    return { status };
   }
 
   /** Fuerza un barrido completo: borra el cursor y vuelve a leer todo. */
@@ -459,29 +616,95 @@ export class DriveSyncService implements OnModuleInit {
   }
 }
 
+export class RevisionError extends Error {}
+
+function reporteVacio(): SyncReport {
+  return { indexed: 0, quarantined: 0, excluded: 0, deleted: 0, skipped: 0, errors: [] };
+}
+
+/** Marca de la línea con la ruta de carpetas dentro de extractedText. */
+const MARCA_CARPETA = '\n[carpeta] ';
+
+function conCarpeta(texto: string, carpetas: readonly string[]): string {
+  return carpetas.length > 0 ? texto + MARCA_CARPETA + carpetas.join(' / ') : texto;
+}
+
+function sinCarpeta(texto: string): string {
+  const i = texto.indexOf(MARCA_CARPETA);
+  return i === -1 ? texto : texto.slice(0, i);
+}
+
+/** La ruta de carpetas que se guardó junto al texto, de vuelta en lista. */
+function carpetasDe(texto: string | null): string[] {
+  if (!texto) return [];
+  const i = texto.indexOf(MARCA_CARPETA);
+  return i === -1 ? [] : texto.slice(i + MARCA_CARPETA.length).split(' / ');
+}
+
+function guardarClasificacion(c: Clasificacion): Prisma.InputJsonObject {
+  return {
+    clase: c.clase,
+    fuente: c.fuente,
+    categoria: c.categoria,
+    periodo: c.periodo?.toISOString() ?? null,
+    folio: c.folio,
+    contraparte: c.contraparte,
+    resumen: c.resumen,
+    motivo: c.motivo,
+  };
+}
+
+function clasificacionGuardada(json: Prisma.JsonValue | null): Clasificacion | null {
+  if (!json || typeof json !== 'object' || Array.isArray(json)) return null;
+  const j = json as Record<string, unknown>;
+  const clases: readonly string[] = ['ENTREGABLE', 'INTERNO', 'SENSIBLE', 'DUDOSO'];
+  if (typeof j.clase !== 'string' || !clases.includes(j.clase)) return null;
+  const texto = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+  return {
+    clase: j.clase as DocClass,
+    fuente: j.fuente === 'modelo' ? 'modelo' : 'reglas',
+    categoria: (CATEGORIAS as readonly string[]).includes(String(j.categoria))
+      ? (j.categoria as DocCategory)
+      : null,
+    periodo: typeof j.periodo === 'string' ? new Date(j.periodo) : null,
+    folio: texto(j.folio),
+    contraparte: texto(j.contraparte),
+    resumen: texto(j.resumen),
+    motivo: texto(j.motivo) ?? '',
+  };
+}
+
+function motivoDe(json: Prisma.JsonValue | null): string {
+  const j = json && typeof json === 'object' && !Array.isArray(json) ? json : {};
+  return typeof j.motivo === 'string' ? j.motivo : 'sensible';
+}
+
 /**
- * Nombre primero, contenido después.
+ * Nombre primero, luego el clasificador, luego el contenido por reglas.
  *
  * El nombre lo puso una persona pensando en encontrarlo; el contenido trae
  * fechas de todo tipo (pago, vencimiento, impresión). Así que el nombre
- * manda y el texto solo rellena lo que el nombre dejó en blanco: el mes de
+ * manda y lo demás solo rellena lo que el nombre dejó en blanco: el mes de
  * "Cotizacion_Vega_2026", el folio de "invoice-6a6d58c7.pdf", el tipo de
- * "REP-0045.pdf".
+ * "REP-0045.pdf". El modelo leyó el mismo texto que las reglas, pero lo
+ * entiende mejor: va antes que ellas.
  */
 function combinar(
   nombre: ReturnType<typeof parseDocumentName>,
   texto: string | null,
-): { category: NonNullable<ReturnType<typeof parseDocumentName>['category']>; period: Date | null; folio: string | null } {
+  clas: Clasificacion | null,
+): { category: DocCategory; period: Date | null; folio: string | null } {
   const contenido = parseDocumentContent(texto);
+  const delTexto = clas?.periodo ?? contenido.period;
   // Una marca de tiempo en el nombre es la fecha de descarga: si el texto
   // trae la fecha de emisión, esa es la buena.
   const period = nombre.periodoDebil
-    ? (contenido.period ?? nombre.period)
-    : (nombre.period ?? contenido.period);
+    ? (delTexto ?? nombre.period)
+    : (nombre.period ?? delTexto);
 
   return {
-    category: nombre.category ?? contenido.category ?? 'OTRO',
+    category: nombre.category ?? clas?.categoria ?? contenido.category ?? 'OTRO',
     period,
-    folio: nombre.folio ?? contenido.folio,
+    folio: nombre.folio ?? clas?.folio ?? contenido.folio,
   };
 }

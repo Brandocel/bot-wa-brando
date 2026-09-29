@@ -5,6 +5,7 @@ import {
   type DocumentSourcePort,
 } from '../ports/document-source.port';
 import { normalizarContenido } from './document-content.parser';
+import { esOffice, textoDeOffice } from './office-text';
 
 /**
  * Lee el texto de un documento para que el bot sepa qué contiene ANTES de
@@ -38,12 +39,16 @@ export class DocumentContentService {
     @Inject(DOCUMENT_SOURCE_PORT) private readonly source: DocumentSourcePort,
   ) {}
 
-  /** ¿Este tipo de archivo trae texto que se pueda leer sin OCR? */
+  /**
+   * ¿Este tipo de archivo trae texto que se pueda leer sin OCR? Las
+   * imágenes no: se clasifican por su nombre y su carpeta.
+   */
   static legible(mimeType: string): boolean {
     return (
       mimeType === 'application/pdf' ||
       mimeType === 'text/plain' ||
-      mimeType === 'text/csv'
+      mimeType === 'text/csv' ||
+      esOffice(mimeType)
     );
   }
 
@@ -66,7 +71,9 @@ export class DocumentContentService {
       const crudo =
         file.mimeType === 'application/pdf'
           ? await textoDePdf(bytes)
-          : bytes.toString('utf8');
+          : esOffice(file.mimeType)
+            ? (textoDeOffice(bytes, file.mimeType) ?? '')
+            : bytes.toString('utf8');
 
       const texto = normalizarContenido(crudo).slice(0, MAX_CHARS);
       return texto.length > 0 ? texto : null;

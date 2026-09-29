@@ -18,6 +18,10 @@ import type {
   TicketState,
 } from '@prisma/client';
 import { DirectoryService } from '../../../application/support/directory.service';
+import {
+  DriveSyncService,
+  RevisionError,
+} from '../../../application/support/drive-sync.service';
 import { PrismaService } from '../../persistence/prisma.service';
 import { OutboxDispatcher } from '../../persistence/outbox.dispatcher';
 import { PanelAuthService, SESSION_COOKIE } from './panel-auth.service';
@@ -43,6 +47,7 @@ export class PanelApiController {
     private readonly auth: PanelAuthService,
     private readonly directory: DirectoryService,
     private readonly outbox: OutboxDispatcher,
+    private readonly sync: DriveSyncService,
   ) {}
 
   /**
@@ -182,22 +187,63 @@ export class PanelApiController {
     });
   }
 
-  /** Documentos que Drive tiene y el bot no pudo clasificar. */
+  /**
+   * Documentos que el clasificador no se atrevió a decidir (revision) o
+   * que descartó como internos o ajenos (descartados). Los sensibles no se
+   * listan: no hay nada que aprobar ahí.
+   */
   @UseGuards(PanelGuard)
   @Get('cuarentena')
-  async quarantine() {
+  async quarantine(@Query('vista') vista?: string) {
+    const where: Prisma.DocumentWhereInput =
+      vista === 'descartados'
+        ? { status: 'EXCLUDED', docClass: { not: 'SENSIBLE' } }
+        : { status: 'QUARANTINE' };
+
     return this.prisma.document.findMany({
-      where: { status: 'QUARANTINE' },
+      where,
       orderBy: { indexedAt: 'desc' },
-      take: 100,
+      take: 200,
       select: {
         id: true,
         name: true,
         mimeType: true,
         indexedAt: true,
+        category: true,
+        period: true,
+        summary: true,
+        counterpart: true,
+        docClass: true,
+        classifiedBy: true,
+        classification: true,
+        reviewedBy: true,
         organization: { select: { name: true } },
       },
     });
+  }
+
+  /**
+   * Aprobar vuelve entregable un documento; rechazar lo deja fuera. Solo
+   * ADMIN: aprobar es decidir qué recibe un cliente por WhatsApp.
+   */
+  @UseGuards(PanelGuard)
+  @Post('cuarentena/revisar')
+  async review(
+    @Req() req: PanelRequest,
+    @Body() body: { id?: string; decision?: string },
+  ) {
+    const por = this.requireAdmin(req);
+    if (!body.id) throw new BadRequestException('falta el id');
+    if (body.decision !== 'aprobar' && body.decision !== 'rechazar') {
+      throw new BadRequestException('la decisión debe ser aprobar o rechazar');
+    }
+
+    try {
+      return await this.sync.revisar(body.id, body.decision, por);
+    } catch (err) {
+      if (err instanceof RevisionError) throw new BadRequestException(err.message);
+      throw err;
+    }
   }
 
   /**

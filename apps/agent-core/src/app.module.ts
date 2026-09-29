@@ -25,6 +25,7 @@ import { ReplyWriterService } from './application/support/reply-writer.service';
 import { SupportStrategy } from './application/support/support.strategy';
 import { DocumentSearchService } from './application/support/document-search.service';
 import { DocumentContentService } from './application/support/document-content.service';
+import { DocumentClassifierService } from './application/support/document-classifier.service';
 import { SupportCommandsService } from './application/support/support-commands.service';
 import { TicketService } from './application/support/ticket.service';
 import { DOCUMENT_SOURCE_PORT } from './application/ports/document-source.port';
@@ -96,6 +97,7 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     AccessScopeService,
     DocumentSearchService,
     DocumentContentService,
+    DocumentClassifierService,
     TicketService,
     TicketAssignmentService,
     SolicitudService,

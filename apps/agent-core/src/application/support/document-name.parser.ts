@@ -32,6 +32,10 @@ const CATEGORY_PATTERNS: [RegExp, DocCategory][] = [
   [/\b(facturas?|cfdis?|invoices?)\b/, 'FACTURA'],
   [/\b(contratos?|contracts?)\b/, 'CONTRATO'],
   [/\b(cotizacion|cotizaciones|quotes?)\b/, 'COTIZACION'],
+  // Antes que REPORTE: "Reporte_contable_junio" es del contador, no un
+  // reporte cualquiera, y gana el primer patrón de la lista.
+  [/\b(estados? de cuenta|estado cuenta|edo cta)\b/, 'ESTADO_CUENTA'],
+  [/\b(contables?|contabilidad|balanzas?|declaracion|declaraciones)\b/, 'CONTABLE'],
   [/\b(reportes?|reports?|informes?)\b/, 'REPORTE'],
   [/\b(polizas?|seguros?)\b/, 'POLIZA'],
 ];

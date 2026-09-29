@@ -352,6 +352,8 @@ enum DocCategory {
   COTIZACION
   REPORTE
   POLIZA
+  ESTADO_CUENTA // estados de cuenta bancarios o de proveedor
+  CONTABLE // balanzas, declaraciones, papeles de trabajo del contador
   OTRO
 }
 
@@ -377,8 +379,17 @@ model AccessGrant {
 
 enum DocStatus {
   INDEXED // metadatos verificados: entregable
-  QUARANTINE // no se pudo determinar organización o periodo: invisible
+  QUARANTINE // el clasificador no está seguro: espera revisión en el panel
+  EXCLUDED // clasificado como no entregable (interno, ajeno o sensible)
   DELETED // borrado en Drive; la fila se conserva para la auditoría
+}
+
+/// Qué es un archivo para el cliente, según el clasificador.
+enum DocClass {
+  ENTREGABLE // documento del cliente: se puede mandar por WhatsApp
+  INTERNO // código, logs, imágenes del sitio... no es del cliente
+  SENSIBLE // credenciales o llaves: no se guarda su contenido
+  DUDOSO // no hay certeza: lo decide una persona en el panel
 }
 
 model Document {
@@ -396,10 +407,24 @@ model Document {
   extractedText  String?     @db.Text
   indexedAt      DateTime    @default(now())
 
+  /// Clasificación del contenido. null = todavía sin clasificar.
+  docClass          DocClass?
+  summary           String?   @db.Text
+  counterpart       String? // a nombre de quién va o de quién viene
+  /// modelo | reglas | operador
+  classifiedBy      String?
+  /// driveVersion que se clasificó: con la misma versión no se repite.
+  classifiedVersion String?
+  /// Lo que devolvió el clasificador (tipo, periodo, folio, motivo...).
+  classification    Json?
+  reviewedBy        String? // email del panel que aprobó o rechazó
+  reviewedAt        DateTime?
+
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@index([organizationId, category, period])
   @@index([status])
+  @@index([classifiedVersion])
 }
 
 // ─── Conector de PC ───────────────────────────────────────────────────────
