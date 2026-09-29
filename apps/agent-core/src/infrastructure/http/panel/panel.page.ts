@@ -720,7 +720,7 @@ const VISTAS = {
       for (const o of filas.filter((x) => x.sourceType === 'PC')) pintarEstadoPc(o.id);
     }, 0);
 
-    return formulario + '<div id="codigo-pc"></div>' + tabla(
+    return formulario + '<div id="codigo-pc">' + codigoPcVigente() + '</div>' + tabla(
       ['Empresa', 'RFC', 'Origen de documentos', 'Números', 'Documentos', 'Tickets', ''],
       filas.map((o) => '<tr>' +
         '<td>' + esc(o.name) + (o.active ? '' : ' <span class="pill warn">inactiva</span>') + '</td>' +
@@ -946,6 +946,13 @@ async function pintarEstadoPc(id) {
     return;
   }
 
+  // Ya se conectó con el código: la tarjeta sobra.
+  if (codigoPc && codigoPc.organizationId === id) {
+    codigoPc = null;
+    const caja = document.getElementById('codigo-pc');
+    if (caja) caja.innerHTML = '';
+  }
+
   const visto = r.devices.map((d) => d.lastSeenAt).filter(Boolean).sort().pop();
   // El conector revisa cada pocos minutos: más de 30 sin noticias es que la PC está apagada.
   const enLinea = visto && Date.now() - new Date(visto).getTime() < 30 * 60000;
@@ -959,21 +966,35 @@ async function pintarEstadoPc(id) {
     ).join(', ');
 }
 
+/**
+ * El último código generado. Se guarda aquí porque el panel se repinta
+ * cada 20 s: sin esto, la tarjeta desaparecía mientras la persona iba a la
+ * otra computadora a teclearlo.
+ */
+let codigoPc = null;
+
+function codigoPcVigente() {
+  if (!codigoPc || new Date(codigoPc.expiresAt).getTime() < Date.now()) return '';
+  return codigoPc.html;
+}
+
 async function mostrarCodigoPc(id, nombre) {
   const r = await enviar('empresas/conector/codigo', { id });
   const caja = document.getElementById('codigo-pc');
-  if (!caja) return;
-  caja.innerHTML =
+  const html =
     '<div class="card codigo-pc">' +
       '<h3>Conectar la computadora de ' + esc(nombre) + '</h3>' +
       '<div class="codigo-grande">' + r.code.slice(0, 3) + ' ' + r.code.slice(3) + '</div>' +
       '<ol class="muted">' +
-        '<li>En la computadora del cliente, abre el conector.</li>' +
+        '<li>En la computadora del cliente, abre el conector. Como dirección del bot usa <code>' + esc(location.origin) + '</code></li>' +
         '<li>Escribe este código cuando lo pida.</li>' +
         '<li>Elige la carpeta donde guarda sus documentos. Listo.</li>' +
       '</ol>' +
       '<p class="muted small">Vence a las ' + hora(r.expiresAt) + '. Sirve una sola vez.</p>' +
     '</div>';
+  codigoPc = { organizationId: id, expiresAt: r.expiresAt, html };
+  if (!caja) return;
+  caja.innerHTML = html;
   caja.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
