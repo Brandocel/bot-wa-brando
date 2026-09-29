@@ -130,7 +130,11 @@ export class DriveCommandsService {
       `En cuarentena: ${quarantined}`,
       '',
       'Empresas:',
-      ...organizations.map((o) => `• ${o.name} → ${o.driveFolderId}`),
+      ...organizations.map((o) =>
+        o.sourceType === 'PC'
+          ? `• ${o.name} → su computadora (conector)`
+          : `• ${o.name} → ${o.driveFolderId}`,
+      ),
     ];
 
     if (state?.lastError) lines.push('', `Último error: ${state.lastError}`);

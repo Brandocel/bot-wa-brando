@@ -205,13 +205,15 @@ export class DirectoryService {
 
   async addOrganization(input: {
     name: string;
-    driveFolderId: string;
+    sourceType?: 'DRIVE' | 'PC';
+    driveFolderId?: string;
     taxId?: string;
   }): Promise<{ id: string; name: string }> {
     const organization = await this.prisma.organization.create({
       data: {
         name: input.name.trim(),
-        driveFolderId: input.driveFolderId.trim(),
+        sourceType: input.sourceType ?? 'DRIVE',
+        driveFolderId: input.driveFolderId?.trim() || null,
         taxId: input.taxId?.trim() || null,
       },
     });

@@ -91,8 +91,10 @@ export class DriveSyncService implements OnModuleInit {
     this.running = true;
 
     try {
+      // Solo las que leen de Drive. Las de PC no se sondean: su conector
+      // empuja los archivos por /connector y se indexan al llegar.
       const organizations = await this.prisma.organization.findMany({
-        where: { active: true },
+        where: { active: true, sourceType: 'DRIVE', driveFolderId: { not: null } },
       });
 
       if (organizations.length === 0) {
@@ -168,6 +170,7 @@ export class DriveSyncService implements OnModuleInit {
     report: SyncReport,
   ): Promise<void> {
     try {
+      if (!organization.driveFolderId) return;
       const files = await this.source.listFolder(organization.driveFolderId);
 
       for (const file of files) {
@@ -262,7 +265,11 @@ export class DriveSyncService implements OnModuleInit {
     file: SourceFile,
     organizations: Organization[],
   ): Organization | null {
-    const roots = new Map(organizations.map((o) => [o.driveFolderId, o]));
+    const roots = new Map(
+      organizations
+        .filter((o) => o.driveFolderId !== null)
+        .map((o) => [o.driveFolderId!, o]),
+    );
 
     for (const parentId of file.parentIds) {
       const direct = roots.get(parentId);
@@ -270,6 +277,17 @@ export class DriveSyncService implements OnModuleInit {
     }
 
     return null;
+  }
+
+  /**
+   * Indexa un archivo que llegó por fuera del barrido de Drive (el conector
+   * de PC). Mismas reglas que Drive: mismo parser, misma lectura de
+   * contenido, mismo destino. true = quedó en el índice.
+   */
+  async indexarArchivo(file: SourceFile, organization: Organization): Promise<boolean> {
+    const report: SyncReport = { indexed: 0, quarantined: 0, deleted: 0, skipped: 0, errors: [] };
+    await this.upsert(file, organization, report);
+    return report.indexed + report.quarantined > 0;
   }
 
   /**
@@ -435,7 +453,7 @@ export class DriveSyncService implements OnModuleInit {
     // trae historia, así que sin esto el resync solo veía cambios futuros
     // y lo que se había perdido seguía perdido.
     await this.prisma.organization.updateMany({
-      where: { active: true },
+      where: { active: true, sourceType: 'DRIVE' },
       data: { lastScanAt: null },
     });
   }

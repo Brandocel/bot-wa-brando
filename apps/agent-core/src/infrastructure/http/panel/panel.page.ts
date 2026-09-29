@@ -675,34 +675,61 @@ const VISTAS = {
         <div class="campos">
           <label>Nombre<input id="emp-nombre" placeholder="Flores de Paula" required></label>
           <label>RFC <span class="muted">(opcional)</span><input id="emp-rfc" placeholder="FDP240101AB1"></label>
-          <label>Carpeta de Drive
-            <input id="emp-drive" placeholder="1a2B3c4D5e6F7g8H" required>
+          <label>¿De dónde salen sus documentos?
+            <select id="emp-origen">
+              <option value="PC">Su computadora</option>
+              <option value="DRIVE">Google Drive</option>
+            </select>
+          </label>
+          <label id="emp-drive-campo" hidden>Carpeta de Drive
+            <input id="emp-drive" placeholder="1a2B3c4D5e6F7g8H">
             <small class="muted">El id que sale en la URL de la carpeta.</small>
           </label>
         </div>
         <button type="submit">Crear empresa</button>
       </form>\` : '';
 
-    const esFalsa = (id) => id.startsWith('drive-folder-');
+    const esFalsa = (id) => !!id && id.startsWith('drive-folder-');
 
-    return formulario + tabla(
-      ['Empresa', 'RFC', 'Carpeta de Drive', 'Números', 'Documentos', 'Tickets', ''],
+    const origen = (o) => {
+      if (o.sourceType === 'PC') {
+        return '<span class="pill">Su computadora</span> ' +
+          '<span class="muted small" data-estado-pc="' + o.id + '">revisando…</span>';
+      }
+      return (esAdmin
+          ? '<input class="mono compacto" value="' + esc(o.driveFolderId) +
+            '" data-carpeta="' + o.id + '">'
+          : '<span class="mono">' + esc(o.driveFolderId) + '</span>') +
+        (esFalsa(o.driveFolderId) ? ' <span class="pill warn">de prueba</span>' : '');
+    };
+
+    const acciones = (o) => {
+      if (!esAdmin) return '';
+      const cambiar = '<select class="compacto" data-origen="' + o.id + '">' +
+        '<option value="DRIVE"' + (o.sourceType === 'DRIVE' ? ' selected' : '') + '>Drive</option>' +
+        '<option value="PC"' + (o.sourceType === 'PC' ? ' selected' : '') + '>Computadora</option>' +
+        '</select> ';
+      return cambiar + (o.sourceType === 'PC'
+        ? '<button class="mini" data-codigo-pc="' + o.id + '" data-nombre="' + esc(o.name) + '">Conectar PC</button>'
+        : '<button class="mini" data-guardar="' + o.id + '">Guardar</button>');
+    };
+
+    // El estado de cada conector se pide después de pintar la tabla: son
+    // consultas aparte y no deben frenar la vista.
+    setTimeout(() => {
+      for (const o of filas.filter((x) => x.sourceType === 'PC')) pintarEstadoPc(o.id);
+    }, 0);
+
+    return formulario + '<div id="codigo-pc"></div>' + tabla(
+      ['Empresa', 'RFC', 'Origen de documentos', 'Números', 'Documentos', 'Tickets', ''],
       filas.map((o) => '<tr>' +
         '<td>' + esc(o.name) + (o.active ? '' : ' <span class="pill warn">inactiva</span>') + '</td>' +
         '<td>' + esc(o.taxId ?? '—') + '</td>' +
-        '<td class="mono">' +
-          (esAdmin
-            ? '<input class="mono compacto" value="' + esc(o.driveFolderId) +
-              '" data-carpeta="' + o.id + '">'
-            : esc(o.driveFolderId)) +
-          (esFalsa(o.driveFolderId) ? ' <span class="pill warn">de prueba</span>' : '') +
-        '</td>' +
+        '<td>' + origen(o) + '</td>' +
         '<td>' + o._count.memberships + '</td>' +
         '<td>' + o._count.documents + '</td>' +
         '<td>' + o._count.tickets + '</td>' +
-        '<td class="acciones">' + (esAdmin
-          ? '<button class="mini" data-guardar="' + o.id + '">Guardar</button>'
-          : '') + '</td>' +
+        '<td class="acciones">' + acciones(o) + '</td>' +
       '</tr>'),
       'No hay empresas registradas.',
     );
@@ -779,7 +806,33 @@ document.addEventListener('input', (e) => {
   }, 400);
 });
 
-document.addEventListener('change', (e) => {
+document.addEventListener('change', async (e) => {
+  if (e.target.id === 'emp-origen') {
+    const drive = e.target.value === 'DRIVE';
+    document.getElementById('emp-drive-campo').hidden = !drive;
+    document.getElementById('emp-drive').required = drive;
+    return;
+  }
+
+  if (e.target.dataset.origen) {
+    const id = e.target.dataset.origen;
+    const sourceType = e.target.value;
+    let driveFolderId;
+    if (sourceType === 'DRIVE') {
+      driveFolderId = prompt('Id de la carpeta de Drive (vacío = la que tenía antes):');
+      if (driveFolderId === null) { pintar('empresas'); return; }
+    } else if (!confirm('¿Cambiar a "su computadora"? El bot dejará de leer su carpeta de Drive.')) {
+      pintar('empresas');
+      return;
+    }
+    try {
+      await enviar('empresas/origen', { id, sourceType, driveFolderId });
+      aviso(sourceType === 'PC' ? 'Listo. Pulsa "Conectar PC" para sacar el código.' : 'Listo. Se va a volver a leer la carpeta de Drive.');
+    } catch (err) { aviso(err.message, 'error'); }
+    pintar('empresas');
+    return;
+  }
+
   if (e.target.id !== 'rol') return;
   document.getElementById('permisos').hidden = e.target.value !== 'VIEWER';
 });
@@ -808,18 +861,45 @@ document.addEventListener('submit', async (e) => {
   if (e.target.id === 'form-empresa') {
     e.preventDefault();
     try {
-      await enviar('empresas', {
-        name: document.getElementById('emp-nombre').value,
+      const sourceType = document.getElementById('emp-origen').value;
+      const nombre = document.getElementById('emp-nombre').value;
+      const r = await enviar('empresas', {
+        name: nombre,
         taxId: document.getElementById('emp-rfc').value,
+        sourceType,
         driveFolderId: document.getElementById('emp-drive').value,
       });
-      aviso('Empresa creada. Comparte la carpeta con la cuenta de servicio y corre /sync.');
-      pintar('empresas');
+      if (sourceType === 'PC') {
+        aviso('Empresa creada. Ahora conecta su computadora con el código.');
+        await pintar('empresas');
+        await mostrarCodigoPc(r.id, nombre);
+      } else {
+        aviso('Empresa creada. Comparte la carpeta con la cuenta de servicio y corre /sync.');
+        pintar('empresas');
+      }
     } catch (err) { aviso(err.message, 'error'); }
   }
 });
 
 document.addEventListener('click', async (e) => {
+  const codigoPc = e.target.closest('[data-codigo-pc]');
+  if (codigoPc) {
+    try { await mostrarCodigoPc(codigoPc.dataset.codigoPc, codigoPc.dataset.nombre); }
+    catch (err) { aviso(err.message, 'error'); }
+    return;
+  }
+
+  const revocarPc = e.target.closest('[data-revocar-pc]');
+  if (revocarPc) {
+    if (!confirm('¿Desconectar este equipo? Deja de subir archivos; lo ya subido se queda.')) return;
+    try {
+      await enviar('empresas/conector/revocar', { id: revocarPc.dataset.revocarPc });
+      aviso('Equipo desconectado');
+      pintar('empresas');
+    } catch (err) { aviso(err.message, 'error'); }
+    return;
+  }
+
   const guardar = e.target.closest('[data-guardar]');
   if (guardar) {
     const id = guardar.dataset.guardar;
@@ -852,6 +932,50 @@ document.addEventListener('click', async (e) => {
     } catch (err) { aviso(err.message, 'error'); }
   }
 });
+
+// ── Conector de PC ──────────────────────────────────────────────────────
+
+async function pintarEstadoPc(id) {
+  const celda = document.querySelector('[data-estado-pc="' + id + '"]');
+  if (!celda) return;
+  const r = await api('empresas/conectores?id=' + encodeURIComponent(id));
+  if (!r) return;
+
+  if (r.devices.length === 0) {
+    celda.innerHTML = '<span class="pill warn">sin conectar</span>';
+    return;
+  }
+
+  const visto = r.devices.map((d) => d.lastSeenAt).filter(Boolean).sort().pop();
+  // El conector revisa cada pocos minutos: más de 30 sin noticias es que la PC está apagada.
+  const enLinea = visto && Date.now() - new Date(visto).getTime() < 30 * 60000;
+
+  celda.innerHTML =
+    (enLinea ? '<span class="pill ok">en línea</span>' : '<span class="pill warn">apagada</span>') +
+    ' ' + r.files + ' archivo(s)' +
+    (r.lastUploadAt ? ' · última subida ' + hace(r.lastUploadAt) : '') +
+    ' · ' + r.devices.map((d) =>
+      esc(d.name) + ' <button class="mini peligro" data-revocar-pc="' + d.id + '" title="Desconectar este equipo">×</button>'
+    ).join(', ');
+}
+
+async function mostrarCodigoPc(id, nombre) {
+  const r = await enviar('empresas/conector/codigo', { id });
+  const caja = document.getElementById('codigo-pc');
+  if (!caja) return;
+  caja.innerHTML =
+    '<div class="card codigo-pc">' +
+      '<h3>Conectar la computadora de ' + esc(nombre) + '</h3>' +
+      '<div class="codigo-grande">' + r.code.slice(0, 3) + ' ' + r.code.slice(3) + '</div>' +
+      '<ol class="muted">' +
+        '<li>En la computadora del cliente, abre el conector.</li>' +
+        '<li>Escribe este código cuando lo pida.</li>' +
+        '<li>Elige la carpeta donde guarda sus documentos. Listo.</li>' +
+      '</ol>' +
+      '<p class="muted small">Vence a las ' + hora(r.expiresAt) + '. Sirve una sola vez.</p>' +
+    '</div>';
+  caja.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
 
 // ── Armazón ─────────────────────────────────────────────────────────────
 
@@ -1017,6 +1141,8 @@ const STYLES = `<style>
   .icon:hover { color: var(--texto); background: var(--caja2); }
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; padding: 16px 20px 0; }
   .card { background: var(--caja); border: 1px solid var(--borde); border-radius: 10px; padding: 14px 16px; }
+  .codigo-pc { margin: 16px 20px 0; }
+  .codigo-grande { font: 600 40px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 6px; margin: 8px 0 12px; }
   .metric { display: flex; flex-direction: column; gap: 2px; }
   .metric span { color: var(--suave); font-size: 12px; }
   .metric strong { font-size: 24px; font-weight: 600; }

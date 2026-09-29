@@ -13,6 +13,7 @@
     "build": "npm run build --workspaces --if-present",
     "dev:gateway": "npm run dev --workspace=wa-gateway",
     "dev:core": "npm run dev --workspace=agent-core",
+    "conector": "node apps/pc-connector/conector.mjs",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",

@@ -226,6 +226,7 @@ export class PanelApiController {
         name: true,
         taxId: true,
         driveFolderId: true,
+        sourceType: true,
         active: true,
         _count: { select: { memberships: true, documents: true, tickets: true } },
       },
@@ -745,17 +746,22 @@ export class PanelApiController {
   @Post('empresas')
   async addOrganization(
     @Req() req: PanelRequest,
-    @Body() body: { name?: string; driveFolderId?: string; taxId?: string },
+    @Body()
+    body: { name?: string; driveFolderId?: string; taxId?: string; sourceType?: string },
   ) {
     this.requireAdmin(req);
 
-    if (!body.name || !body.driveFolderId) {
-      throw new BadRequestException('faltan el nombre o la carpeta de Drive');
+    const sourceType = body.sourceType === 'PC' ? 'PC' : 'DRIVE';
+
+    if (!body.name) throw new BadRequestException('falta el nombre');
+    if (sourceType === 'DRIVE' && !body.driveFolderId) {
+      throw new BadRequestException('falta la carpeta de Drive');
     }
 
     return this.directory.addOrganization({
       name: body.name,
-      driveFolderId: body.driveFolderId,
+      sourceType,
+      driveFolderId: sourceType === 'DRIVE' ? body.driveFolderId : undefined,
       taxId: body.taxId,
     });
   }

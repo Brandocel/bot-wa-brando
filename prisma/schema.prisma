@@ -283,12 +283,19 @@ model SystemFlag {
 // Ver docs/ARQUITECTURA-SOPORTE.md. Regla que manda sobre todo lo de abajo:
 // el permiso se resuelve en SQL contra el waId ANTES de que el LLM vea nada.
 
+/// De dónde saca el bot los documentos de una empresa.
+enum SourceType {
+  DRIVE // carpeta de Google Drive compartida con la cuenta de servicio
+  PC // conector instalado en la computadora del cliente, que sube los archivos
+}
+
 model Organization {
-  id            String  @id @default(cuid())
+  id            String     @id @default(cuid())
   name          String
-  taxId         String? @unique // RFC: la llave real del negocio
-  driveFolderId String  @unique // carpeta raíz en Drive
-  active        Boolean @default(true)
+  taxId         String?    @unique // RFC: la llave real del negocio
+  sourceType    SourceType @default(DRIVE)
+  driveFolderId String?    @unique // carpeta raíz en Drive; null si el origen es PC
+  active        Boolean    @default(true)
 
   /// Cuando se recorrio su carpeta por completo. null = pendiente de
   /// barrido, que es el estado de una empresa nueva o de una que acaba
@@ -301,6 +308,9 @@ model Organization {
   memberships Membership[]
   documents   Document[]
   tickets     Ticket[]
+  connectors  ConnectorDevice[]
+  pairCodes   ConnectorPairCode[]
+  storedFiles StoredFile[]
 }
 
 enum MemberRole {
@@ -390,6 +400,55 @@ model Document {
 
   @@index([organizationId, category, period])
   @@index([status])
+}
+
+// ─── Conector de PC ───────────────────────────────────────────────────────
+//
+// Cuando la empresa elige "mi computadora", un programa instalado en su PC
+// vigila una carpeta y SUBE los archivos. El bot nunca se conecta a la PC:
+// si estuviera apagada, el cliente de WhatsApp se quedaría sin su factura.
+
+/// Una PC emparejada. El token en claro solo lo conoce el conector; aquí
+/// se guarda su sha256 para que una copia de la base no sirva para subir.
+model ConnectorDevice {
+  id             String    @id @default(cuid())
+  organizationId String
+  name           String // nombre del equipo, para reconocerlo en el panel
+  tokenHash      String    @unique
+  createdAt      DateTime  @default(now())
+  lastSeenAt     DateTime?
+  revokedAt      DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+}
+
+/// Código de 6 dígitos que se genera en el panel y se teclea al instalar
+/// el conector. Caduca en minutos y se consume al usarse.
+model ConnectorPairCode {
+  code           String   @id
+  organizationId String
+  expiresAt      DateTime
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+/// Contenido de los archivos subidos por el conector. `id` es el mismo
+/// valor que Document.driveFileId (con prefijo "pc:"), así la entrega y la
+/// descarga no distinguen de dónde vino el archivo.
+model StoredFile {
+  id             String   @id
+  organizationId String
+  path           String // ruta relativa dentro de la carpeta vigilada
+  sha256         String
+  data           Bytes
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
 }
 
 /// Cursor de la Drive Changes API. Una sola fila ("singleton"). Sin esto,

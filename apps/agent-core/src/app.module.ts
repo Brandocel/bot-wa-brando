@@ -32,7 +32,11 @@ import { LLM_PORT } from './application/ports/llm.port';
 import { MESSAGING_PORT } from './application/ports/messaging.port';
 import { HandleIncomingMessageUseCase } from './application/use-cases/handle-incoming-message.use-case';
 
+import { ConnectorService } from './application/support/connector.service';
+import { ConnectorController } from './infrastructure/http/connector.controller';
 import { DownloadController } from './infrastructure/http/download.controller';
+import { PanelConnectorController } from './infrastructure/http/panel/panel-connector.controller';
+import { RoutingDocumentSource } from './infrastructure/storage/routing-document-source';
 import { HealthController } from './infrastructure/http/health.controller';
 import { WaWebhookController } from './infrastructure/http/wa-webhook.controller';
 import { PanelApiController } from './infrastructure/http/panel/panel-api.controller';
@@ -56,6 +60,8 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     WaWebhookController,
     PanelController,
     PanelApiController,
+    PanelConnectorController,
+    ConnectorController,
   ],
   providers: [
     // ── Infraestructura ────────────────────────────────────────────────
@@ -72,9 +78,10 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     // Migrar a Baileys = cambiar esta línea.
     { provide: MESSAGING_PORT, useClass: GatewayMessagingAdapter },
 
-    // Igual para el repositorio documental: cambiar Drive por SharePoint es
-    // un adaptador nuevo y esta línea.
-    { provide: DOCUMENT_SOURCE_PORT, useClass: GoogleDriveAdapter },
+    // Igual para el repositorio documental. Cada empresa elige su origen
+    // (Drive o su PC); el enrutador manda cada id a donde vive.
+    GoogleDriveAdapter,
+    { provide: DOCUMENT_SOURCE_PORT, useClass: RoutingDocumentSource },
     { provide: LLM_PORT, useClass: AnthropicAdapter },
 
     // ── Pipeline ───────────────────────────────────────────────────────
@@ -95,6 +102,7 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     SupportCommandsService,
     DocumentDeliveryService,
     DriveSyncService,
+    ConnectorService,
     SlotExtractorService,
     ConversationHistoryService,
     ReplyWriterService,
