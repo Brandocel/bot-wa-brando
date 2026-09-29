@@ -67,3 +67,30 @@ test('FACTURA más mes y año conserva los tres datos estructurados', () => {
   assert.equal(query.period?.toISOString().slice(0, 7), '2026-03');
   assert.equal(query.text, null);
 });
+
+for (const text of [
+  'La factura que tengo pendiente',
+  '¿Qué folio tiene la factura que tengo?',
+  '¿Cuál cotización tienes de enero?',
+]) {
+  test(`"${text}" es una búsqueda, no una pregunta de inventario`, () => {
+    assert.equal(esInventario(text), false);
+  });
+}
+
+for (const text of ['¿Cuáles contratos tienes disponibles?', 'Hola, ¿qué opciones tengo?', '¿Qué contratos hay?']) {
+  test(`"${text}" se reconoce como inventario`, () => {
+    assert.equal(esInventario(text), true);
+  });
+}
+
+test('pedir documentos de ciertos meses no es preguntar qué meses hay', () => {
+  assert.equal(preguntaMeses('Quiero que me pases los meses pendientes'), false);
+  assert.equal(preguntaMeses('Hola, ¿qué meses tienes?'), true);
+});
+
+test('desconocer el folio se detecta igual en llamadas repetidas', () => {
+  for (let i = 0; i < 3; i++) {
+    assert.equal(parseQuery('No sé el folio').text, null);
+  }
+});

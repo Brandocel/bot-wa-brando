@@ -189,10 +189,10 @@ const RUIDO = new Set([
 
 // Solo se descarta la expresión ligada al dato desconocido, no palabras
 // como "acuerdo" que pueden formar parte del nombre de un documento.
-const FALTA_DE_IDENTIFICADOR = /\bno\s+(?:me\s+acuerdo(?:\s+de)?|recuerdo|se|tengo|conozco)\s+(?:(?:el|la|su|del|un)\s+)?(?:nombre|folio|archivo|documento|dato|identificador)\b/g;
+const FALTA_DE_IDENTIFICADOR = /\bno\s+(?:me\s+acuerdo(?:\s+de)?|recuerdo|se|tengo|conozco)\s+(?:(?:el|la|su|del|un)\s+)?(?:nombre|folio|archivo|documento|dato|identificador)\b/;
 
 export function palabrasClave(raw: string): string[] {
-  const text = normalize(raw).replace(FALTA_DE_IDENTIFICADOR, ' ');
+  const text = normalize(raw).replace(new RegExp(FALTA_DE_IDENTIFICADOR, 'g'), ' ');
   const meses = new Set(Object.keys(MONTHS));
   const tipos = new Set(Object.keys(CATEGORY_WORDS));
 
@@ -212,7 +212,7 @@ export function palabrasClave(raw: string): string[] {
 
 /** No conviertas una frase que declara desconocer un dato en un filtro libre. */
 function indicaFaltaDeIdentificador(text: string): boolean {
-  return text.search(FALTA_DE_IDENTIFICADOR) !== -1;
+  return FALTA_DE_IDENTIFICADOR.test(text);
 }
 
 /** "cotizcion" → COTIZACION: una letra de diferencia en una palabra larga. */

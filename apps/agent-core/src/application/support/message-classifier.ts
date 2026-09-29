@@ -339,10 +339,13 @@ export function esInventario(texto: string): boolean {
   if (limpio.length > 90) return false;
 
   // Las preguntas de disponibilidad admiten detalles entre el interrogativo
-  // y la consulta: "qué contratos tengo disponibles".
-  if (/\b(que|cuales|cual)\b.{0,50}\b(tengo|tienes|disponible|disponibles|opciones)\b/.test(limpio)) {
-    return true;
-  }
+  // y la consulta: "qué contratos tengo disponibles". El interrogativo debe
+  // abrir la pregunta y la consulta cerrarla; así "la factura que tengo
+  // pendiente" o "cuál cotización tienes de enero" siguen siendo búsquedas.
+  const disponibilidad = new RegExp(
+    `${INICIO_DE_PREGUNTA}(?:que|cuales|cual)(?: \\w+){0,3} (?:tengo|tienes|tenemos|hay)(?: disponibles?)?$`,
+  );
+  if (disponibilidad.test(normalizar(texto))) return true;
   if (preguntaMeses(texto)) return true;
 
   return /\b((que|cuales|cual) (documentos|docs|archivos|opciones|cosas|meses|fechas)\b|opciones de lo que tienes|cuales tienes|cuales hay|(de que|de cuales) (meses|fechas)|que tienes\b|que hay\b|que( (doc|docs|documento|documentos|archivo|archivos))? me puedes (dar|entregar|mandar|pasar|enviar)|que puedes (darme|entregarme|mandarme|pasarme|enviarme)|lista(me)? (lo que|los documentos|todo)|catalogo|inventario|todo lo que (tienes|tengas|haya))/.test(
@@ -403,8 +406,21 @@ export function esRechazo(texto: string): boolean {
   ) || /^(no|no no|que no|otra|otro|no otra|otra distinta|busca otra|buscamos otra|mejor otra|no esa|no ese|esa no|ese no|no gracias otra)$/.test(limpio);
 }
 
-/** "¿De qué meses hay?", "qué meses tienes", "de qué fechas". */
+/**
+ * Dónde puede ir el interrogativo de una pregunta: al inicio del mensaje o
+ * detrás de un saludo o de "dime", "me puedes decir"… En cualquier otro
+ * lugar suele ser un "que" relativo: "la factura que tengo".
+ */
+const INICIO_DE_PREGUNTA =
+  '(?:^|\\b(?:hola|oye|y|entonces|decir|dime|dices|saber|sabes|mostrar|muestrame|indicar|indicame) )';
+
+/** "¿De qué meses hay?", "qué meses tienes", "de qué fechas", "cuáles son esos 6 meses". */
 export function preguntaMeses(texto: string): boolean {
-  const limpio = texto.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-  return /\b(que|cuales|de que|de cuales)(?:\s+\w+){0,4}\s+(meses|fechas)\b/.test(limpio);
+  const limpio = normalizar(texto);
+  if (/\b(que|cuales|de que|de cuales) (meses|fechas)\b/.test(limpio)) return true;
+  // Con palabras en medio solo cuenta si el interrogativo abre la pregunta:
+  // "quiero que me pases los meses" no pregunta nada.
+  return new RegExp(
+    `${INICIO_DE_PREGUNTA}(?:de )?(?:que|cuales)(?: \\w+){1,4} (?:meses|fechas)\\b`,
+  ).test(limpio);
 }
