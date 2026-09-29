@@ -171,7 +171,21 @@ export const SALUDO =
   /^(hola|holi|buenas|buenos dias|buen dia|buenas tardes|buenas noches|que tal|hey|que onda|como estas|como andas)( (buenas|que tal|como estas|como andas|buen dia|buenos dias|buenas tardes|brother|bro|amigo|amiga|jefe|jefa|compa|hermano|buenas buenas|que hay|todo bien))?$/;
 
 export const CIERRE =
-  /\b(es todo|eso es todo|con eso (esta bien|basta|es suficiente|me sirve|quedo)|asi esta bien|esta bien asi|ya (quedo|esta)|ya con eso|nada mas|por ahora no|no gracias)\b/;
+  /\b(es todo|eso es todo|con eso (esta bien|basta|es suficiente|me sirve|quedo)|asi esta bien|esta bien asi|ya quedo|ya esta(?= gracias| asi| bien|$)|ya con eso|nada mas|por ahora no|no gracias)\b/;
+
+/**
+ * ¿Da por terminada la conversación? CIERRE solo no basta: "¿ya está?" o
+ * "nada más quería saber si ya está" contienen un cierre, pero preguntan
+ * cómo va el pedido, y tomarlos como cierre abandonaba la solicitud justo
+ * cuando la persona la estaba siguiendo.
+ */
+export function esCierre(texto: string): boolean {
+  if (/[?¿]/.test(texto)) return false;
+  const limpio = normalizar(texto);
+  if (limpio.split(' ').length > 8) return false;
+  if (/\b(saber|si ya|cuando|como va|como vas)\b/.test(limpio)) return false;
+  return CIERRE.test(limpio);
+}
 
 /** Construcciones para pedir tiempo: se exige una frase, nunca un ordinal aislado. */
 export const PAUSA =

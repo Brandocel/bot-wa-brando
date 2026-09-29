@@ -22,7 +22,7 @@ import {
 import { TicketService, type EscalationReason } from './ticket.service';
 import {
   ACUSE,
-  CIERRE,
+  esCierre,
   RECONOCE,
   SALUDO,
   clasificar,
@@ -215,12 +215,10 @@ export class SupportStrategy {
     // Un cierre explícito abandona solo la solicitud que sigue esperando
     // respuesta. SolicitudService.cerrar conserva el resto del contexto,
     // incluida la última entrega.
-    const mensajeNormalizado = normalizar(message.body);
     if (
       sol.ultimaPregunta &&
-      mensajeNormalizado.split(' ').length <= 8 &&
-      CIERRE.test(mensajeNormalizado) &&
-      !parseQueryTieneDatos(mensajeNormalizado)
+      esCierre(message.body) &&
+      !parseQueryTieneDatos(normalizar(message.body))
     ) {
       await this.solicitudes.cerrar(ctx.conversationId);
       return { text: voz.cierreSolicitud(), awaiting: 'NADIE' };
@@ -435,8 +433,12 @@ export class SupportStrategy {
      */
     const query = mergeSlots(contexto, extraction.query);
 
+    // Como con el mes y el folio: dar el tipo por primera vez completa la
+    // búsqueda en curso, no la cambia. Solo un tipo DISTINTO es otra.
     const cambioCategoria =
-      extraction.query.category !== null && extraction.query.category !== sol.category;
+      extraction.query.category !== null &&
+      sol.category !== null &&
+      extraction.query.category !== sol.category;
     const cambioPeriodo =
       extraction.query.period !== null &&
       sol.period !== null &&
@@ -1825,7 +1827,7 @@ function respuestaRapida(
 
   // Un "ok" no se contesta: ya quedó marcado como leído, y responderle a
   // cada acuse es justo lo que hace que un bot se sienta como bot.
-  if (palabras <= 8 && CIERRE.test(limpio)) return '';
+  if (esCierre(texto)) return '';
 
   /**
    * "A perdón, sí es cierto, es la misma", "tienes razón", "ya la vi":
