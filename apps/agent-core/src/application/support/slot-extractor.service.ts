@@ -143,7 +143,7 @@ export class SlotExtractorService {
         // Nombre de archivo o palabras clave ("Parcia Ima", "contable"):
         // lo que sobra después de leer tipo, mes y folio, para buscar en
         // el nombre y dentro del documento.
-        query: { ...byRules, text: hint ?? (byRules.folio ? null : claves) },
+        query: { ...byRules, text: hint ?? (byRules.folio ? null : byRules.text) },
         companyHint: null,
         notADocumentRequest: false,
         tipoMensaje: null,

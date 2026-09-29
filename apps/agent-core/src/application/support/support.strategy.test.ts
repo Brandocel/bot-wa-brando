@@ -155,13 +155,16 @@ function llmForTurn(text: string): Record<string, unknown> {
 
 class ObservedSlotExtractor extends SlotExtractorService {
   readonly calls: string[] = [];
+  readonly results: Array<Awaited<ReturnType<SlotExtractorService['extract']>>> = [];
 
   override async extract(
     text: string,
     options: Parameters<SlotExtractorService['extract']>[1] = {},
   ) {
     this.calls.push(text);
-    return super.extract(text, options);
+    const result = await super.extract(text, options);
+    this.results.push(structuredClone(result));
+    return result;
   }
 }
 
@@ -225,7 +228,10 @@ function makeHarness() {
     raw: {},
   } as IncomingMessage, ctx);
 
-  return { handle, requests, search, escalations, delivered, llmCalls, draftCalls, extractCalls: slots.calls, writerCalls, scopes };
+  return {
+    handle, requests, search, escalations, delivered, llmCalls, draftCalls,
+    extractCalls: slots.calls, slotResults: slots.results, writerCalls, scopes,
+  };
 }
 
 test('las opciones de contratos se responden como inventario y no filtran "decir disponibles"', async () => {
@@ -1019,6 +1025,173 @@ for (const seleccion of ['2', 'la 2', 'el segundo', 'la segunda opción']) {
     assert.equal(h.requests.delivery?.documentId, documentB.id);
   });
 }
+
+function seededRequest(overrides: Partial<Solicitud> = {}): Solicitud {
+  return {
+    ...emptyRequest(),
+    category: 'FACTURA',
+    period: '2026-02-01T00:00:00.000Z',
+    folio: 'V3001',
+    organizationId: orgScope.organizationId,
+    opciones: [{ n: 1, tipo: 'documento', id: 'old-invoice', nombre: 'FACTURA_2026-02_V3001.pdf' }],
+    preguntas: 1,
+    preguntado: { periodo: true },
+    ultimaPregunta: 'periodo',
+    fallos: 0,
+    rechazados: [],
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+test('corrección "No era febrero, era marzo" usa marzo y descarta slots anteriores incompatibles', async () => {
+  const h = makeHarness();
+  h.requests.state = seededRequest();
+  const march = [
+    document('invoice-march-a', 'FACTURA_2026-03_A.pdf', 'FACTURA', '2026-03'),
+    document('invoice-march-b', 'FACTURA_2026-03_B.pdf', 'FACTURA', '2026-03'),
+  ];
+  h.search.periodResults.set('2026-03', march);
+  const before = structuredClone(h.requests.state);
+  const message = 'No era febrero, era marzo';
+  const reply = await h.handle(message);
+
+  assert.ok(reply);
+  assert.equal(clasificar(message).tipo, 'SOLICITUD');
+  assert.equal(h.extractCalls.length, 1);
+  assert.equal(h.llmCalls.length, 0);
+  assert.deepEqual(h.slotResults[0]?.query, {
+    category: null, period: new Date('2026-03-01T00:00:00.000Z'), folio: null, text: null,
+  });
+  assert.equal(h.search.searches[0]?.query.category, 'FACTURA');
+  assert.equal((h.search.searches[0]?.query.period as Date | null)?.toISOString(), '2026-03-01T00:00:00.000Z');
+  assert.equal(h.search.searches[0]?.query.folio, null);
+  assert.equal(h.requests.state.category, 'FACTURA');
+  assert.equal(h.requests.state.period, '2026-03-01T00:00:00.000Z');
+  assert.equal(h.requests.state.folio, null);
+  assert.deepEqual(h.requests.state.opciones?.map((option) => option.id), march.map((doc) => doc.id));
+  assert.notEqual(h.requests.state.updatedAt, before.updatedAt);
+  assert.equal(h.requests.state.fallos, 0);
+  assert.equal(h.requests.state.ultimaPregunta, null);
+  assert.deepEqual(h.requests.state.preguntado, {});
+  assert.equal(h.escalations.length, 0);
+  assert.equal(reply.awaiting, 'CLIENTE');
+});
+
+test('cambio "No, mejor quiero un contrato" limpia slots, filtros y opciones de FACTURA', async () => {
+  const h = makeHarness();
+  h.requests.state = seededRequest();
+  const message = 'No, mejor quiero un contrato';
+  const reply = await h.handle(message);
+
+  assert.ok(reply);
+  assert.equal(clasificar(message).tipo, 'SOLICITUD');
+  assert.equal(h.extractCalls.length, 1);
+  assert.equal(h.llmCalls.length, 0);
+  assert.equal(h.slotResults[0]?.query.category, 'CONTRATO');
+  assert.equal(h.slotResults[0]?.query.period, null);
+  assert.equal(h.slotResults[0]?.query.folio, null);
+  assert.equal(h.slotResults[0]?.query.text, null);
+  assert.ok(h.search.searches.every(({ query }) => query.category !== 'FACTURA'));
+  assert.equal(h.requests.state.category, 'CONTRATO');
+  assert.equal(h.requests.state.period, null);
+  assert.equal(h.requests.state.folio, null);
+  assert.equal(h.requests.state.opciones?.[0]?.id, 'contract-1');
+  assert.equal(h.requests.state.fallos, 0);
+  assert.equal(h.requests.state.ultimaPregunta, null);
+  assert.equal(h.search.searches.some(({ query }) => query.text === 'mejor'), false);
+  assert.deepEqual(h.requests.state.preguntado, {});
+  assert.equal(h.requests.state.preguntas, 0);
+  assert.equal(h.escalations.length, 0);
+  assert.equal(reply.awaiting, 'CLIENTE');
+});
+
+test('"Olvida eso, dame otra factura" limpia la Solicitud y procesa la nueva petición', async () => {
+  const h = makeHarness();
+  h.requests.state = seededRequest({ category: 'CONTRATO' });
+  const message = 'Olvida eso, dame otra factura';
+  h.requests.delivery = { documentId: 'delivered-before', name: 'OLD.pdf', category: 'CONTRATO', period: null, at: '2026-01-01T00:00:00.000Z' };
+  const deliveryBefore = structuredClone(h.requests.delivery);
+  const reply = await h.handle(message);
+
+  assert.ok(reply);
+  assert.equal(clasificar(message).tipo, 'SOLICITUD');
+  assert.equal(h.requests.closeCalls, 1);
+  assert.equal(h.extractCalls.length, 1);
+  assert.equal(h.llmCalls.length, 0);
+  assert.equal(h.slotResults[0]?.query.category, 'FACTURA');
+  assert.equal(h.slotResults[0]?.query.period, null);
+  assert.equal(h.slotResults[0]?.query.folio, null);
+  assert.equal(h.slotResults[0]?.query.text, null);
+  assert.equal(h.requests.state.category, 'FACTURA');
+  assert.equal(h.requests.state.period, null);
+  assert.equal(h.requests.state.folio, null);
+  assert.equal(h.requests.state.opciones, null);
+  assert.equal(h.search.searches.some(({ query }) => query.text === 'eso'), false);
+  assert.equal(h.search.searches[0]?.query.category, 'FACTURA');
+  assert.equal(h.requests.state.fallos, 0);
+  assert.equal(h.requests.state.ultimaPregunta, 'periodo');
+  assert.equal(h.requests.state.preguntas, 1);
+  assert.deepEqual(h.requests.delivery, deliveryBefore, 'la última entrega sobrevive al abandono de Solicitud');
+  assert.equal(h.escalations.length, 0);
+  assert.equal(reply.awaiting, 'CLIENTE');
+});
+
+test('corrección breve "Mejor marzo" hereda FACTURA, reemplaza febrero y no filtra por "mejor"', async () => {
+  const h = makeHarness();
+  h.requests.state = seededRequest();
+  h.search.periodResults.set('2026-03', [
+    document('invoice-march-a', 'FACTURA_2026-03_A.pdf', 'FACTURA', '2026-03'),
+    document('invoice-march-b', 'FACTURA_2026-03_B.pdf', 'FACTURA', '2026-03'),
+  ]);
+  const message = 'Mejor marzo';
+  const reply = await h.handle(message);
+
+  assert.ok(reply);
+  assert.equal(clasificar(message).tipo, 'SOLICITUD');
+  assert.equal(h.extractCalls.length, 1);
+  assert.equal(h.llmCalls.length, 0);
+  assert.equal(h.slotResults[0]?.query.category, null);
+  assert.equal(h.slotResults[0]?.query.period?.toISOString(), '2026-03-01T00:00:00.000Z');
+  assert.equal(h.slotResults[0]?.query.text, null);
+  assert.equal(h.search.searches[0]?.query.category, 'FACTURA');
+  assert.equal((h.search.searches[0]?.query.period as Date | null)?.toISOString(), '2026-03-01T00:00:00.000Z');
+  assert.equal(h.search.searches[0]?.query.text, null);
+  assert.equal(h.requests.state.category, 'FACTURA');
+  assert.equal(h.requests.state.period, '2026-03-01T00:00:00.000Z');
+  assert.equal(h.requests.state.folio, null);
+  assert.equal(h.requests.state.ultimaPregunta, null);
+  assert.deepEqual(h.requests.state.opciones?.map((option) => option.id), ['invoice-march-a', 'invoice-march-b']);
+  assert.equal(reply.awaiting, 'CLIENTE');
+  assert.equal(h.escalations.length, 0);
+});
+
+test('negación breve "No, contrato" cambia categoría y elimina candidatos y pregunta de FACTURA', async () => {
+  const h = makeHarness();
+  h.requests.state = seededRequest();
+  const message = 'No, contrato';
+  const reply = await h.handle(message);
+
+  assert.ok(reply);
+  assert.equal(clasificar(message).tipo, 'SOLICITUD');
+  assert.equal(h.extractCalls.length, 1);
+  assert.equal(h.llmCalls.length, 0);
+  assert.equal(h.slotResults[0]?.query.category, 'CONTRATO');
+  assert.equal(h.slotResults[0]?.query.period, null);
+  assert.equal(h.slotResults[0]?.query.folio, null);
+  assert.equal(h.slotResults[0]?.query.text, null);
+  assert.equal(h.search.searches[0]?.query.category, 'CONTRATO');
+  assert.equal(h.requests.state.category, 'CONTRATO');
+  assert.equal(h.requests.state.period, null);
+  assert.equal(h.requests.state.folio, null);
+  assert.equal(h.requests.state.fallos, 0);
+  assert.equal(h.requests.state.opciones?.[0]?.id, 'contract-1');
+  assert.equal(h.requests.state.ultimaPregunta, null);
+  assert.equal(h.requests.state.preguntas, 0);
+  assert.deepEqual(h.requests.state.preguntado, {});
+  assert.equal(h.escalations.length, 0);
+  assert.equal(reply.awaiting, 'CLIENTE');
+});
 
 for (const frase of [
   'el segundo',

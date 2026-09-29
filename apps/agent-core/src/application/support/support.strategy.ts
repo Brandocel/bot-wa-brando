@@ -201,7 +201,16 @@ export class SupportStrategy {
       return { text: voz.archivoNoLeible(), awaiting: 'CLIENTE' };
     }
 
-    const sol = await this.solicitudes.actual(ctx.conversationId);
+    let sol = await this.solicitudes.actual(ctx.conversationId);
+
+    // "Olvida eso, dame otra factura" abandona la solicitud anterior,
+    // pero conserva y procesa los datos nuevos del mismo mensaje. El cierre
+    // de SolicitudService solo borra la petición; no toca última entrega,
+    // conversación, identidad ni alcance autorizado.
+    if (abandonaConNuevaSolicitud(message.body)) {
+      await this.solicitudes.cerrar(ctx.conversationId);
+      sol = await this.solicitudes.actual(ctx.conversationId);
+    }
 
     // Un cierre explícito abandona solo la solicitud que sigue esperando
     // respuesta. SolicitudService.cerrar conserva el resto del contexto,
@@ -426,12 +435,35 @@ export class SupportStrategy {
      */
     const query = mergeSlots(contexto, extraction.query);
 
+    const cambioCategoria =
+      extraction.query.category !== null && extraction.query.category !== sol.category;
+    const cambioPeriodo =
+      extraction.query.period !== null &&
+      sol.period !== null &&
+      extraction.query.period.toISOString() !== sol.period;
+    const cambioFolio =
+      extraction.query.folio !== null && sol.folio !== null && extraction.query.folio !== sol.folio;
+    const invalidaBusquedaAnterior = cambioCategoria || cambioPeriodo || cambioFolio;
+
     const patch: Partial<Solicitud> = {
       category: query.category,
       period: query.period?.toISOString() ?? null,
       folio: query.folio,
     };
     if (empresaMencionada) patch.organizationId = empresaMencionada;
+
+    // Una categoría, un periodo o un folio distintos identifican otra
+    // búsqueda. No arrastres opciones, preguntas ni fallos de la anterior.
+    if (invalidaBusquedaAnterior) {
+      Object.assign(patch, {
+        opciones: null,
+        preguntas: 0,
+        preguntado: {},
+        ultimaPregunta: null,
+        fallos: 0,
+        rechazados: [],
+      } satisfies Partial<Solicitud>);
+    }
 
     // Otro tipo de documento es otra solicitud: los fallos de la anterior
     // no cuentan, o el segundo "no encontré" escalaría por acumulación.
@@ -1452,6 +1484,13 @@ export class SupportStrategy {
 function pideReinicio(texto: string): boolean {
   const limpio = normalizar(texto);
   return /^(?:por favor )?(?:(?:empecemos|comencemos|(?:quiero|vamos a) (?:empezar|comenzar)) (?:de nuevo|desde cero)|(?:reinicia|reiniciemos) (?:la|mi|esta) solicitud|(?:ignora|olvida) (?:todo )?lo anterior)(?: (?:y )?(?:ignora|olvida) (?:todo )?lo anterior)?(?: por favor)?$/.test(limpio);
+}
+
+/** Un abandono seguido de slots explícitos no debe descartar el nuevo pedido. */
+function abandonaConNuevaSolicitud(texto: string): boolean {
+  if (!/\b(?:olvida|ignora)\s+(?:eso|lo anterior)\b/.test(normalizar(texto))) return false;
+  const nuevos = parseQuery(texto);
+  return nuevos.category !== null || nuevos.period !== null || nuevos.folio !== null;
 }
 
 /**
