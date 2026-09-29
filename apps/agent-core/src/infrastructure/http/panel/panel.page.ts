@@ -34,6 +34,7 @@ const TRAZOS: Record<string, string> = {
   atras: '<path d="m15 18-6-6 6-6"/>',
   plegar: '<path d="m11 17-5-5 5-5"/><path d="m18 17-5-5 5-5"/>',
   basura: '<path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
+  documentos: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
   bot: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>',
 };
 
@@ -98,6 +99,7 @@ export function panelPage(): string {
       <button data-view="tickets" title="Tickets">${icono('ticket')}<span class="nav-text">Tickets</span></button>
       <button data-view="directorio" title="Directorio">${icono('usuarios')}<span class="nav-text">Directorio</span></button>
       <button data-view="empresas" title="Empresas">${icono('empresa')}<span class="nav-text">Empresas</span></button>
+      <button data-view="documentos" title="Documentos">${icono('documentos')}<span class="nav-text">Documentos</span></button>
       <button data-view="cuarentena" title="Cuarentena">${icono('carpeta')}<span class="nav-text">Cuarentena</span><span class="badge nav-text" id="badge-cuarentena" hidden></span></button>
       <button data-view="auditoria" title="Auditoría">${icono('escudo')}<span class="nav-text">Auditoría</span></button>
     </nav>
@@ -170,13 +172,18 @@ const app = document.getElementById('app');
 let vistaActual = 'bandeja';
 let filtroBandeja = 'todas';
 let filtroCuarentena = 'revision';
+let docsEmpresa = null;
+let docsEstado = 'entregables';
+// Qué grupos están abiertos: el refresco cada 20 s repinta la vista y no
+// debe cerrarle a nadie el mes que estaba mirando.
+const docsAbiertos = new Set();
 let yo = null;
 let chatAbierto = null;
 let ultimoHilo = null;
 
 const TITULOS = {
   bandeja: 'Conversaciones', tickets: 'Tickets', directorio: 'Directorio',
-  empresas: 'Empresas', cuarentena: 'Cuarentena', auditoria: 'Auditoría',
+  empresas: 'Empresas', documentos: 'Documentos', cuarentena: 'Cuarentena', auditoria: 'Auditoría',
 };
 
 const api = async (ruta) => {
@@ -229,6 +236,24 @@ const iniciales = (nombre) => String(nombre ?? '?').trim().split(/\\s+/).slice(0
 const tono = (nombre) => { let h = 0; for (const ch of String(nombre ?? '')) h = (h * 31 + ch.charCodeAt(0)) % 360; return h; };
 
 const CATEGORIAS = ['FACTURA', 'CONTRATO', 'COTIZACION', 'REPORTE', 'POLIZA', 'ESTADO_CUENTA', 'CONTABLE', 'OTRO'];
+
+const NOMBRE_CATEGORIA = {
+  FACTURA: 'Facturas', CONTRATO: 'Contratos', COTIZACION: 'Cotizaciones', REPORTE: 'Reportes',
+  POLIZA: 'Pólizas', ESTADO_CUENTA: 'Estados de cuenta', CONTABLE: 'Contables', OTRO: 'Otros',
+};
+
+const ESTADO_DOC = {
+  INDEXED: ['entregable', ''], QUARANTINE: ['por revisar', 'warn'], EXCLUDED: ['descartado', 'warn'],
+};
+
+const mesLargo = (iso) => {
+  const texto = new Date(iso).toLocaleDateString('es-MX', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+  return texto.charAt(0).toUpperCase() + texto.slice(1);
+};
+
+const tamano = (bytes) => bytes >= 1048576
+  ? (bytes / 1048576).toFixed(1) + ' MB'
+  : Math.max(1, Math.round(bytes / 1024)) + ' KB';
 
 function tabla(columnas, filas, vacio) {
   if (!filas || filas.length === 0) return '<p class="vacio">' + vacio + '</p>';
@@ -531,6 +556,13 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
+  const docsEstadoBtn = e.target.closest('[data-docs-estado]');
+  if (docsEstadoBtn) {
+    docsEstado = docsEstadoBtn.dataset.docsEstado;
+    pintar('documentos');
+    return;
+  }
+
   const filtroCuar = e.target.closest('[data-filtro-cuarentena]');
   if (filtroCuar) {
     filtroCuarentena = filtroCuar.dataset.filtroCuarentena;
@@ -756,6 +788,73 @@ const VISTAS = {
     );
   },
 
+  async documentos() {
+    const empresas = await api('empresas');
+    if (!empresas.length) return '<p class="vacio">No hay empresas registradas.</p>';
+    if (!empresas.some((o) => o.id === docsEmpresa)) docsEmpresa = empresas[0].id;
+
+    const filas = await api('documentos?empresa=' + encodeURIComponent(docsEmpresa) + '&estado=' + docsEstado);
+
+    const selector = '<select class="compacto" id="docs-empresa">' +
+      empresas.map((o) => '<option value="' + o.id + '"' + (o.id === docsEmpresa ? ' selected' : '') + '>' +
+        esc(o.name) + '</option>').join('') + '</select>';
+
+    const chips = [
+      ['entregables', 'Entregables'], ['revision', 'Por revisar'], ['descartados', 'Descartados'], ['todos', 'Todos'],
+    ].map(([valor, texto]) =>
+      '<button class="chip' + (docsEstado === valor ? ' activo' : '') + '" data-docs-estado="' + valor + '">' + texto + '</button>',
+    ).join('');
+
+    const cabecera = '<div class="chips">' + selector + chips +
+      '<span class="muted small docs-total">' + filas.length + ' documento' + (filas.length === 1 ? '' : 's') + '</span></div>';
+
+    if (!filas.length) return cabecera + '<p class="vacio">No hay documentos con este filtro.</p>';
+
+    // Tipo → mes → documentos. Los tipos en el orden de siempre; los meses
+    // del más reciente al más viejo, y "sin mes" al final.
+    const porTipo = new Map();
+    for (const d of filas) {
+      const mes = d.period ? d.period.slice(0, 7) : 'sin-mes';
+      if (!porTipo.has(d.category)) porTipo.set(d.category, new Map());
+      const meses = porTipo.get(d.category);
+      if (!meses.has(mes)) meses.set(mes, []);
+      meses.get(mes).push(d);
+    }
+
+    const fila = (d) => {
+      const [estado, clase] = ESTADO_DOC[d.status] ?? [d.status, ''];
+      const detalle = [d.folio ? 'folio ' + esc(d.folio) : '', d.counterpart ? esc(d.counterpart) : '', tamano(d.sizeBytes)]
+        .filter(Boolean).join(' · ');
+      return '<tr>' +
+        '<td>' + esc(d.name) + (d.summary ? '<div class="muted small">' + esc(d.summary) + '</div>' : '') + '</td>' +
+        '<td class="muted small">' + detalle + '</td>' +
+        '<td>' + (d.docClass === 'SENSIBLE'
+          ? '<span class="pill warn">sensible</span>'
+          : '<span class="pill ' + clase + '">' + estado + '</span>') + '</td>' +
+      '</tr>';
+    };
+
+    const secciones = CATEGORIAS.filter((c) => porTipo.has(c)).map((categoria) => {
+      const meses = [...porTipo.get(categoria).entries()].sort(([a], [b]) =>
+        a === 'sin-mes' ? 1 : b === 'sin-mes' ? -1 : b.localeCompare(a));
+      const total = meses.reduce((n, [, docs]) => n + docs.length, 0);
+
+      return '<section class="card docs-tipo"><h3>' + NOMBRE_CATEGORIA[categoria] +
+        ' <span class="muted small">' + total + '</span></h3>' +
+        meses.map(([mes, docs]) => {
+          const clave = docsEmpresa + '|' + categoria + '|' + mes;
+          return '<details class="docs-mes" data-grupo="' + clave + '"' + (docsAbiertos.has(clave) ? ' open' : '') + '>' +
+            '<summary>' + (mes === 'sin-mes' ? 'Sin mes' : mesLargo(mes + '-01T00:00:00Z')) +
+            ' <span class="muted small">' + docs.length + '</span></summary>' +
+            '<div class="scroll"><table><tbody>' + docs.map(fila).join('') + '</tbody></table></div>' +
+          '</details>';
+        }).join('') +
+      '</section>';
+    }).join('');
+
+    return cabecera + '<div class="docs-grid">' + secciones + '</div>';
+  },
+
   async cuarentena() {
     const filas = await api('cuarentena?vista=' + filtroCuarentena);
     const esAdmin = yo?.role === 'ADMIN';
@@ -854,7 +953,21 @@ document.addEventListener('input', (e) => {
   }, 400);
 });
 
+// Recordar qué meses están abiertos. "toggle" no burbujea: se escucha en
+// la fase de captura.
+document.addEventListener('toggle', (e) => {
+  const grupo = e.target.dataset?.grupo;
+  if (!grupo) return;
+  if (e.target.open) docsAbiertos.add(grupo); else docsAbiertos.delete(grupo);
+}, true);
+
 document.addEventListener('change', async (e) => {
+  if (e.target.id === 'docs-empresa') {
+    docsEmpresa = e.target.value;
+    pintar('documentos');
+    return;
+  }
+
   if (e.target.id === 'emp-origen') {
     const drive = e.target.value === 'DRIVE';
     document.getElementById('emp-drive-campo').hidden = !drive;
@@ -1241,6 +1354,16 @@ const STYLES = `<style>
 
   /* ── Lista de conversaciones ─────────────────────────────────────── */
   .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .chips select { margin-right: 6px; }
+  .docs-total { align-self: center; margin-left: auto; }
+  .docs-grid { display: flex; flex-direction: column; gap: 12px; }
+  .docs-tipo { padding: 12px 14px; }
+  .docs-tipo h3 { margin: 0 0 6px; font-size: 15px; }
+  .docs-mes { border-top: 1px solid var(--borde); }
+  .docs-mes summary { cursor: pointer; padding: 8px 2px; }
+  .docs-mes table { background: transparent; }
+  .docs-mes td { padding: 8px 10px; }
+  .docs-mes td:first-child { word-break: break-word; }
   .chip {
     background: var(--caja); border: 1px solid var(--borde); color: var(--suave);
     padding: 5px 12px; border-radius: 999px; cursor: pointer; font-size: 13px;

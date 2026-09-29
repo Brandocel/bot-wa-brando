@@ -223,6 +223,48 @@ export class PanelApiController {
   }
 
   /**
+   * Los documentos de UNA empresa, para agruparlos por tipo y mes en el
+   * panel. Sin el texto extraído: pesa y no hace falta para listar.
+   */
+  @UseGuards(PanelGuard)
+  @Get('documentos')
+  async documents(
+    @Query('empresa') empresa?: string,
+    @Query('estado') estado?: string,
+  ) {
+    if (!empresa) throw new BadRequestException('falta la empresa');
+
+    const status: Prisma.DocumentWhereInput['status'] =
+      estado === 'revision'
+        ? 'QUARANTINE'
+        : estado === 'descartados'
+          ? 'EXCLUDED'
+          : estado === 'todos'
+            ? { not: 'DELETED' }
+            : 'INDEXED';
+
+    return this.prisma.document.findMany({
+      where: { organizationId: empresa, status },
+      orderBy: [{ period: 'desc' }, { name: 'asc' }],
+      take: 5000,
+      select: {
+        id: true,
+        name: true,
+        mimeType: true,
+        sizeBytes: true,
+        category: true,
+        period: true,
+        folio: true,
+        summary: true,
+        counterpart: true,
+        status: true,
+        docClass: true,
+        indexedAt: true,
+      },
+    });
+  }
+
+  /**
    * Aprobar vuelve entregable un documento; rechazar lo deja fuera. Solo
    * ADMIN: aprobar es decidir qué recibe un cliente por WhatsApp.
    */
