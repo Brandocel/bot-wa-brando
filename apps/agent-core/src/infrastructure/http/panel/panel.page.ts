@@ -1043,6 +1043,23 @@ document.addEventListener('submit', async (e) => {
 });
 
 document.addEventListener('click', async (e) => {
+  const verDocs = e.target.closest('[data-ver-docs]');
+  if (verDocs) {
+    e.preventDefault();
+    docsEmpresa = verDocs.dataset.verDocs;
+    docsEstado = 'entregables';
+    pintar('documentos');
+    return;
+  }
+
+  const irA = e.target.closest('[data-view-link]');
+  if (irA) {
+    e.preventDefault();
+    if (irA.dataset.viewLink === 'cuarentena') filtroCuarentena = 'revision';
+    pintar(irA.dataset.viewLink);
+    return;
+  }
+
   const codigoPc = e.target.closest('[data-codigo-pc]');
   if (codigoPc) {
     mostrarCodigoPc(codigoPc.dataset.codigoPc, codigoPc.dataset.nombre);
@@ -1128,9 +1145,12 @@ async function pintarEstadoPc(id) {
   // El conector revisa cada pocos minutos: más de 30 sin noticias es que la PC está apagada.
   const enLinea = visto && Date.now() - new Date(visto).getTime() < 30 * 60000;
 
+  const docs = r.documentos;
   celda.innerHTML =
     (enLinea ? '<span class="pill ok">en línea</span>' : '<span class="pill warn">apagada</span>') +
-    ' ' + r.files + ' archivo(s)' +
+    ' <a href="#" data-ver-docs="' + id + '">' + docs.entregables + ' entregable' + (docs.entregables === 1 ? '' : 's') + '</a>' +
+    (docs.revision > 0 ? ' · <a href="#" class="warn-link" data-view-link="cuarentena">' + docs.revision + ' por revisar</a>' : '') +
+    (docs.descartados > 0 ? ' · <span class="muted">' + docs.descartados + ' descartado' + (docs.descartados === 1 ? '' : 's') + '</span>' : '') +
     (r.lastUploadAt ? ' · última subida ' + hace(r.lastUploadAt) : '') +
     ' · ' + r.devices.map((d) =>
       esc(d.name) + ' <button class="mini peligro" data-revocar-pc="' + d.id + '" title="Desconectar este equipo">×</button>'
@@ -1162,10 +1182,12 @@ function mostrarCodigoPc(id, nombre) {
       '<h3>Conectar la computadora de ' + esc(nombre) + '</h3>' +
       '<p><a class="boton" href="' + url + '" download>Descargar conector para ' + esc(nombre) + '</a></p>' +
       '<ol class="muted">' +
-        '<li>Abre el archivo descargado en la computadora del cliente, o mándaselo por correo o WhatsApp.</li>' +
+        '<li>Mándale el archivo al cliente por correo o WhatsApp, o ábrelo tú en su computadora.</li>' +
         '<li>Doble clic. Si Windows avisa "protegió su PC": <em>Más información → Ejecutar de todas formas</em>.</li>' +
-        '<li>Elige la carpeta donde guarda sus documentos. Listo: queda trabajando solo, también al reiniciar.</li>' +
+        '<li>Pulsa <strong>Crear carpeta nueva</strong> (recomendado) y pon ahí los documentos. Queda trabajando solo, sin ventanas, también al reiniciar.</li>' +
       '</ol>' +
+      '<p class="muted small">Cada archivo se revisa antes de poder mandarse: lo que no sea un documento de la empresa ' +
+        'o traiga contraseñas no se entrega, y lo dudoso te llega a Cuarentena.</p>' +
       '<p class="muted small">Cada descarga sirve para una computadora y vale 3 días.</p>' +
       '<details class="muted small"><summary>¿Ya tiene el conector? Usa un código</summary>' +
         '<p><button class="mini" data-generar-codigo="' + id + '">Generar código</button> ' +
@@ -1355,6 +1377,7 @@ const STYLES = `<style>
   /* ── Lista de conversaciones ─────────────────────────────────────── */
   .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
   .chips select { margin-right: 6px; }
+  .warn-link { color: #ffd98a; }
   .docs-total { align-self: center; margin-left: auto; }
   .docs-grid { display: flex; flex-direction: column; gap: 12px; }
   .docs-tipo { padding: 12px 14px; }

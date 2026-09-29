@@ -146,7 +146,7 @@ export class PanelConnectorController {
   async devices(@Query('id') organizationId: string) {
     if (!organizationId) throw new BadRequestException('falta el id');
 
-    const [devices, archivos] = await Promise.all([
+    const [devices, archivos, estados] = await Promise.all([
       this.prisma.connectorDevice.findMany({
         where: { organizationId, revokedAt: null },
         orderBy: { createdAt: 'desc' },
@@ -157,12 +157,26 @@ export class PanelConnectorController {
         _count: true,
         _max: { updatedAt: true },
       }),
+      // Lo que el operador quiere saber de un vistazo: cuántos se pueden
+      // entregar y cuántos esperan a que alguien los mire.
+      this.prisma.document.groupBy({
+        by: ['status'],
+        where: { organizationId, status: { not: 'DELETED' } },
+        _count: true,
+      }),
     ]);
+
+    const cuenta = (status: string) => estados.find((e) => e.status === status)?._count ?? 0;
 
     return {
       devices,
       files: archivos._count,
       lastUploadAt: archivos._max.updatedAt,
+      documentos: {
+        entregables: cuenta('INDEXED'),
+        revision: cuenta('QUARANTINE'),
+        descartados: cuenta('EXCLUDED'),
+      },
     };
   }
 

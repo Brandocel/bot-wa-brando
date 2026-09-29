@@ -316,7 +316,15 @@ export class PanelApiController {
         driveFolderId: true,
         sourceType: true,
         active: true,
-        _count: { select: { memberships: true, documents: true, tickets: true } },
+        _count: {
+          select: {
+            memberships: true,
+            // Los borrados se guardan para la auditoría, pero contarlos
+            // aquí hacía creer que la empresa tenía documentos que ya no están.
+            documents: { where: { status: { not: 'DELETED' } } },
+            tickets: true,
+          },
+        },
       },
     });
   }
