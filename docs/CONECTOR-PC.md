@@ -15,23 +15,43 @@ decide de dónde bajar cada uno.
 
 ## Conectar un cliente
 
-1. Panel → **Empresas** → crear la empresa con origen **Su computadora**, o
-   cambiar el origen de una existente. Pulsar **Conectar PC**: sale un código
-   de 6 dígitos que vale 15 minutos y sirve una sola vez.
-2. En la PC del cliente (necesita Node 20+ por ahora):
+El cliente no instala nada ni teclea nada.
 
-   ```bash
-   node conector.mjs --instalar
-   ```
+1. Panel → **Empresas** → crear la empresa con origen **Su computadora** (o
+   cambiar el origen de una existente) → **Conectar PC** → **Descargar
+   conector**.
+2. Ese `ConectorBot-<Empresa>.exe` trae adentro la dirección del bot y un
+   código de un solo uso que vale 3 días. Se abre en la PC del cliente, o se
+   le manda por correo o WhatsApp.
+3. Doble clic → se elige la carpeta en la ventana de Windows → listo. El
+   conector se copia a `%LOCALAPPDATA%\ConectorBot`, se registra para
+   arrancar con Windows sin ventana y empieza a subir.
+4. En el panel, la fila pasa a **en línea** con el número de archivos.
 
-   Pide la dirección del bot, el código y abre el selector de carpetas de
-   Windows. `--instalar` además lo deja arrancando solo al prender Windows,
-   sin ventana.
-3. En el panel, la fila de la empresa pasa a **en línea** con el número de
-   archivos y la última subida.
+Un segundo doble clic solo avisa que ya está funcionando. Cada descarga sirve
+para una computadora; para otra PC, se descarga otra vez.
 
-Variables opcionales: `CONECTOR_SERVER` (dirección del bot por defecto) y
-`CONECTOR_CARPETA` (carpeta sin abrir el selector, para instalar por script).
+**SmartScreen:** el .exe no está firmado, así que Windows puede mostrar
+"Windows protegió su PC". Se pulsa *Más información → Ejecutar de todas
+formas*. Para quitar el aviso hace falta un certificado de firma de código.
+
+**Plan B sin descarga:** en la misma tarjeta, *Usa un código* genera un código
+de 15 minutos para un conector que ya esté en la PC.
+
+### Cómo se arma el .exe
+
+`apps/pc-connector/build-exe.cjs` corre en el build de Render. Empaqueta
+`conector.cjs` como ejecutable único de Node (SEA) sobre el `node.exe` de
+Windows de la misma versión, bajado de nodejs.org. El panel lo sirve con la
+configuración pegada al final del archivo. Si el build del .exe falla, el
+deploy sigue y el botón responde "no disponible".
+
+Localmente: `npm run build:conector` deja `apps/pc-connector/dist/ConectorBot.exe`.
+Para desarrollo sin .exe: `npm run conector` (pide dirección y código).
+
+Variables opcionales: `CONECTOR_SERVER` (dirección por defecto en modo script),
+`CONECTOR_CARPETA` (carpeta sin abrir la ventana) y, en el servidor,
+`CONNECTOR_EXE_PATH`.
 
 ## Operación
 
@@ -40,8 +60,8 @@ Variables opcionales: `CONECTOR_SERVER` (dirección del bot por defecto) y
   noticias, el panel muestra **apagada**.
 - **Desconectar un equipo:** botón × junto al nombre del equipo en el panel.
   El conector se detiene solo en su siguiente vuelta. Lo ya subido se queda.
-- **Cambiar de empresa o de carpeta:** `node conector.mjs --olvidar` y volver
-  a conectarlo con un código nuevo.
+- **Cambiar de empresa o de carpeta:** `ConectorBot.exe --olvidar` (o
+  desconectar el equipo en el panel) y abrir un instalador nuevo.
 - **Registro:** `%APPDATA%\ConectorBot\conector.log`.
 - **Límites:** 25 MB por archivo. Solo tipos entregables (PDF, imágenes,
   Office, TXT y CSV). Se ignoran los archivos ocultos, los de bloqueo de

@@ -3,12 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "description": "Conector que sube la carpeta de documentos de un cliente al bot",
-  "type": "module",
-  "bin": {
-    "conector-bot": "conector.mjs"
-  },
   "scripts": {
-    "start": "node conector.mjs"
+    "start": "node conector.cjs",
+    "build:exe": "node build-exe.cjs"
   },
   "engines": {
     "node": ">=20"

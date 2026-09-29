@@ -1,3 +1,5 @@
+import { createReadStream, existsSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   BadRequestException,
   Body,
@@ -7,11 +9,26 @@ import {
   Post,
   Query,
   Req,
+  Res,
+  ServiceUnavailableException,
   UseGuards,
 } from '@nestjs/common';
+import type { Response } from 'express';
+import { config } from '../../../config';
 import { ConnectorService } from '../../../application/support/connector.service';
 import { PrismaService } from '../../persistence/prisma.service';
 import { PanelGuard, type PanelRequest } from './panel.guard';
+
+/** Dónde deja build-exe.cjs el conector armado. En Render el cwd es la raíz del repo. */
+const CONNECTOR_EXE =
+  process.env.CONNECTOR_EXE_PATH || join(process.cwd(), 'apps/pc-connector/dist/ConectorBot.exe');
+
+/**
+ * Cuánto vale el código que va dentro del instalador descargado. Más que
+ * el código tecleado (15 min): el instalador se suele mandar al cliente por
+ * correo o WhatsApp y lo abre cuando puede. Sigue siendo de un solo uso.
+ */
+const INSTALLER_CODE_TTL_MS = 72 * 60 * 60 * 1000;
 
 /**
  * Panel: de dónde saca el bot los documentos de cada empresa.
@@ -77,6 +94,52 @@ export class PanelConnectorController {
     this.requireAdmin(req);
     if (!body.id) throw new BadRequestException('falta el id');
     return this.connector.crearCodigo(body.id);
+  }
+
+  /**
+   * El instalador listo para esa empresa: ConectorBot.exe con la dirección
+   * del bot y un código de conexión pegados al final. El cliente le da
+   * doble clic y elige su carpeta; no teclea nada.
+   */
+  @Get('conector/descarga')
+  async download(
+    @Req() req: PanelRequest,
+    @Query('id') organizationId: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    this.requireAdmin(req);
+    if (!organizationId) throw new BadRequestException('falta el id');
+    if (!existsSync(CONNECTOR_EXE)) {
+      throw new ServiceUnavailableException(
+        'el instalador no está disponible en este servidor (no se armó en el build)',
+      );
+    }
+
+    const { code, organization } = await this.connector.crearCodigo(
+      organizationId,
+      INSTALLER_CODE_TTL_MS,
+    );
+
+    const datos = Buffer.from(
+      JSON.stringify({ server: config.publicUrl, code, organization }),
+    ).toString('base64');
+    const trailer = Buffer.from(`\n#CONECTORBOT:${datos}#FIN\n`, 'latin1');
+
+    const slug = organization
+      .normalize('NFD')
+      .replace(/[^A-Za-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 40);
+
+    res.setHeader('content-type', 'application/octet-stream');
+    res.setHeader('content-length', String(statSync(CONNECTOR_EXE).size + trailer.length));
+    res.setHeader('content-disposition', `attachment; filename="ConectorBot-${slug || 'empresa'}.exe"`);
+    res.setHeader('cache-control', 'no-store');
+
+    const exe = createReadStream(CONNECTOR_EXE);
+    exe.on('error', () => res.destroy());
+    exe.on('end', () => res.end(trailer));
+    exe.pipe(res, { end: false });
   }
 
   @Get('conectores')

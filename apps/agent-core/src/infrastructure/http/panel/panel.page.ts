@@ -872,7 +872,7 @@ document.addEventListener('submit', async (e) => {
       if (sourceType === 'PC') {
         aviso('Empresa creada. Ahora conecta su computadora con el código.');
         await pintar('empresas');
-        await mostrarCodigoPc(r.id, nombre);
+        mostrarCodigoPc(r.id, nombre);
       } else {
         aviso('Empresa creada. Comparte la carpeta con la cuenta de servicio y corre /sync.');
         pintar('empresas');
@@ -884,8 +884,18 @@ document.addEventListener('submit', async (e) => {
 document.addEventListener('click', async (e) => {
   const codigoPc = e.target.closest('[data-codigo-pc]');
   if (codigoPc) {
-    try { await mostrarCodigoPc(codigoPc.dataset.codigoPc, codigoPc.dataset.nombre); }
-    catch (err) { aviso(err.message, 'error'); }
+    mostrarCodigoPc(codigoPc.dataset.codigoPc, codigoPc.dataset.nombre);
+    return;
+  }
+
+  const generar = e.target.closest('[data-generar-codigo]');
+  if (generar) {
+    try {
+      const r = await enviar('empresas/conector/codigo', { id: generar.dataset.generarCodigo });
+      const salida = generar.parentElement.querySelector('[data-codigo-salida]');
+      salida.innerHTML = '<strong class="mono">' + r.code.slice(0, 3) + ' ' + r.code.slice(3) + '</strong>' +
+        ' · dirección <code>' + esc(location.origin) + '</code> · vence ' + hora(r.expiresAt);
+    } catch (err) { aviso(err.message, 'error'); }
     return;
   }
 
@@ -978,21 +988,31 @@ function codigoPcVigente() {
   return codigoPc.html;
 }
 
-async function mostrarCodigoPc(id, nombre) {
-  const r = await enviar('empresas/conector/codigo', { id });
+/**
+ * Tarjeta para conectar la PC de una empresa. Lo principal es el
+ * instalador: trae la dirección y el código adentro, así que el cliente
+ * solo le da doble clic. El código a mano queda como plan B.
+ */
+function mostrarCodigoPc(id, nombre) {
   const caja = document.getElementById('codigo-pc');
+  const url = '/panel/api/empresas/conector/descarga?id=' + encodeURIComponent(id);
   const html =
     '<div class="card codigo-pc">' +
       '<h3>Conectar la computadora de ' + esc(nombre) + '</h3>' +
-      '<div class="codigo-grande">' + r.code.slice(0, 3) + ' ' + r.code.slice(3) + '</div>' +
+      '<p><a class="boton" href="' + url + '" download>Descargar conector para ' + esc(nombre) + '</a></p>' +
       '<ol class="muted">' +
-        '<li>En la computadora del cliente, abre el conector. Como dirección del bot usa <code>' + esc(location.origin) + '</code></li>' +
-        '<li>Escribe este código cuando lo pida.</li>' +
-        '<li>Elige la carpeta donde guarda sus documentos. Listo.</li>' +
+        '<li>Abre el archivo descargado en la computadora del cliente, o mándaselo por correo o WhatsApp.</li>' +
+        '<li>Doble clic. Si Windows avisa "protegió su PC": <em>Más información → Ejecutar de todas formas</em>.</li>' +
+        '<li>Elige la carpeta donde guarda sus documentos. Listo: queda trabajando solo, también al reiniciar.</li>' +
       '</ol>' +
-      '<p class="muted small">Vence a las ' + hora(r.expiresAt) + '. Sirve una sola vez.</p>' +
+      '<p class="muted small">Cada descarga sirve para una computadora y vale 3 días.</p>' +
+      '<details class="muted small"><summary>¿Ya tiene el conector? Usa un código</summary>' +
+        '<p><button class="mini" data-generar-codigo="' + id + '">Generar código</button> ' +
+        '<span data-codigo-salida></span></p>' +
+      '</details>' +
     '</div>';
-  codigoPc = { organizationId: id, expiresAt: r.expiresAt, html };
+  // Caduca con el instalador: sin esto el refresco de 20 s la borraba.
+  codigoPc = { organizationId: id, expiresAt: new Date(Date.now() + 72 * 3600000).toISOString(), html };
   if (!caja) return;
   caja.innerHTML = html;
   caja.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1163,6 +1183,8 @@ const STYLES = `<style>
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; padding: 16px 20px 0; }
   .card { background: var(--caja); border: 1px solid var(--borde); border-radius: 10px; padding: 14px 16px; }
   .codigo-pc { margin: 16px 20px 0; }
+  .codigo-pc a.boton { display: inline-block; background: #2563eb; color: #fff; padding: 10px 16px; border-radius: 8px; text-decoration: none; font-weight: 600; }
+  .codigo-pc details { margin-top: 8px; }
   .codigo-grande { font: 600 40px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 6px; margin: 8px 0 12px; }
   .metric { display: flex; flex-direction: column; gap: 2px; }
   .metric span { color: var(--suave); font-size: 12px; }

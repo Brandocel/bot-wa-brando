@@ -61,17 +61,22 @@ export class ConnectorService {
    * computadora" como origen: la empresa pasa a PC en el mismo paso, que
    * es un clic menos para quien lo configura.
    */
-  async crearCodigo(organizationId: string): Promise<{ code: string; expiresAt: Date }> {
+  async crearCodigo(
+    organizationId: string,
+    ttlMs = PAIR_CODE_TTL_MS,
+  ): Promise<{ code: string; expiresAt: Date; organization: string }> {
+    // Solo se limpian los vencidos: un código tecleado y un instalador
+    // descargado pueden estar vigentes a la vez para la misma empresa.
     await this.prisma.connectorPairCode.deleteMany({
-      where: { OR: [{ expiresAt: { lt: new Date() } }, { organizationId }] },
+      where: { expiresAt: { lt: new Date() } },
     });
 
-    await this.prisma.organization.update({
+    const organization = await this.prisma.organization.update({
       where: { id: organizationId },
       data: { sourceType: 'PC' },
     });
 
-    const expiresAt = new Date(Date.now() + PAIR_CODE_TTL_MS);
+    const expiresAt = new Date(Date.now() + ttlMs);
 
     // Un choque con otro código vigente es casi imposible, pero la llave
     // primaria lo haría fallar: se reintenta en vez de devolver un error.
@@ -81,7 +86,7 @@ export class ConnectorService {
         await this.prisma.connectorPairCode.create({
           data: { code, organizationId, expiresAt },
         });
-        return { code, expiresAt };
+        return { code, expiresAt, organization: organization.name };
       } catch {
         continue;
       }

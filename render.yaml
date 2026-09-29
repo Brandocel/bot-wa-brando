@@ -61,9 +61,13 @@ services:
     runtime: node
     plan: starter            # $7/mo — 512 MB sobra para NestJS
     region: oregon
+    # build-exe.cjs arma ConectorBot.exe, el instalador que el panel descarga
+    # para las empresas con origen "su computadora". Si falla, avisa y el
+    # deploy sigue: el panel lo marca como no disponible.
+    #
     # El filtro por workspace es importante: sin él, `npm ci` instala también
     # las deps del gateway, que aquí no sirven de nada.
-    buildCommand: npm ci --include-workspace-root --workspace=agent-core && npx prisma generate && npm run build --workspace=agent-core
+    buildCommand: npm ci --include-workspace-root --workspace=agent-core && npx prisma generate && npm run build --workspace=agent-core && node apps/pc-connector/build-exe.cjs
     startCommand: npx prisma migrate deploy && node apps/agent-core/dist/main.js
     healthCheckPath: /healthz
     envVars:
