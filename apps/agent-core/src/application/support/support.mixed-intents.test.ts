@@ -431,3 +431,191 @@ test('limpieza contextual respeta el nombre de archivo Espera_Mejor.pdf', () => 
     category: 'CONTRATO', period: null, folio: null, text: 'Espera_Mejor',
   });
 });
+
+// Regresiones de variantes naturales: prefijos limpios y cierres sin herencia.
+const naturalVariants = [
+  { text: 'Con eso basta, ahora necesito una factura', category: 'FACTURA', month: null, closure: true },
+  { text: 'Ya está, quiero un contrato', category: 'CONTRATO', month: null, closure: true },
+  { text: 'Eso es todo, pero necesito la factura de marzo', category: 'FACTURA', month: '03', closure: true },
+  { text: 'Espera, necesito un contrato', category: 'CONTRATO', month: null, closure: false },
+  { text: 'Un momento, necesito una factura', category: 'FACTURA', month: null, closure: false },
+  { text: 'Déjame ver, pero necesito el contrato', category: 'CONTRATO', month: null, closure: false },
+  { text: 'Gracias, pero necesito una factura', category: 'FACTURA', month: null, closure: false },
+  { text: 'Muchas gracias, ahora necesito un contrato', category: 'CONTRATO', month: null, closure: false },
+  { text: 'Ok, ahora necesito un contrato', category: 'CONTRATO', month: null, closure: false },
+  { text: 'Entendido, pero necesito la factura de febrero', category: 'FACTURA', month: '02', closure: false },
+] as const;
+
+for (const c of naturalVariants) {
+  for (const previous of ['vacia', 'factura-pendiente'] as const) {
+    test(`variante natural / ${previous} / ${c.text}`, async (t) => {
+      fixedRuntime(t);
+      const h = harness();
+      if (previous === 'factura-pendiente') await pendingInvoice(h);
+      const { reply, initial, parseQuery: query, flags } = await observe(t, h, c.text);
+      assert.deepEqual(initial, { tipo: 'SOLICITUD', motivo: null, molesto: false, fuente: 'reglas' });
+      assert.deepEqual(query, {
+        category: c.category, period: c.month ? new Date(`2026-${c.month}-01T00:00:00.000Z`) : null,
+        folio: null, text: null,
+      });
+      assert.deepEqual(flags, {
+        esPausa: false, SALUDO: false, ACUSE: false, CIERRE: c.closure, datos: true,
+      });
+      assert.deepEqual(h.events.slice(0, c.closure ? 2 : 1),
+        c.closure ? ['close', 'slots.extract'] : ['slots.extract']);
+      assert.deepEqual(h.llmCalls, []);
+      assert.deepEqual(h.extractionResults, [{
+        query, companyHint: null, notADocumentRequest: false, tipoMensaje: null, source: 'reglas',
+      }]);
+      assert.deepEqual(h.searches.map((s) => s.query), [{
+        ...query, organizationId: scope.organizationId, excludeIds: [],
+      }]);
+      if (c.month) {
+        assert.equal(reply.text, '');
+        assert.equal(reply.awaiting, 'NADIE');
+        assert.deepEqual(h.deliveries.map((d) => d.id), [`invoice-${c.month}`]);
+        assert.deepEqual(h.state, empty());
+        assert.deepEqual(h.escalations, []);
+        assert.ok(h.events.lastIndexOf('close') > h.events.indexOf('deliver'));
+        assert.equal(h.events.filter((e) => e === 'close').length, c.closure ? 2 : 1);
+      } else if (c.category === 'CONTRATO') {
+        assert.equal(reply.awaiting, 'CLIENTE');
+        assert.deepEqual(h.state, {
+          ...empty(), category: 'CONTRATO', opciones: options(contracts()),
+          updatedAt: NOW,
+        });
+        assert.match(reply.text, /CONTRATO_contract-1\.pdf/);
+        assert.match(reply.text, /CONTRATO_contract-2\.pdf/);
+        assert.deepEqual(h.deliveries, []);
+        assert.deepEqual(h.escalations, []);
+        assert.equal(h.events.includes('close'), c.closure);
+      } else {
+        // Control contextual: repetir una petición genérica de FACTURA con la
+        // pregunta de periodo pendiente también escala sin prefijo social.
+        // Solo los cierres abandonan esa solicitud antes de procesar la nueva.
+        const control = harness();
+        const retainsPending = previous === 'factura-pendiente' && !c.closure;
+        if (retainsPending) await pendingInvoice(control);
+        const plain = await control.handle('Necesito una factura');
+        assert.deepEqual(reply, plain);
+        assert.deepEqual(h.state, control.state);
+        assert.deepEqual(h.escalations, control.escalations.map((e) => ({
+          ...(e as Record<string, unknown>), subject: c.text,
+        })));
+        assert.deepEqual(h.deliveries, []);
+        assert.equal(reply.awaiting, retainsPending ? 'AGENTE' : 'CLIENTE');
+      }
+    });
+  }
+
+  test(`variante natural conserva categoría, mes y folio / ${c.text}`, async (t) => {
+    fixedRuntime(t);
+    const text = `${c.text}, folio V3001`;
+    const query = parseQuery(text);
+    assert.deepEqual(query, {
+      category: c.category, period: c.month ? new Date(`2026-${c.month}-01T00:00:00.000Z`) : null,
+      folio: 'V3001', text: null,
+    });
+    const slots = new SlotExtractorService({
+      extract: async () => assert.fail('El folio explícito no necesita LLM'),
+      draft: async () => assert.fail('No debe invocarse redactor'),
+    });
+    const result = await slots.extract(text);
+    assert.deepEqual(result.query, query);
+    assert.equal(result.source, 'reglas');
+    assert.equal(result.notADocumentRequest, false);
+  });
+
+  if (c.closure) {
+    for (const previousCategory of ['FACTURA', 'CONTRATO'] as const) {
+      test(`variante de cierre / antes ${previousCategory}, presupuesto agotado / ${c.text}`, async (t) => {
+        fixedRuntime(t);
+        const h = harness();
+        await h.handle('Necesito la factura de febrero');
+        const lastDelivery = h.lastDelivery;
+        assert.equal(lastDelivery?.documentId, 'invoice-02');
+        h.clearTrace();
+        const prior: Solicitud = {
+          ...empty(), category: previousCategory, period: '2026-01-01T00:00:00.000Z',
+          folio: 'C999', opciones: options([doc('old-document', previousCategory, '2026-01')]), preguntas: 3,
+          organizationId: scope.organizationId, fallos: 2,
+          preguntado: { categoria: true, periodo: true, detalle: true }, ultimaPregunta: 'detalle',
+          rechazados: ['old-document'], updatedAt: NOW,
+        };
+        h.seed(prior);
+        const { reply } = await observe(t, h, c.text);
+        const freshPeriod = c.month ? `2026-${c.month}-01T00:00:00.000Z` : null;
+        const freshQuery = { category: c.category, period: freshPeriod ? new Date(freshPeriod) : null, folio: null, text: null };
+        assert.deepEqual(h.events.slice(0, 2), ['close', 'slots.extract']);
+        assert.deepEqual(h.saves[0], {
+          category: c.category, period: freshPeriod, folio: null, opciones: null,
+          preguntas: 0, preguntado: {}, ultimaPregunta: null, fallos: 0, rechazados: [],
+        });
+        assert.deepEqual(h.searches.map((s) => s.query), [{
+          ...freshQuery, organizationId: scope.organizationId, excludeIds: [],
+        }]);
+        assert.deepEqual(h.llmCalls, []);
+        assert.deepEqual(h.escalations, []);
+        if (c.month) {
+          assert.equal(reply.awaiting, 'NADIE');
+          assert.deepEqual(h.state, empty());
+          assert.deepEqual(h.deliveries.map((d) => d.id), ['invoice-03']);
+          assert.equal(h.lastDelivery?.documentId, 'invoice-03');
+        } else {
+          assert.equal(reply.awaiting, 'CLIENTE');
+          assert.deepEqual(h.deliveries, []);
+          assert.deepEqual(h.lastDelivery, lastDelivery);
+          assert.deepEqual(h.state, c.category === 'FACTURA' ? {
+            ...empty(), category: 'FACTURA', preguntas: 1, preguntado: { periodo: true },
+            ultimaPregunta: 'periodo', updatedAt: NOW,
+          } : { ...empty(), category: 'CONTRATO', opciones: options(contracts()), updatedAt: NOW });
+        }
+
+        // Un folio NUEVO debe llegar a búsqueda/entrega, no solo al parser.
+        const newDocument = { ...doc('new-folio', c.category, '2026-03'), folio: 'V3001' };
+        const byFolio = harness([newDocument]);
+        byFolio.seed(prior);
+        const delivered = await byFolio.handle(`${c.text}, folio V3001`);
+        assert.deepEqual(byFolio.events.slice(0, 2), ['close', 'slots.extract']);
+        assert.deepEqual(byFolio.searches.map((s) => s.query), [{
+          ...freshQuery, folio: 'V3001', organizationId: scope.organizationId, excludeIds: [],
+        }]);
+        assert.equal(delivered?.awaiting, 'NADIE');
+        assert.deepEqual(byFolio.deliveries.map((d) => d.id), ['new-folio']);
+        assert.deepEqual(byFolio.escalations, []);
+        assert.deepEqual(byFolio.llmCalls, []);
+        assert.deepEqual(byFolio.state, empty());
+      });
+    }
+  }
+}
+
+for (const [text, category, keywords] of [
+  ['Un momento, pero ahora mejor necesito un contrato de mejor servicio', 'CONTRATO', 'mejor servicio'],
+  ['Dame un segundo, ahora necesito un contrato', 'CONTRATO', null],
+  ['Entendido, necesito el reporte de espera', 'REPORTE', 'espera'],
+  ['Con eso basta, pero ahora necesito el contrato de mantenimiento', 'CONTRATO', 'mantenimiento'],
+  ['Espera, necesito ayuda', null, 'espera'],
+  ['Necesito el contrato entendido', 'CONTRATO', 'entendido'],
+  ['Necesito el reporte de un momento', 'REPORTE', 'momento'],
+  ['Necesito el reporte muchas gracias', 'REPORTE', 'muchas'],
+] as const) {
+  test(`prefijos generales conservan contenido y exigen slots / ${text}`, () => {
+    assert.deepEqual(parseQuery(text), { category, period: null, folio: null, text: keywords });
+  });
+}
+
+test('un cierre citado dentro del contenido no abandona la solicitud', async (t) => {
+  fixedRuntime(t);
+  const h = harness();
+  h.seed({
+    ...empty(), category: 'CONTRATO', period: '2026-01-01T00:00:00.000Z',
+    folio: 'C999', updatedAt: NOW,
+  });
+  await h.handle('El contrato dice "es todo", pero necesito el contrato');
+  assert.equal(h.events[0], 'slots.extract');
+  assert.equal(h.events.includes('close'), false);
+  assert.deepEqual(h.saves[0], {
+    category: 'CONTRATO', period: '2026-01-01T00:00:00.000Z', folio: 'C999',
+  });
+});

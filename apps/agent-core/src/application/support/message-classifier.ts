@@ -198,6 +198,32 @@ export function esPausa(texto: string): boolean {
 export const ACUSE =
   /^(ok|okay|okey|oki|va|vale|sale|listo|perfecto|excelente|genial|de acuerdo|entendido|enterado|recibido|ya|si|dale|orale|ah ok|va bien|esta bien|muy bien)$/;
 
+/**
+ * Separa un marcador INICIAL y sus conectores de una petición explícita.
+ * No decide si es documental: quien lo usa debe comprobar categoría/mes/folio.
+ * Conserva el sufijo original para no alterar nombres de archivo ni datos.
+ */
+export function separarPeticionMixta(texto: string): {
+  marcador: 'CIERRE' | 'PAUSA' | 'CORTESIA' | 'ACUSE';
+  peticion: string;
+} | null {
+  const peticiones = /\b(?:necesito|quiero|quisiera|ocupo|busco|dame|m[aá]ndame|p[aá]same|env[ií]ame|comp[aá]rteme)\s+/gi;
+  for (const match of texto.matchAll(peticiones)) {
+    const prefijo = normalizar(texto.slice(0, match.index))
+      .replace(/(?:\s+(?:ahora|pero|mejor))+$/, '');
+    // CIERRE también se usa para encontrar frases dentro de un mensaje;
+    // aquí debe cubrir TODO el prefijo para no recortar contenido documental.
+    const cierre = CIERRE.exec(prefijo);
+    const marcador = cierre?.[0] === prefijo && prefijo !== '' ? 'CIERRE'
+      : PAUSA.test(prefijo) ? 'PAUSA'
+      : /^(?:muchas )?gracias$/.test(prefijo) ? 'CORTESIA'
+      : ACUSE.test(prefijo) ? 'ACUSE'
+      : null;
+    if (marcador) return { marcador, peticion: texto.slice(match.index) };
+  }
+  return null;
+}
+
 export const RECONOCE =
   /\b(es la misma|si es cierto|es cierto|tienes razon|tenias razon|ya la (tengo|vi|encontre)|ya lo (tengo|vi|encontre)|perdon|una disculpa|mi error|me equivoque|me confundi|no te preocupes|olvidalo|dejalo asi|ya no)\b/;
 

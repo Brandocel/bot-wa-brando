@@ -35,6 +35,7 @@ import {
   mencionaRechazo,
   normalizar,
   parseQueryTieneDatos,
+  separarPeticionMixta,
   pideHumano,
   preguntaMeses,
   preguntaSobreEntregado,
@@ -1706,7 +1707,7 @@ function pideReinicio(texto: string): boolean {
 function abandonaConNuevaSolicitud(texto: string): boolean {
   const limpio = normalizar(texto);
   const abandona = /\b(?:olvida|ignora)\s+(?:eso|lo anterior)\b/.test(limpio) ||
-    /^es todo ahora (?:necesito|quiero|quisiera)\b/.test(limpio);
+    separarPeticionMixta(texto)?.marcador === 'CIERRE';
   if (!abandona) return false;
   const nuevos = parseQuery(texto);
   return nuevos.category !== null || nuevos.period !== null || nuevos.folio !== null;
