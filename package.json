@@ -19,7 +19,7 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "typecheck": "tsc -b --pretty",
-    "test:conversational": "tsx --tsconfig apps/agent-core/tsconfig.json --test apps/agent-core/src/application/support/query-parser.test.ts apps/agent-core/src/application/support/slot-extractor.service.test.ts apps/agent-core/src/application/support/support.strategy.test.ts apps/agent-core/src/application/pipeline/filters/rate-limit.filter.test.ts",
+    "test:conversational": "tsx --tsconfig apps/agent-core/tsconfig.json --test apps/agent-core/src/application/support/query-parser.test.ts apps/agent-core/src/application/support/slot-extractor.service.test.ts apps/agent-core/src/application/support/support.strategy.test.ts apps/agent-core/src/application/pipeline/filters/rate-limit.filter.test.ts apps/agent-core/src/application/support/support.mixed-intents.test.ts",
     "test:documentos": "tsx --tsconfig apps/agent-core/tsconfig.json --test apps/agent-core/src/application/support/document-classification.test.ts",
     "smoke-test":"node scripts/smoke-test.js",
     "seed": "tsx --tsconfig tsconfig.base.json prisma/seed.ts",

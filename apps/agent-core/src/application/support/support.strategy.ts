@@ -210,8 +210,9 @@ export class SupportStrategy {
 
     let sol = await this.solicitudes.actual(ctx.conversationId);
 
-    // "Olvida eso, dame otra factura" abandona la solicitud anterior,
-    // pero conserva y procesa los datos nuevos del mismo mensaje. El cierre
+    // "Olvida eso, dame otra factura" o "Es todo, ahora necesito un contrato"
+    // abandonan la solicitud anterior, incluso si conservan la categoría,
+    // pero conservan y procesan los datos nuevos del mismo mensaje. El cierre
     // de SolicitudService solo borra la petición; no toca última entrega,
     // conversación, identidad ni alcance autorizado.
     if (abandonaConNuevaSolicitud(message.body)) {
@@ -1703,7 +1704,10 @@ function pideReinicio(texto: string): boolean {
 
 /** Un abandono seguido de slots explícitos no debe descartar el nuevo pedido. */
 function abandonaConNuevaSolicitud(texto: string): boolean {
-  if (!/\b(?:olvida|ignora)\s+(?:eso|lo anterior)\b/.test(normalizar(texto))) return false;
+  const limpio = normalizar(texto);
+  const abandona = /\b(?:olvida|ignora)\s+(?:eso|lo anterior)\b/.test(limpio) ||
+    /^es todo ahora (?:necesito|quiero|quisiera)\b/.test(limpio);
+  if (!abandona) return false;
   const nuevos = parseQuery(texto);
   return nuevos.category !== null || nuevos.period !== null || nuevos.folio !== null;
 }

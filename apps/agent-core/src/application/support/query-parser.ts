@@ -352,6 +352,9 @@ function textoSinMarcadoresConversacionales(
   if (slots.category === null && slots.period === null && slots.folio === null) return text;
 
   return text
+    // Prefijo de cambio de petición, no palabras vacías globales: un
+    // "reporte de espera" o un "contrato mejor servicio" conserva su texto.
+    .replace(/^\s*espera\s*,?\s+mejor\s+(?:quiero|quisiera|necesito)\s+/, '')
     .replace(/^\s*(?:no\s*,?\s*)?mejor\s+(?:(?:quiero|quisiera|necesito)\s+)?/, '')
     .replace(/\b(?:olvida|ignora)\s+(?:eso|lo anterior)\b/, ' ');
 }

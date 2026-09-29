@@ -1,0 +1,433 @@
+import assert from 'node:assert/strict';
+import test, { type TestContext } from 'node:test';
+import type { DocCategory } from '@prisma/client';
+import type { LlmPort } from '../ports/llm.port';
+import type { IncomingMessage } from '../../domain/message/incoming-message';
+import type { OrgScope } from './access-scope.service';
+import type { SearchQuery } from './document-search.service';
+import { ACUSE, CIERRE, SALUDO, clasificar, esPausa, normalizar, parseQueryTieneDatos } from './message-classifier';
+import { parseQuery } from './query-parser';
+import { ReplyWriterService } from './reply-writer.service';
+import { SlotExtractorService } from './slot-extractor.service';
+import type { Solicitud, UltimaEntrega } from './solicitud.service';
+import { SupportStrategy } from './support.strategy';
+
+// Regresiones de intenciones mixtas y caracterización de las rutas protegidas.
+// Sin bootstrap, configuración, .env, clientes externos ni persistencia real.
+// Incluido en test:conversational; se conserva el nombre del archivo original.
+const NOW = '2026-09-29T12:00:00.000Z';
+const scope: OrgScope = {
+  organizationId: 'org-memory', organizationName: 'Empresa Memoria',
+  windows: [
+    { category: 'FACTURA', periodFrom: null, periodTo: null },
+    { category: 'CONTRATO', periodFrom: null, periodTo: null },
+  ],
+  strippedByVerification: [],
+};
+
+function empty(): Solicitud {
+  return {
+    category: null, period: null, folio: null, organizationId: null,
+    opciones: null, preguntas: 0, preguntado: {}, ultimaPregunta: null,
+    fallos: 0, rechazados: [], updatedAt: null,
+  };
+}
+
+function doc(id: string, category: DocCategory, month: string, name = `${category}_${id}.pdf`) {
+  return {
+    id, category, name, period: new Date(`${month}-01T00:00:00.000Z`),
+    folio: null as string | null, organizationId: scope.organizationId,
+    extractedText: '', status: 'INDEXED',
+  };
+}
+type MemoryDocument = ReturnType<typeof doc>;
+const invoices = () => ['01', '02', '03', '04', '05', '06'].map((month) =>
+  doc(`invoice-${month}`, 'FACTURA', `2026-${month}`));
+const contracts = (count = 2) => Array.from({ length: count }, (_, i) =>
+  doc(`contract-${i + 1}`, 'CONTRATO', '2026-03'));
+const options = (docs: MemoryDocument[]) => docs.map((d, i) => ({
+  n: i + 1, tipo: 'documento' as const, id: d.id, nombre: d.name,
+}));
+
+function fixedRuntime(t: TestContext) {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date(NOW) });
+  // Las plantillas varían al azar: fijar la primera permite registrar la respuesta exacta.
+  t.mock.method(Math, 'random', () => 0);
+}
+
+function harness(catalog = [...invoices(), ...contracts()]) {
+  let state = empty();
+  let lastDelivery: UltimaEntrega | null = null;
+  const events: string[] = [];
+  const searches: Array<{ query: SearchQuery; resultIds: string[] }> = [];
+  const saves: Partial<Solicitud>[] = [];
+  const deliveries: Array<{ id: string; caption: string }> = [];
+  const escalations: unknown[] = [];
+  const llmCalls: string[] = [];
+  const extractionResults: unknown[] = [];
+  const llm: LlmPort = {
+    extract: async (input) => {
+      events.push('llm.extract');
+      llmCalls.push('extract');
+      // Solo se espera aquí "Espera" SIN solicitud. Respuesta ficticia validada.
+      return input.validate({
+        categoria: 'NINGUNA', periodo: 'NINGUNO', folio: 'NINGUNO', empresa: 'NINGUNA',
+        no_es_documento: true, tipo_mensaje: 'CORTESIA',
+      });
+    },
+    draft: async () => { events.push('llm.draft'); llmCalls.push('draft'); return null; },
+  };
+  const slots = new SlotExtractorService(llm);
+  const writer = new ReplyWriterService(llm);
+  const strategy = new SupportStrategy(
+    {
+      resolve: async (senderId: string) => {
+        assert.equal(senderId, 'sender-memory');
+        return { decision: 'ALLOW', scopes: [scope] };
+      },
+      denialFor: () => null,
+      audit: async () => { events.push('audit'); },
+    } as never,
+    {
+      extract: async (...args: Parameters<SlotExtractorService['extract']>) => {
+        events.push('slots.extract');
+        const result = await slots.extract(...args);
+        extractionResults.push(structuredClone(result));
+        return result;
+      },
+    } as never,
+    {
+      // Doble con filtros reales sobre un catálogo en memoria: NO devuelve
+      // documentos solo por categoría ignorando query.text o excludeIds.
+      search: async (scopes: OrgScope[], query: SearchQuery, limit = 5) => {
+        events.push('search');
+        assert.deepEqual(scopes, [scope]);
+        const found = catalog.filter((d) =>
+          (!query.organizationId || d.organizationId === query.organizationId) &&
+          scopes.some((s) => s.organizationId === d.organizationId &&
+            s.windows.some((w) => w.category === d.category)) &&
+          (!query.category || query.folio || d.category === query.category) &&
+          (!query.period || d.period.getTime() === query.period.getTime()) &&
+          (!query.folio || `${d.folio ?? ''} ${d.name}`.toLowerCase().includes(query.folio.toLowerCase())) &&
+          !query.excludeIds?.includes(d.id) &&
+          (query.text?.toLowerCase().split(/\s+/).filter(Boolean) ?? []).every((word) =>
+            `${d.name} ${d.extractedText}`.toLowerCase().includes(word)),
+        ).slice(0, limit);
+        searches.push({ query: structuredClone(query), resultIds: found.map((d) => d.id) });
+        return found;
+      },
+      byId: async () => assert.fail('Ruta byId inesperada'),
+      mesesDe: async () => assert.fail('Ruta mesesDe inesperada'),
+      inventario: async () => assert.fail('Ruta inventario inesperada'),
+    } as never,
+    {
+      deliver: async (_chat: string, d: MemoryDocument, caption: string) => {
+        events.push('deliver'); deliveries.push({ id: d.id, caption }); return { ok: true };
+      },
+    } as never,
+    {
+      abrirEscalado: async (input: unknown) => {
+        events.push('ticket'); escalations.push(structuredClone(input));
+        return { ticket: { id: 'ticket-memory', number: 900 }, agente: null };
+      },
+      casoEnRevision: async () => null,
+    } as never,
+    {
+      actual: async (conversationId: string) => {
+        assert.equal(conversationId, 'conversation-memory');
+        return structuredClone(state);
+      },
+      guardar: async (_id: string, patch: Partial<Solicitud>) => {
+        events.push('save'); saves.push(structuredClone(patch));
+        state = { ...state, ...structuredClone(patch), updatedAt: NOW };
+        return structuredClone(state);
+      },
+      cerrar: async (conversationId: string) => {
+        assert.equal(conversationId, 'conversation-memory');
+        events.push('close'); state = empty();
+      },
+      ultimaEntrega: async () => structuredClone(lastDelivery),
+      registrarEntrega: async (_id: string, d: MemoryDocument) => {
+        events.push('registerDelivery');
+        lastDelivery = {
+          documentId: d.id, name: d.name, category: d.category,
+          period: d.period.toISOString(), at: NOW,
+        };
+      },
+    } as never,
+    { recent: async () => [] } as never,
+    writer,
+  );
+  const handle = (body: string) => strategy.handle({
+    id: 'message-memory', chatId: 'chat-memory', senderId: 'sender-memory', senderName: 'Prueba',
+    body, kind: 'TEXT', isFromMe: false, isSelfChat: false, raw: {},
+  } as IncomingMessage, { contactId: 'contact-memory', conversationId: 'conversation-memory' });
+
+  return {
+    handle, events, searches, saves, deliveries, escalations, llmCalls, extractionResults,
+    get state() { return structuredClone(state); },
+    get lastDelivery() { return structuredClone(lastDelivery); },
+    seed(value: Solicitud) { state = structuredClone(value); },
+    clearTrace() {
+      for (const a of [events, searches, saves, deliveries, escalations, llmCalls, extractionResults]) a.length = 0;
+    },
+  };
+}
+type Harness = ReturnType<typeof harness>;
+
+async function pendingInvoice(h: Harness) {
+  const reply = await h.handle('Necesito una factura');
+  assert.equal(reply?.awaiting, 'CLIENTE');
+  assert.deepEqual(h.state, {
+    ...empty(), category: 'FACTURA', preguntas: 1, preguntado: { periodo: true },
+    ultimaPregunta: 'periodo', updatedAt: NOW,
+  });
+  h.clearTrace();
+}
+
+function inspect(text: string) {
+  const normalized = normalizar(text);
+  return {
+    initial: clasificar(text), parseQuery: parseQuery(text),
+    flags: {
+      esPausa: esPausa(text), SALUDO: SALUDO.test(normalized), ACUSE: ACUSE.test(normalized),
+      CIERRE: CIERRE.test(normalized), datos: parseQueryTieneDatos(normalized),
+    },
+  };
+}
+
+async function observe(t: TestContext, h: Harness, message: string) {
+  const before = h.state;
+  const parsed = inspect(message);
+  const reply = await h.handle(message);
+  assert.ok(reply);
+  // Salida reproducible por caso; no confundir LLM simulado con red real.
+  t.diagnostic(`TRACE ${JSON.stringify({
+    case: t.name, message, ...parsed, before, after: h.state,
+    events: h.events, extraction: h.extractionResults, llm: h.llmCalls,
+    searches: h.searches, deliveries: h.deliveries, tickets: h.escalations,
+    reply, lastDelivery: h.lastDelivery,
+  })}`);
+  assert.deepEqual(reply.clasificacion, parsed.initial);
+  return { reply, before, ...parsed };
+}
+
+const mixed = [
+  { text: 'Hola, necesito la factura de marzo', category: 'FACTURA', month: '03', keyword: null },
+  { text: 'Gracias, ahora necesito un contrato', category: 'CONTRATO', month: null, keyword: null },
+  { text: 'Ok, pero necesito la factura de febrero', category: 'FACTURA', month: '02', keyword: null },
+  { text: 'Es todo, ahora necesito un contrato', category: 'CONTRATO', month: null, keyword: null },
+  { text: 'Espera, mejor necesito un contrato', category: 'CONTRATO', month: null, keyword: null },
+] as const;
+
+for (const previous of ['vacia', 'factura-pendiente'] as const) {
+  for (const c of mixed) {
+    test(`mixto / ${previous} / ${c.text}`, async (t) => {
+      fixedRuntime(t);
+      const h = harness();
+      if (previous === 'factura-pendiente') await pendingInvoice(h);
+      const { reply, initial, parseQuery: query, flags } = await observe(t, h, c.text);
+      assert.deepEqual(initial, { tipo: 'SOLICITUD', motivo: null, molesto: false, fuente: 'reglas' });
+      assert.deepEqual(query, {
+        category: c.category, period: c.month ? new Date(`2026-${c.month}-01T00:00:00.000Z`) : null,
+        folio: null, text: c.keyword,
+      });
+      assert.deepEqual(flags, {
+        esPausa: false, SALUDO: false, ACUSE: false,
+        CIERRE: c.text.startsWith('Es todo'), datos: true,
+      });
+      assert.deepEqual(h.llmCalls, []);
+      assert.deepEqual(h.extractionResults, [{
+        query, companyHint: null, notADocumentRequest: false, tipoMensaje: null, source: 'reglas',
+      }]);
+      const closesPrevious = c.text.startsWith('Es todo');
+      assert.deepEqual(h.events.slice(0, closesPrevious ? 2 : 1),
+        closesPrevious ? ['close', 'slots.extract'] : ['slots.extract']);
+      assert.deepEqual(h.escalations, []);
+      assert.deepEqual(h.searches.map((s) => s.query), [{
+        ...query, organizationId: scope.organizationId, excludeIds: [],
+      }]);
+      if (c.month) {
+        assert.deepEqual(h.deliveries.map((d) => d.id), [`invoice-${c.month}`]);
+        assert.equal(reply.text, '');
+        assert.equal(reply.awaiting, 'NADIE');
+        assert.deepEqual(h.state, empty());
+        assert.equal(h.events.filter((e) => e === 'close').length, 1);
+        assert.ok(h.events.indexOf('deliver') < h.events.indexOf('close'));
+        assert.equal(h.lastDelivery?.documentId, `invoice-${c.month}`);
+      } else {
+        assert.deepEqual(h.deliveries, []);
+        assert.equal(reply.awaiting, 'CLIENTE');
+        assert.match(reply.text, /CONTRATO_contract-1\.pdf/);
+        assert.match(reply.text, /CONTRATO_contract-2\.pdf/);
+        assert.deepEqual(h.state, {
+          ...empty(), category: 'CONTRATO', opciones: options(contracts()),
+          updatedAt: NOW,
+        });
+        assert.equal(h.events.filter((e) => e === 'close').length, closesPrevious ? 1 : 0);
+        assert.doesNotMatch(reply.text, /espera mejor/);
+      }
+    });
+  }
+
+  for (const text of ['Hola', 'Gracias', 'Ok', 'Es todo', 'Espera']) {
+    test(`aislado / ${previous} / ${text}`, async (t) => {
+      fixedRuntime(t);
+      const h = harness();
+      if (previous === 'factura-pendiente') await pendingInvoice(h);
+      const { reply, before, initial, parseQuery: query, flags } = await observe(t, h, text);
+      assert.equal(initial.tipo, 'CORTESIA');
+      assert.deepEqual(flags, {
+        esPausa: text === 'Espera', SALUDO: text === 'Hola', ACUSE: text === 'Ok',
+        CIERRE: text === 'Es todo', datos: false,
+      });
+      assert.deepEqual(query, {
+        category: null, period: null, folio: null, text: text === 'Espera' ? 'espera' : text,
+      });
+      assert.deepEqual(h.searches, []);
+      assert.deepEqual(h.deliveries, []);
+      assert.deepEqual(h.escalations, []);
+      assert.deepEqual(h.saves, []);
+      assert.equal(h.lastDelivery, null);
+      const closes = text === 'Es todo' && previous === 'factura-pendiente';
+      assert.deepEqual(h.state, closes ? empty() : before);
+      assert.equal(h.events.includes('close'), closes);
+      const pauseWithoutRequest = text === 'Espera' && previous === 'vacia';
+      assert.equal(h.extractionResults.length, pauseWithoutRequest ? 1 : 0);
+      assert.deepEqual(h.llmCalls, pauseWithoutRequest ? ['extract', 'draft'] : []);
+      assert.equal(reply.awaiting, previous === 'factura-pendiente' && !closes ? 'CLIENTE' : 'NADIE');
+      if (text === 'Hola') assert.match(reply.text, /Hola/);
+      if (text === 'Gracias') assert.match(reply.text, /Con gusto/);
+      if (text === 'Ok' || (text === 'Es todo' && !closes)) assert.equal(reply.text, '');
+      if (closes) assert.equal(reply.text, 'Entendido, lo dejamos aquí. Cuando necesites otro documento, dime.');
+      if (text === 'Espera') assert.equal(reply.text, pauseWithoutRequest
+        ? 'Aquí ando. Puedo buscarte documentos de *Empresa Memoria*.\nDime cuál necesitas y de qué mes.'
+        : 'Claro, tómate tu tiempo.');
+    });
+  }
+}
+
+test('pausa mixta / seis contratos / pregunta el mes sin filtros ni fallos artificiales', async (t) => {
+  fixedRuntime(t);
+  const h = harness([...invoices(), ...contracts(6)]);
+  await pendingInvoice(h);
+  const { reply } = await observe(t, h, mixed[4].text);
+  assert.deepEqual(h.searches.map((s) => [s.query.category, s.query.text, s.resultIds.length]), [
+    ['CONTRATO', null, 6],
+  ]);
+  assert.deepEqual(h.state, {
+    ...empty(), category: 'CONTRATO', preguntas: 1,
+    preguntado: { periodo: true }, ultimaPregunta: 'periodo', updatedAt: NOW,
+  });
+  assert.match(reply.text, /mes/);
+  assert.doesNotMatch(reply.text, /espera mejor/);
+  assert.equal(reply.awaiting, 'CLIENTE');
+  assert.deepEqual(h.llmCalls, []);
+  assert.deepEqual(h.deliveries, []);
+  assert.deepEqual(h.escalations, []);
+
+  // Control causal con idéntico catálogo y estado previo; solo cambia el prefijo.
+  const control = harness([...invoices(), ...contracts(6)]);
+  await pendingInvoice(control);
+  await control.handle('Necesito un contrato');
+  assert.equal(control.state.ultimaPregunta, 'periodo');
+  assert.equal(control.state.fallos, 0);
+  assert.equal(control.searches.length, 1);
+});
+
+test('pausa mixta / contrato con nombre alternativo / entrega sin escalamiento y respeta duplicados', async (t) => {
+  fixedRuntime(t);
+  const catalog = [...invoices(), doc('agreement', 'CONTRATO', '2026-03', 'Acuerdo_Comercial.pdf')];
+  const h = harness(catalog);
+  await pendingInvoice(h);
+  const first = await observe(t, h, mixed[4].text);
+  assert.equal(first.reply.awaiting, 'NADIE');
+  assert.deepEqual(h.state, empty());
+  assert.deepEqual(h.searches.map((s) => [s.query.category, s.query.text, s.resultIds]), [
+    ['CONTRATO', null, ['agreement']],
+  ]);
+  assert.deepEqual(h.deliveries.map((d) => d.id), ['agreement']);
+  assert.deepEqual(h.escalations, []);
+  h.clearTrace();
+  const { reply } = await observe(t, h, mixed[4].text);
+  assert.equal(reply.awaiting, 'CLIENTE');
+  assert.deepEqual(h.escalations, []);
+  assert.deepEqual(h.state, {
+    ...empty(), category: 'CONTRATO', opciones: options(catalog.slice(-1)), updatedAt: NOW,
+  });
+  assert.deepEqual(h.llmCalls, []);
+  assert.deepEqual(h.deliveries, []);
+
+  const control = harness(catalog);
+  await pendingInvoice(control);
+  await control.handle('Necesito un contrato');
+  assert.deepEqual(control.deliveries.map((d) => d.id), ['agreement']);
+  assert.deepEqual(control.escalations, []);
+});
+
+for (const exhausted of [false, true]) {
+  test(`cierre mixto / contrato previo / presupuesto ${exhausted ? 'agotado' : 'disponible'}`, async (t) => {
+    fixedRuntime(t);
+    const h = harness();
+    await h.handle('Necesito la factura de febrero');
+    const lastDelivery = h.lastDelivery;
+    assert.equal(lastDelivery?.documentId, 'invoice-02');
+    h.clearTrace();
+    // Estado explícito para aislar el cierre de una petición de la MISMA categoría.
+    const prior: Solicitud = {
+      ...empty(), category: 'CONTRATO', period: '2026-01-01T00:00:00.000Z',
+      folio: 'C999', organizationId: scope.organizationId, opciones: options(contracts().slice(0, 1)),
+      preguntas: exhausted ? 3 : 1, preguntado: { detalle: true }, ultimaPregunta: 'detalle',
+      fallos: 2, rechazados: ['contract-2'], updatedAt: NOW,
+    };
+    h.seed(prior);
+    const { reply } = await observe(t, h, mixed[3].text);
+    assert.deepEqual(h.events.slice(0, 2), ['close', 'slots.extract']);
+    assert.deepEqual(h.saves[0], {
+      category: 'CONTRATO', period: null, folio: null, opciones: null,
+      preguntas: 0, preguntado: {}, ultimaPregunta: null, fallos: 0, rechazados: [],
+    });
+    assert.deepEqual(h.llmCalls, []);
+    assert.deepEqual(h.deliveries, []);
+    assert.equal(reply.awaiting, 'CLIENTE');
+    assert.deepEqual(h.state, {
+      ...empty(), category: 'CONTRATO', opciones: options(contracts()), updatedAt: NOW,
+    });
+    assert.deepEqual(h.escalations, []);
+    assert.deepEqual(h.searches, [{
+      query: { category: 'CONTRATO', period: null, folio: null, text: null,
+        organizationId: scope.organizationId, excludeIds: [] },
+      resultIds: ['contract-1', 'contract-2'],
+    }]);
+    assert.equal(h.events.filter((e) => e === 'close').length, 1);
+    assert.deepEqual(h.lastDelivery, lastDelivery);
+
+    // El cierre aislado sí limpia estos datos antes de pedir otro contrato.
+    const control = harness();
+    control.seed(prior);
+    await control.handle('Es todo');
+    assert.deepEqual(control.state, empty());
+    await control.handle('Necesito un contrato');
+    assert.deepEqual(control.escalations, []);
+    assert.equal(control.state.opciones?.length, 2);
+  });
+}
+
+for (const [text, category, keywords] of [
+  ['Espera, mejor necesito un contrato de mantenimiento', 'CONTRATO', 'mantenimiento'],
+  ['Espera, mejor necesito un reporte de espera', 'REPORTE', 'espera'],
+  ['Necesito el reporte de espera', 'REPORTE', 'espera'],
+  ['Necesito el contrato de mejor servicio', 'CONTRATO', 'mejor servicio'],
+  ['Espera, mejor necesito ayuda', null, 'espera mejor'],
+] as const) {
+  test(`limpieza contextual conserva contenido documental / ${text}`, () => {
+    assert.deepEqual(parseQuery(text), { category, period: null, folio: null, text: keywords });
+  });
+}
+
+test('limpieza contextual respeta el nombre de archivo Espera_Mejor.pdf', () => {
+  assert.deepEqual(parseQuery('Espera, mejor necesito el contrato Espera_Mejor.pdf'), {
+    // nombreDeArchivo ya omite la extensión al construir la pista de búsqueda.
+    category: 'CONTRATO', period: null, folio: null, text: 'Espera_Mejor',
+  });
+});
