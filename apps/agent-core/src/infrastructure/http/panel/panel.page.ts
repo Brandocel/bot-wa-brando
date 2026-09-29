@@ -35,6 +35,9 @@ const TRAZOS: Record<string, string> = {
   plegar: '<path d="m11 17-5-5 5-5"/><path d="m18 17-5-5 5-5"/>',
   basura: '<path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
   documentos: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
+  panel: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/>',
+  buscar: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  archivo: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15h6"/><path d="M9 11h6"/>',
   bot: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>',
 };
 
@@ -49,7 +52,9 @@ export function loginPage(error = false): string {
 <title>Panel · Entrar</title>${STYLES}</head>
 <body class="centered">
   <form class="card login" id="form">
-    <h1>Panel de operación</h1>
+    <span class="logo">${icono('bot', '')}</span>
+    <h1>Hortia</h1>
+    <p class="muted small" style="margin:-10px 0 0">Panel de operación</p>
     ${error ? '<div class="alert">Correo o contraseña incorrectos.</div>' : ''}
     <label>Correo<input type="email" name="email" required autocomplete="username"></label>
     <label>Contraseña<input type="password" name="password" required autocomplete="current-password"></label>
@@ -91,8 +96,8 @@ export function panelPage(): string {
   <aside class="nav" id="nav">
     <div class="nav-brand">
       <span class="logo">${icono('bot', '')}</span>
-      <span class="nav-text"><strong>Panel</strong><small>operación</small></span>
-      <button class="icon nav-text" id="nav-plegar" title="Plegar menú">${icono('plegar')}</button>
+      <span class="nav-text marca"><strong>Hortia</strong><small>Panel de operación</small></span>
+      <button class="icon nav-text" id="nav-plegar" title="Plegar menú">${icono('panel')}</button>
     </div>
     <nav class="nav-items">
       <button data-view="bandeja" class="active" title="Conversaciones">${icono('chat')}<span class="nav-text">Conversaciones</span><span class="badge nav-text" id="badge-persona" hidden></span></button>
@@ -104,8 +109,11 @@ export function panelPage(): string {
       <button data-view="auditoria" title="Auditoría">${icono('escudo')}<span class="nav-text">Auditoría</span></button>
     </nav>
     <div class="nav-foot">
-      <div class="nav-text"><div id="whoami" class="muted small"></div></div>
-      <button class="ghost" id="logout" title="Salir">${icono('salir')}<span class="nav-text">Salir</span></button>
+      <div class="yo">
+        <span class="yo-avatar" id="yo-avatar">·</span>
+        <span class="nav-text yo-datos"><strong id="yo-nombre"></strong><small id="yo-rol"></small></span>
+        <button class="icon" id="logout" title="Salir">${icono('salir')}</button>
+      </div>
     </div>
   </aside>
   <div id="nav-velo" hidden></div>
@@ -113,13 +121,15 @@ export function panelPage(): string {
   <!-- Centro -->
   <div class="main">
     <header class="top">
-      <button class="icon" id="nav-abrir" title="Menú">${icono('menu')}</button>
-      <strong id="titulo">Conversaciones</strong>
+      <button class="icon solo-movil" id="nav-abrir" title="Menú">${icono('menu')}</button>
+      <div class="encabezado">
+        <h1 id="titulo">Conversaciones</h1>
+        <div class="resumen-linea" id="resumen"></div>
+      </div>
       <span class="spacer"></span>
-      <span class="muted small" id="reloj"></span>
-      <button class="icon" id="refrescar" title="Actualizar">${icono('refrescar')}</button>
+      <span class="muted small no-movil" id="reloj"></span>
+      <button class="icon redondo" id="refrescar" title="Actualizar">${icono('refrescar')}</button>
     </header>
-    <section class="cards" id="resumen"></section>
     <main id="contenido"><p class="muted">Cargando…</p></main>
   </div>
 
@@ -127,6 +137,7 @@ export function panelPage(): string {
   <aside id="hilo" hidden>
     <div class="hilo-head">
       <button class="icon solo-movil" id="hilo-volver" title="Volver">${icono('atras')}</button>
+      <div class="avatar" id="hilo-avatar"></div>
       <div class="hilo-quien">
         <strong id="hilo-nombre"></strong>
         <div class="muted mono small" id="hilo-numero"></div>
@@ -136,8 +147,10 @@ export function panelPage(): string {
       <button class="icon peligro" id="hilo-borrar" title="Borrar esta conversación" hidden>${icono('basura')}</button>
       <button class="icon no-movil" id="hilo-cerrar" title="Cerrar">${icono('cerrar')}</button>
     </div>
-    <div id="hilo-estado" class="hilo-estado"></div>
-    <div id="hilo-meta" class="hilo-meta"></div>
+    <div class="hilo-sub">
+      <div id="hilo-estado" class="hilo-estado"></div>
+      <div id="hilo-meta" class="hilo-meta"></div>
+    </div>
     <div id="hilo-tickets" class="hilo-drawer" hidden>
       <div class="drawer-head"><strong>Tickets</strong><span class="spacer"></span><button class="icon" id="hilo-tickets-cerrar" title="Cerrar">${icono('cerrar')}</button></div>
       <div id="hilo-tickets-lista" class="drawer-lista"></div>
@@ -160,8 +173,11 @@ export function panelPage(): string {
     </div>
     <div id="hilo-mensajes" class="chat"></div>
     <form id="hilo-form" class="hilo-form">
-      <textarea id="hilo-texto" rows="1" placeholder="Escribe un mensaje… (Enter envía, Shift+Enter salto)"></textarea>
-      <button type="submit" title="Enviar">${icono('enviar')}</button>
+      <div class="compositor">
+        <textarea id="hilo-texto" rows="1" placeholder="Escribe un mensaje…" aria-label="Mensaje"></textarea>
+        <button type="submit" title="Enviar">${icono('enviar')}</button>
+      </div>
+      <div class="compositor-ayuda no-movil">Enter envía · Shift+Enter nueva línea</div>
     </form>
   </aside>
 </div>
@@ -171,6 +187,9 @@ const contenido = document.getElementById('contenido');
 const app = document.getElementById('app');
 let vistaActual = 'bandeja';
 let filtroBandeja = 'todas';
+// Lo que se escribió en el buscador de conversaciones. Filtra las filas ya
+// pintadas, así no se pierde el foco ni se pide nada al servidor.
+let busquedaBandeja = '';
 let filtroCuarentena = 'revision';
 let docsEmpresa = null;
 let docsEstado = 'entregables';
@@ -309,20 +328,54 @@ function etiqueta(m) {
   return '<span class="pill tipo tipo-' + m.intent.toLowerCase() + (m.molesto ? ' molesto' : '') + '">' + esc(texto) + '</span>';
 }
 
+const ICONO_ARCHIVO = '${icono('archivo')}';
+
+/**
+ * El texto de un mensaje como se ve en WhatsApp: *negritas* y, si es un
+ * documento que mandó el bot ("[documento] nombre.pdf"), una tarjeta de
+ * archivo en vez de la etiqueta cruda.
+ */
+function cuerpoMensaje(body) {
+  let texto = String(body ?? '').slice(0, 1200);
+  let adjunto = '';
+  const doc = /^\\[documento\\] (.+)(?:\\n|$)/.exec(texto);
+  if (doc) {
+    adjunto = '<div class="adjunto">' + ICONO_ARCHIVO + '<span>' + esc(doc[1]) + '</span></div>';
+    texto = texto.slice(doc[0].length);
+  }
+  return adjunto + esc(texto).replace(/\\*([^*\\n]+)\\*/g, '<strong>$1</strong>');
+}
+
+/** "Hoy", "Ayer" o la fecha: el separador entre días del hilo. */
+function nombreDia(iso) {
+  const d = new Date(iso);
+  const hoy = new Date();
+  const ayer = new Date(); ayer.setDate(hoy.getDate() - 1);
+  if (d.toDateString() === hoy.toDateString()) return 'Hoy';
+  if (d.toDateString() === ayer.toDateString()) return 'Ayer';
+  return d.toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long' });
+}
+
 function pintarMensajes(datos) {
   const caja = document.getElementById('hilo-mensajes');
   const abajo = caja.scrollHeight - caja.scrollTop - caja.clientHeight < 40;
 
-  const burbujas = datos.messages.map((m) =>
-    '<div class="burbuja ' + (m.direction === 'IN' ? 'entra' : 'sale') + '">' +
-      etiqueta(m) +
-      esc(m.body).slice(0, 1200) +
-      '<span class="hora">' + hora(m.createdAt) + '</span>' +
-    '</div>');
+  let diaAnterior = null;
+  const burbujas = datos.messages.map((m) => {
+    const dia = new Date(m.createdAt).toDateString();
+    const separador = dia !== diaAnterior ? '<div class="dia">' + esc(nombreDia(m.createdAt)) + '</div>' : '';
+    diaAnterior = dia;
+    return separador +
+      '<div class="burbuja ' + (m.direction === 'IN' ? 'entra' : 'sale') + '">' +
+        etiqueta(m) +
+        cuerpoMensaje(m.body) +
+        '<span class="hora">' + hora(m.createdAt) + '</span>' +
+      '</div>';
+  });
 
   const pendientes = (datos.pendientes ?? []).map((p) =>
     '<div class="burbuja sale pendiente' + (p.status === 'FAILED' ? ' fallo' : '') + '">' +
-      esc(p.body).slice(0, 1200) +
+      cuerpoMensaje(p.body) +
       '<span class="hora">' + (p.status === 'FAILED'
         ? 'no salió: ' + esc(p.error ?? 'error')
         : 'enviando…') + '</span>' +
@@ -343,11 +396,13 @@ function pintarEstadoHilo(datos) {
   if (datos.enManosDePersona) {
     boton.textContent = 'Devolver al bot';
     boton.className = 'ghost small activo';
+    boton.title = 'El bot vuelve a contestar este chat';
     estado.innerHTML = '<span class="pill warn">Lo atiendes tú · el bot no contesta</span>' +
       (datos.handoffUntil ? ' <span class="muted small">hasta ' + hora(datos.handoffUntil) + '</span>' : '');
   } else {
     boton.textContent = 'Atender yo';
-    boton.className = 'ghost small';
+    boton.className = 'acento';
+    boton.title = 'El bot se calla y contestas tú';
     const etiqueta = {
       BOT: ['warn', 'sin responder'],
       AGENTE: ['warn', 'espera a una persona'],
@@ -355,7 +410,7 @@ function pintarEstadoHilo(datos) {
       NADIE: ['ok', 'al día'],
     }[datos.awaiting] ?? ['', datos.awaiting];
     estado.innerHTML = '<span class="pill ' + etiqueta[0] + '">' + etiqueta[1] + '</span>' +
-      ' <span class="muted small">el bot atiende</span>';
+      '<span class="pill">el bot atiende</span>';
   }
 }
 
@@ -364,8 +419,11 @@ async function abrirHilo(chatId, silencioso) {
   const datos = await api('conversacion?chatId=' + encodeURIComponent(chatId));
   if (!datos) return;
 
-  document.getElementById('hilo-nombre').textContent =
-    datos.contact?.displayName || numeroBonito(datos.contact?.waId) || datos.chatId;
+  const nombreHilo = datos.contact?.displayName || numeroBonito(datos.contact?.waId) || datos.chatId;
+  document.getElementById('hilo-nombre').textContent = nombreHilo;
+  const avatarHilo = document.getElementById('hilo-avatar');
+  avatarHilo.textContent = iniciales(nombreHilo);
+  avatarHilo.style.setProperty('--h', tono(nombreHilo));
   document.getElementById('hilo-numero').textContent = numeroBonito(datos.contact?.waId || datos.chatId);
 
   pintarEstadoHilo(datos);
@@ -373,9 +431,9 @@ async function abrirHilo(chatId, silencioso) {
   const membresias = datos.contact?.memberships ?? [];
   document.getElementById('hilo-meta').innerHTML = membresias.length
     ? membresias.map((m) =>
-        '<span class="pill">' + esc(m.organization.name) + ' · ' + m.role +
+        '<span class="pill">' + esc(m.organization.name) + ' · ' + m.role.toLowerCase() +
         (m.verifiedAt ? '' : ' · <span class="warn-text">sin verificar</span>') + '</span>',
-      ).join(' ')
+      ).join('')
     : '<span class="pill warn">sin acceso a ninguna empresa</span>';
 
   // Los tickets van en un cajón lateral, no encima del chat: son casos de
@@ -508,10 +566,13 @@ campoTexto.addEventListener('keydown', (e) => {
     document.getElementById('hilo-form').requestSubmit();
   }
 });
-campoTexto.addEventListener('input', () => {
+function ajustarCampo() {
   campoTexto.style.height = 'auto';
-  campoTexto.style.height = Math.min(campoTexto.scrollHeight, 140) + 'px';
-});
+  const alto = campoTexto.scrollHeight;
+  campoTexto.style.height = Math.min(alto, 160) + 'px';
+  campoTexto.style.overflowY = alto > 160 ? 'auto' : 'hidden';
+}
+campoTexto.addEventListener('input', ajustarCampo);
 
 document.getElementById('hilo-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -519,7 +580,7 @@ document.getElementById('hilo-form').addEventListener('submit', async (e) => {
   if (!texto || !chatAbierto) return;
 
   campoTexto.value = '';
-  campoTexto.style.height = 'auto';
+  ajustarCampo();
 
   // Se pinta ya, como pendiente: el mensaje existe para ti desde que le
   // das enviar, no desde que WhatsApp lo confirma.
@@ -535,6 +596,7 @@ document.getElementById('hilo-form').addEventListener('submit', async (e) => {
   } catch (err) {
     aviso(err.message, 'error');
     campoTexto.value = texto;
+    ajustarCampo();
   }
 });
 
@@ -553,6 +615,14 @@ document.addEventListener('click', async (e) => {
       if (chatAbierto) await abrirHilo(chatAbierto, true);
       pintarResumen();
     } catch (err) { aviso(err.message, 'error'); }
+    return;
+  }
+
+  const ir = e.target.closest('[data-ir]');
+  if (ir) {
+    if (ir.dataset.irFiltro) filtroBandeja = ir.dataset.irFiltro;
+    if (ir.dataset.ir === 'cuarentena') filtroCuarentena = 'revision';
+    pintar(ir.dataset.ir);
     return;
   }
 
@@ -594,6 +664,27 @@ document.addEventListener('click', async (e) => {
   if (fila && fila.dataset.chat) abrirHilo(fila.dataset.chat);
 });
 
+// ── Buscador de conversaciones ──────────────────────────────────────────
+
+const ICONO_BUSCAR = '${icono('buscar')}';
+
+function normalizarBusqueda(texto) {
+  return String(texto ?? '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
+}
+
+function aplicarBusqueda() {
+  const q = normalizarBusqueda(busquedaBandeja).trim();
+  document.querySelectorAll('.fila[data-busqueda]').forEach((fila) => {
+    fila.hidden = q !== '' && !fila.dataset.busqueda.includes(q);
+  });
+}
+
+document.addEventListener('input', (e) => {
+  if (e.target.id !== 'buscar-chat') return;
+  busquedaBandeja = e.target.value;
+  aplicarBusqueda();
+});
+
 // ── Vistas ──────────────────────────────────────────────────────────────
 
 const VISTAS = {
@@ -606,6 +697,11 @@ const VISTAS = {
     ].map(([valor, texto]) =>
       '<button class="chip' + (filtroBandeja === valor ? ' activo' : '') + '" data-filtro="' + valor + '">' + texto + '</button>',
     ).join('');
+
+    const buscador =
+      '<label class="buscador">' + ICONO_BUSCAR +
+        '<input id="buscar-chat" type="search" placeholder="Busca por nombre, número o mensaje" value="' + esc(busquedaBandeja) + '">' +
+      '</label>';
 
     const lista = filas.length
       ? '<div class="lista">' + filas.map((c) => {
@@ -622,7 +718,8 @@ const VISTAS = {
                 : c.awaiting === 'CLIENTE'
                   ? '<span class="estado cliente"><i></i>espera al cliente</span>'
                   : '<span class="estado ok"><i></i>al día</span>';
-          return '<div class="fila' + (c.chatId === chatAbierto ? ' abierta' : '') + '" data-chat="' + esc(c.chatId) + '">' +
+          const indice = normalizarBusqueda(nombre + ' ' + (c.contact?.waId ?? '') + ' ' + ultimo);
+          return '<div class="fila' + (c.chatId === chatAbierto ? ' abierta' : '') + '" data-chat="' + esc(c.chatId) + '" data-busqueda="' + esc(indice) + '">' +
             '<div class="avatar" style="--h:' + tono(nombre) + '">' + esc(iniciales(nombre)) + '</div>' +
             '<div class="fila-cuerpo">' +
               '<div class="fila-arriba"><strong class="recorte">' + esc(nombre) + '</strong>' +
@@ -631,7 +728,7 @@ const VISTAS = {
               '<div class="fila-pills">' + estado +
                 (c.topic ? ' <span class="pill">' + esc(c.topic) + '</span>' : '') +
                 (c.quejas ? ' <span class="pill tipo-queja">queja</span>' : '') +
-                (c.tickets[0] ? ' <span class="muted small">#' + c.tickets[0].number + '</span>' : '') +
+                (c.tickets[0] ? ' <span class="folio">#' + c.tickets[0].number + '</span>' : '') +
               '</div>' +
             '</div>' +
           '</div>';
@@ -640,7 +737,8 @@ const VISTAS = {
           ? 'Nadie ha escrito en las últimas dos semanas.'
           : 'Nada aquí. Todo atendido.') + '</p>';
 
-    return '<div class="chips">' + chips + '</div>' + lista;
+    setTimeout(aplicarBusqueda, 0);
+    return '<div class="barra">' + buscador + '<div class="chips">' + chips + '</div></div>' + lista;
   },
 
   async tickets() {
@@ -1207,16 +1305,23 @@ async function pintarResumen() {
   const r = await api('resumen');
   if (!r) return;
 
-  document.getElementById('resumen').innerHTML = [
-    ['Sin responder', r.abiertos, r.abiertos > 0 ? 'warn' : ''],
-    ['Esperan a una persona', r.revision, r.revision > 0 ? 'warn' : ''],
-    ['Prioridad alta', r.alta, r.alta > 0 ? 'warn' : ''],
-    ['Documentos por revisar', r.cuarentena, r.cuarentena > 0 ? 'warn' : ''],
-    ['Entregas 24h', r.entregas24h, ''],
-    ['Negados 24h', r.denegados24h, ''],
-  ].map(([etiqueta, valor, clase]) =>
-    '<div class="card metric ' + clase + '"><span>' + etiqueta + '</span><strong>' + valor + '</strong></div>',
-  ).join('');
+  // Lo que pide atención, como una frase con pastillas que llevan a su
+  // vista. Lo que está en cero no se menciona: no es trabajo pendiente.
+  const pendientes = [
+    [r.revision, r.revision === 1 ? 'espera a una persona' : 'esperan a una persona', 'ambar', 'bandeja', 'persona'],
+    [r.abiertos, 'sin responder', 'ambar', 'bandeja', 'BOT'],
+    [r.alta, r.alta === 1 ? 'ticket de prioridad alta' : 'tickets de prioridad alta', 'rojo', 'tickets', ''],
+    [r.cuarentena, r.cuarentena === 1 ? 'documento por revisar' : 'documentos por revisar', 'violeta', 'cuarentena', ''],
+  ].filter(([n]) => n > 0);
+
+  document.getElementById('resumen').innerHTML =
+    (pendientes.length
+      ? '<span class="muted">Ahora tienes</span>' + pendientes.map(([n, texto, color, vista, filtro]) =>
+          '<button class="dato ' + color + '" data-ir="' + vista + '" data-ir-filtro="' + filtro + '">' + n + ' ' + texto + '</button>',
+        ).join('')
+      : '<span class="muted">Todo al día: nadie espera respuesta.</span>') +
+    '<span class="muted small">· ' + r.entregas24h + ' entrega' + (r.entregas24h === 1 ? '' : 's') +
+      ' y ' + r.denegados24h + ' negada' + (r.denegados24h === 1 ? '' : 's') + ' en 24 h</span>';
 
   const bp = document.getElementById('badge-persona');
   bp.textContent = r.revision; bp.hidden = !(r.revision > 0);
@@ -1226,7 +1331,9 @@ async function pintarResumen() {
 
 async function pintar(vista, silencioso) {
   vistaActual = vista;
-  document.getElementById('titulo').textContent = TITULOS[vista] ?? vista;
+  document.getElementById('titulo').textContent = vista === 'bandeja' && yo
+    ? 'Hola, ' + String(yo.name ?? '').trim().split(/\\s+/)[0]
+    : TITULOS[vista] ?? vista;
   document.querySelectorAll('.nav-items button').forEach((b) =>
     b.classList.toggle('active', b.dataset.view === vista));
   if (!silencioso) contenido.innerHTML = '<p class="muted">Cargando…</p>';
@@ -1258,7 +1365,9 @@ document.getElementById('logout').addEventListener('click', async () => {
 api('me').then((usuario) => {
   yo = usuario;
   if (usuario) {
-    document.getElementById('whoami').textContent = usuario.name + ' · ' + usuario.role;
+    document.getElementById('yo-avatar').textContent = iniciales(usuario.name);
+    document.getElementById('yo-nombre').textContent = usuario.name;
+    document.getElementById('yo-rol').textContent = usuario.role === 'ADMIN' ? 'Administrador' : 'Agente';
   }
   pintar('bandeja');
 });
@@ -1268,7 +1377,8 @@ pintarResumen();
 // Refresco de la lista cada 20 s, sin recargar debajo de un formulario a
 // medio llenar. El hilo abierto tiene su propio refresco más frecuente.
 setInterval(() => {
-  if (document.querySelector('.form-alta input:focus')) return;
+  // Ni un formulario a medio llenar ni el buscador mientras se escribe.
+  if (document.querySelector('#contenido input:focus, #contenido select:focus, #contenido textarea:focus')) return;
   pintarResumen();
   pintar(vistaActual, true);
 }, 20000);
@@ -1276,38 +1386,67 @@ setInterval(() => {
 </body></html>`;
 }
 
-const STYLES = `<style>
+const STYLES = `<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap">
+<style>
+  /*
+   * Paleta y medidas en variables: todo lo de abajo las usa, así un
+   * cambio de tono es una línea y no una búsqueda por el archivo.
+   */
   :root {
     color-scheme: dark;
-    --fondo: #0f1115;
-    --caja: #141821;
-    --caja2: #1a1f2a;
-    --borde: #232733;
-    --texto: #e6e6e6;
-    --suave: #8b93a1;
-    --azul: #2f6feb;
-    --nav: 232px;
-    --nav-plegado: 60px;
-    --hilo: 420px;
+    --fondo: #0c0e15;
+    --caja: #12151e;
+    --caja2: #181c27;
+    --caja3: #1f2433;
+    --borde: #232838;
+    --borde2: #2e3446;
+    --texto: #eef0f6;
+    --suave: #8b92a6;
+    --tenue: #5f6679;
+    --acento: #7c6cf6;
+    --acento-fuerte: #6a5ae8;
+    --acento-suave: rgba(124, 108, 246, .14);
+    --acento-borde: rgba(124, 108, 246, .45);
+    --ambar: #f5c451;
+    --ambar-suave: rgba(245, 196, 81, .12);
+    --ambar-borde: rgba(245, 196, 81, .3);
+    --verde: #4ade80;
+    --verde-suave: rgba(74, 222, 128, .12);
+    --rojo: #f87171;
+    --rojo-suave: rgba(248, 113, 113, .12);
+    --celeste: #60a5fa;
+    --celeste-suave: rgba(96, 165, 250, .12);
+    --radio: 12px;
+    --nav: 248px;
+    --nav-plegado: 72px;
+    --hilo: 440px;
   }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
   html, body { height: 100%; }
   body {
     margin: 0; background: var(--fondo); color: var(--texto);
-    font: 14px/1.55 system-ui, -apple-system, Segoe UI, sans-serif;
+    font: 14px/1.55 'Plus Jakarta Sans', 'Segoe UI Variable', 'Segoe UI', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
-  body.centered { min-height: 100vh; display: grid; place-items: center; }
+  body.centered { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
+  a { color: var(--acento); }
+  ::selection { background: var(--acento-suave); }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--caja3); border-radius: 10px; border: 2px solid var(--fondo); }
   .muted { color: var(--suave); }
   .small { font-size: 12px; }
   .centro { text-align: center; }
-  .warn-text { color: #e8c07d; }
-  .ok-text { color: #7ee2a8; }
+  .warn-text { color: var(--ambar); }
+  .ok-text { color: var(--verde); }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
-  code { background: #1b1f28; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  code { background: var(--caja3); padding: 1px 6px; border-radius: 6px; font-size: 12px; }
   .spacer { flex: 1; }
   .recorte { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   .recorte-celda { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ico { width: 20px; height: 20px; flex-shrink: 0; }
 
   /* ── Armazón ─────────────────────────────────────────────────────── */
   .app {
@@ -1320,7 +1459,7 @@ const STYLES = `<style>
   .app.plegado.con-hilo { grid-template-columns: var(--nav-plegado) 1fr var(--hilo); }
 
   .main { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
-  main { padding: 16px 20px 28px; overflow-y: auto; flex: 1; }
+  main { padding: 8px 28px 32px; overflow-y: auto; flex: 1; }
   main > p:first-child { margin-top: 0; }
 
   /* ── Menú lateral ────────────────────────────────────────────────── */
@@ -1328,202 +1467,337 @@ const STYLES = `<style>
     background: var(--caja); border-right: 1px solid var(--borde);
     display: flex; flex-direction: column; overflow: hidden; min-width: 0;
   }
-  .nav-brand { display: flex; align-items: center; gap: 10px; padding: 14px 12px 12px 16px; border-bottom: 1px solid var(--borde); }
-  .logo { font-size: 20px; color: var(--azul); }
-  .nav-brand strong { display: block; line-height: 1.1; }
-  .nav-brand small { color: var(--suave); font-size: 11px; }
-  .nav-brand .nav-text { flex: 1; }
-  .nav-items { display: flex; flex-direction: column; gap: 2px; padding: 10px 8px; flex: 1; }
+  .nav-brand { display: flex; align-items: center; gap: 12px; padding: 20px 14px 18px 18px; }
+  .logo {
+    width: 36px; height: 36px; border-radius: 10px; flex-shrink: 0;
+    display: grid; place-items: center; color: #fff;
+    background: linear-gradient(140deg, #8b7bff, #5b4bdb);
+    box-shadow: 0 6px 18px rgba(124, 108, 246, .35);
+  }
+  .logo svg { width: 20px; height: 20px; }
+  .marca { flex: 1; min-width: 0; }
+  .marca strong { display: block; font-size: 19px; font-weight: 800; letter-spacing: -.02em; line-height: 1.1; }
+  .marca small { color: var(--suave); font-size: 11px; }
+  .nav-items {
+    display: flex; flex-direction: column; gap: 3px; padding: 12px 12px; flex: 1;
+    border-top: 1px solid var(--borde);
+  }
   .nav-items button {
-    display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
-    background: none; border: none; color: var(--suave); cursor: pointer;
-    padding: 9px 10px; border-radius: 8px; font-size: 14px; white-space: nowrap;
+    display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+    background: none; border: none; color: var(--suave); cursor: pointer; font: inherit;
+    padding: 10px 12px; border-radius: 10px; font-size: 14px; font-weight: 600; white-space: nowrap;
+    transition: background .12s, color .12s;
   }
   .nav-items button:hover { background: var(--caja2); color: var(--texto); }
-  .nav-items button.active { background: #1c2a45; color: #fff; }
-  .ico { width: 20px; text-align: center; flex-shrink: 0; font-size: 15px; }
-  .badge { margin-left: auto; background: #33270f; color: #e8c07d; border-radius: 999px; padding: 0 7px; font-size: 11px; }
-  .nav-foot { padding: 10px 8px 12px; border-top: 1px solid var(--borde); display: flex; flex-direction: column; gap: 8px; }
-  .nav-foot .nav-text { padding: 0 8px; }
-  .nav-foot .ghost { display: flex; align-items: center; gap: 10px; width: 100%; justify-content: flex-start; }
-  .plegado .nav-text { display: none !important; }
-  .plegado .nav-brand { padding-left: 12px; justify-content: center; }
-  .plegado .nav-items button { justify-content: center; padding: 10px 0; }
-  .plegado .nav-foot .ghost { justify-content: center; }
-  #nav-velo { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 30; }
-
-  /* ── Barra superior y tarjetas ───────────────────────────────────── */
-  .top {
-    display: flex; align-items: center; gap: 12px; padding: 10px 16px;
-    border-bottom: 1px solid var(--borde); background: var(--caja);
+  .nav-items button.active { background: var(--caja3); color: var(--texto); }
+  .nav-items button.active .ico { color: var(--acento); }
+  .badge {
+    margin-left: auto; background: var(--ambar-suave); color: var(--ambar);
+    border-radius: 999px; padding: 1px 8px; font-size: 11px; font-weight: 700;
   }
-  .top strong { font-size: 15px; }
+  .nav-foot { padding: 12px; border-top: 1px solid var(--borde); }
+  .yo { display: flex; align-items: center; gap: 10px; padding: 6px; border-radius: 12px; }
+  .yo-avatar {
+    width: 38px; height: 38px; border-radius: 10px; flex-shrink: 0;
+    display: grid; place-items: center; font-weight: 800; font-size: 13px;
+    background: var(--caja3); color: var(--texto);
+  }
+  .yo-datos { flex: 1; min-width: 0; line-height: 1.25; }
+  .yo-datos strong { display: block; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .yo-datos small { color: var(--suave); font-size: 12px; }
+  .plegado .nav-text { display: none !important; }
+  .plegado .nav-brand { padding-left: 0; padding-right: 0; justify-content: center; flex-direction: column; }
+  .plegado #nav-plegar { display: grid !important; transform: rotate(180deg); }
+  .plegado .nav-items { padding: 12px 10px; }
+  .plegado .nav-items button { justify-content: center; padding: 11px 0; }
+  .plegado .yo { flex-direction: column; }
+  .plegado #logout { display: grid !important; }
+  #nav-velo { position: fixed; inset: 0; background: rgba(0, 0, 0, .55); z-index: 30; }
+
+  /* ── Encabezado ──────────────────────────────────────────────────── */
+  .top { display: flex; align-items: flex-start; gap: 14px; padding: 24px 28px 18px; }
+  .encabezado { min-width: 0; }
+  .encabezado h1 { margin: 0; font-size: 26px; font-weight: 800; letter-spacing: -.025em; line-height: 1.2; }
+  .resumen-linea { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-top: 8px; font-size: 13px; }
+  .dato {
+    border: 1px solid transparent; border-radius: 999px; padding: 3px 11px;
+    font: inherit; font-size: 13px; font-weight: 700; cursor: pointer;
+  }
+  .dato.ambar { background: var(--ambar-suave); color: var(--ambar); border-color: var(--ambar-borde); }
+  .dato.rojo { background: var(--rojo-suave); color: var(--rojo); border-color: rgba(248, 113, 113, .3); }
+  .dato.violeta { background: var(--acento-suave); color: #b3a9ff; border-color: var(--acento-borde); }
+  .dato:hover { filter: brightness(1.15); }
   .icon {
     background: none; border: 1px solid transparent; color: var(--suave); cursor: pointer;
-    width: 34px; height: 34px; border-radius: 8px; font-size: 18px; line-height: 1;
+    width: 36px; height: 36px; border-radius: 10px; display: inline-grid; place-items: center;
+    flex-shrink: 0;
   }
   .icon:hover { color: var(--texto); background: var(--caja2); }
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; padding: 16px 20px 0; }
-  .card { background: var(--caja); border: 1px solid var(--borde); border-radius: 10px; padding: 14px 16px; }
-  .codigo-pc { margin: 16px 20px 0; }
-  .codigo-pc a.boton { display: inline-block; background: #2563eb; color: #fff; padding: 10px 16px; border-radius: 8px; text-decoration: none; font-weight: 600; }
+  .icon svg { width: 18px; height: 18px; }
+  .icon.redondo { border-radius: 50%; border-color: var(--borde2); }
+  .top .muted.small { align-self: center; }
+  .top .icon.redondo { margin-top: 2px; }
+  .card { background: var(--caja); border: 1px solid var(--borde); border-radius: var(--radio); padding: 16px 18px; }
+  .codigo-pc { margin: 0 0 16px; }
+  .codigo-pc a.boton {
+    display: inline-block; background: var(--acento); color: #fff; padding: 10px 18px;
+    border-radius: 10px; text-decoration: none; font-weight: 700;
+  }
+  .codigo-pc a.boton:hover { background: var(--acento-fuerte); }
   .codigo-pc details { margin-top: 8px; }
   .codigo-grande { font: 600 40px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 6px; margin: 8px 0 12px; }
-  .metric { display: flex; flex-direction: column; gap: 2px; }
-  .metric span { color: var(--suave); font-size: 12px; }
-  .metric strong { font-size: 24px; font-weight: 600; }
-  .metric.warn strong { color: #e8c07d; }
 
-  /* ── Lista de conversaciones ─────────────────────────────────────── */
-  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  /* ── Barra de herramientas y filtros ─────────────────────────────── */
+  .barra { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+  .buscador {
+    display: flex; flex-direction: row; align-items: center; gap: 8px; font-weight: 400; min-width: 260px; flex: 0 1 340px;
+    background: var(--caja); border: 1px solid var(--borde); border-radius: 10px; padding: 0 12px;
+    color: var(--tenue);
+  }
+  .buscador:focus-within { border-color: var(--acento-borde); }
+  .buscador svg { width: 16px; height: 16px; }
+  .buscador input { border: none; background: none; padding: 10px 0; flex: 1; min-width: 0; }
+  .buscador input:focus { outline: none; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+  .barra .chips { margin-bottom: 0; }
   .chips select { margin-right: 6px; }
-  .warn-link { color: #ffd98a; }
+  .chip {
+    background: var(--caja); border: 1px solid var(--borde); color: var(--suave); font: inherit;
+    padding: 6px 14px; border-radius: 999px; cursor: pointer; font-size: 13px; font-weight: 600;
+  }
+  .chip:hover { color: var(--texto); border-color: var(--borde2); }
+  .chip.activo { background: var(--acento-suave); border-color: var(--acento-borde); color: #c9c1ff; }
+  .warn-link { color: var(--ambar); }
   .docs-total { align-self: center; margin-left: auto; }
   .docs-grid { display: flex; flex-direction: column; gap: 12px; }
-  .docs-tipo { padding: 12px 14px; }
+  .docs-tipo { padding: 14px 16px; }
   .docs-tipo h3 { margin: 0 0 6px; font-size: 15px; }
   .docs-mes { border-top: 1px solid var(--borde); }
-  .docs-mes summary { cursor: pointer; padding: 8px 2px; }
+  .docs-mes summary { cursor: pointer; padding: 9px 2px; font-weight: 600; }
   .docs-mes table { background: transparent; }
   .docs-mes td { padding: 8px 10px; }
   .docs-mes td:first-child { word-break: break-word; }
-  .chip {
-    background: var(--caja); border: 1px solid var(--borde); color: var(--suave);
-    padding: 5px 12px; border-radius: 999px; cursor: pointer; font-size: 13px;
+
+  /* ── Lista de conversaciones ─────────────────────────────────────── */
+  .lista {
+    background: var(--caja); border: 1px solid var(--borde); border-radius: var(--radio);
+    overflow: hidden;
   }
-  .chip:hover { color: var(--texto); }
-  .chip.activo { background: #1c2a45; border-color: #2a3f6b; color: #fff; }
-  .lista { background: var(--caja); border: 1px solid var(--borde); border-radius: 10px; overflow: hidden; }
-  .fila { display: flex; gap: 12px; padding: 12px 14px; border-bottom: 1px solid #1e222c; cursor: pointer; }
+  .fila {
+    display: flex; gap: 14px; padding: 14px 18px; border-bottom: 1px solid var(--borde);
+    cursor: pointer; transition: background .12s; position: relative;
+  }
   .fila:last-child { border-bottom: none; }
   .fila:hover { background: var(--caja2); }
-  .fila.abierta { background: #182238; }
-  .avatar {
-    width: 38px; height: 38px; border-radius: 50%; background: #243250; color: #cfe0ff;
-    display: grid; place-items: center; font-size: 13px; font-weight: 600; flex-shrink: 0;
+  .fila.abierta { background: var(--caja3); }
+  .fila.abierta::before {
+    content: ''; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px;
+    border-radius: 0 3px 3px 0; background: var(--acento);
   }
-  .fila-cuerpo { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .avatar {
+    --h: 250;
+    width: 42px; height: 42px; border-radius: 12px; flex-shrink: 0;
+    display: grid; place-items: center; font-size: 14px; font-weight: 800;
+    background: hsl(var(--h) 45% 22%); color: hsl(var(--h) 85% 82%);
+  }
+  .fila-cuerpo { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
   .fila-arriba, .fila-abajo { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
-  .fila-pills { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 3px; }
+  .fila-arriba strong { font-size: 15px; font-weight: 700; }
+  .fila-pills { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 5px; }
+  .estado {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700;
+    padding: 2px 10px 2px 8px; border-radius: 999px; background: var(--caja3); color: var(--suave);
+  }
+  .estado i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .estado.espera, .estado.nuevo { background: var(--ambar-suave); color: var(--ambar); }
+  .estado.persona { background: var(--acento-suave); color: #b3a9ff; }
+  .estado.cliente { background: var(--celeste-suave); color: var(--celeste); }
+  .estado.ok { background: var(--verde-suave); color: var(--verde); }
+  .folio { color: var(--tenue); font-size: 12px; font-weight: 600; }
 
   /* ── Tablas ──────────────────────────────────────────────────────── */
-  .vacio { color: var(--suave); padding: 32px; text-align: center; background: var(--caja);
-           border: 1px dashed var(--borde); border-radius: 10px; }
-  .scroll { overflow-x: auto; border: 1px solid var(--borde); border-radius: 10px; }
+  .vacio {
+    color: var(--suave); padding: 40px 24px; text-align: center; background: var(--caja);
+    border: 1px dashed var(--borde2); border-radius: var(--radio);
+  }
+  .scroll { overflow-x: auto; border: 1px solid var(--borde); border-radius: var(--radio); }
   table { width: 100%; border-collapse: collapse; background: var(--caja); }
-  th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid #1e222c; }
-  th { color: var(--suave); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  th, td { text-align: left; padding: 12px 16px; border-bottom: 1px solid var(--borde); }
+  th {
+    color: var(--suave); font-weight: 700; font-size: 11px; text-transform: uppercase;
+    letter-spacing: .06em; background: var(--caja2);
+  }
   tr:last-child td { border-bottom: none; }
   tr.clic { cursor: pointer; }
   tr.clic:hover td { background: var(--caja2); }
   td.acciones { white-space: nowrap; }
 
-  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; background: #232733; white-space: nowrap; }
-  .burbuja .pill.tipo { display: table; margin-bottom: 5px; }
-  .pill.tipo-queja, .pill.molesto { background: #3d1a1a; color: #ffb4b4; }
-  .pill.tipo-seguimiento, .pill.tipo-pide_humano { background: #3a2f12; color: #ffd98a; }
-  .ABIERTO { background: #123a52; color: #7cc7f0; }
-  .EN_REVISION { background: #33270f; color: #e8c07d; }
-  .CERRADO { background: #232733; color: var(--suave); }
-  .pALTA { background: #3d1a1a; color: #f0a0a0; }
-  .pMEDIA { background: #232733; color: #c5cbd6; }
-  .pBAJA { background: #1b1f28; color: var(--suave); }
-  .ok { background: #10331d; color: #7ee2a8; }
-  .warn { background: #33270f; color: #e8c07d; }
+  .pill {
+    display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 700;
+    background: var(--caja3); color: #c8cdda; white-space: nowrap;
+  }
+  .pill.tipo-queja, .pill.molesto { background: var(--rojo-suave); color: var(--rojo); }
+  .pill.tipo-seguimiento, .pill.tipo-pide_humano { background: var(--ambar-suave); color: var(--ambar); }
+  .ABIERTO { background: var(--celeste-suave); color: var(--celeste); }
+  .EN_REVISION { background: var(--ambar-suave); color: var(--ambar); }
+  .CERRADO { background: var(--caja3); color: var(--suave); }
+  .pALTA { background: var(--rojo-suave); color: var(--rojo); }
+  .pMEDIA { background: var(--caja3); color: #c8cdda; }
+  .pBAJA { background: var(--caja2); color: var(--suave); }
+  .ok { background: var(--verde-suave); color: var(--verde); }
+  .warn { background: var(--ambar-suave); color: var(--ambar); }
 
   /* ── Formularios ─────────────────────────────────────────────────── */
   .form-alta { margin-bottom: 20px; }
-  .form-alta h3 { margin: 0 0 14px; font-size: 15px; }
+  .form-alta h3 { margin: 0 0 14px; font-size: 16px; }
   .campos { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; }
-  label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--suave); }
+  label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--suave); font-weight: 600; }
   input, select, textarea {
-    background: var(--fondo); border: 1px solid #2b3040; border-radius: 8px;
-    padding: 9px 10px; color: var(--texto); font-size: 14px; font-family: inherit;
+    background: var(--fondo); border: 1px solid var(--borde2); border-radius: 10px;
+    padding: 10px 12px; color: var(--texto); font-size: 14px; font-family: inherit;
   }
-  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--azul); }
-  .compacto { padding: 4px 7px; font-size: 12px; width: 240px; }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--acento); }
+  .compacto { padding: 5px 9px; font-size: 12px; width: 240px; }
   .permisos { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin: 14px 0; font-size: 13px; }
   .check { flex-direction: row; align-items: center; gap: 6px; color: var(--texto); }
   button[type=submit] {
-    background: var(--azul); border: none; color: #fff; padding: 10px 18px;
-    border-radius: 8px; cursor: pointer; font-size: 14px;
+    background: var(--acento); border: none; color: #fff; padding: 10px 18px; font-family: inherit;
+    border-radius: 10px; cursor: pointer; font-size: 14px; font-weight: 700;
   }
-  .ghost { background: none; border: 1px solid #2b3040; color: var(--suave);
-           padding: 6px 12px; border-radius: 8px; cursor: pointer; }
-  .ghost:hover { color: var(--texto); }
-  .ghost.small { padding: 4px 10px; font-size: 12px; white-space: nowrap; }
-  .ghost.activo { border-color: #6b5320; color: #e8c07d; }
-  .mini { background: none; border: 1px solid #2b3040; color: var(--suave);
-          padding: 3px 9px; border-radius: 6px; cursor: pointer; font-size: 12px; }
-  .mini:hover { color: var(--texto); }
-  .mini.peligro:hover { border-color: #6b2b2b; color: #f0a0a0; }
+  button[type=submit]:hover { background: var(--acento-fuerte); }
+  .ghost {
+    background: none; border: 1px solid var(--borde2); color: var(--suave); font: inherit; font-weight: 600;
+    padding: 7px 13px; border-radius: 10px; cursor: pointer;
+  }
+  .ghost:hover { color: var(--texto); border-color: var(--tenue); }
+  .ghost.small { padding: 6px 11px; font-size: 12px; white-space: nowrap; }
+  .ghost.activo { border-color: var(--ambar-borde); color: var(--ambar); background: var(--ambar-suave); }
+  .acento {
+    background: var(--acento); border: 1px solid var(--acento); color: #fff; font: inherit; font-weight: 700;
+    padding: 6px 13px; border-radius: 10px; cursor: pointer; font-size: 12px; white-space: nowrap;
+  }
+  .acento:hover { background: var(--acento-fuerte); }
+  .mini {
+    background: none; border: 1px solid var(--borde2); color: var(--suave); font: inherit; font-weight: 600;
+    padding: 4px 10px; border-radius: 8px; cursor: pointer; font-size: 12px;
+  }
+  .mini:hover { color: var(--texto); border-color: var(--tenue); }
+  .mini.peligro, .icon.peligro { color: var(--rojo); }
+  .mini.peligro:hover { border-color: rgba(248, 113, 113, .5); }
+  .icon.peligro:hover { background: var(--rojo-suave); }
 
   /* ── Hilo ────────────────────────────────────────────────────────── */
   #hilo {
-    background: var(--caja); border-left: 1px solid var(--borde);
+    background: var(--caja); border-left: 1px solid var(--borde); position: relative;
     display: flex; flex-direction: column; min-width: 0; overflow: hidden;
   }
-  .hilo-head { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--borde); }
-  .hilo-quien { flex: 1; min-width: 0; }
-  .hilo-quien strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .hilo-estado { padding: 8px 14px; border-bottom: 1px solid var(--borde); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .hilo-meta { padding: 8px 14px; display: flex; gap: 6px; flex-wrap: wrap; border-bottom: 1px solid var(--borde); }
-  #hilo { position: relative; }
+  .hilo-head { display: flex; align-items: center; gap: 10px; padding: 14px 14px 12px 16px; }
+  .hilo-head .avatar { width: 40px; height: 40px; }
+  .hilo-quien { flex: 1; min-width: 0; line-height: 1.3; }
+  .hilo-quien strong, .hilo-quien div { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hilo-quien strong { font-size: 15px; }
+  .hilo-sub {
+    display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+    padding: 0 16px 12px; border-bottom: 1px solid var(--borde);
+  }
+  .hilo-estado, .hilo-meta { display: contents; }
   .hilo-drawer {
     position: absolute; top: 0; right: 0; bottom: 0; width: min(100%, 360px); z-index: 5;
-    background: var(--caja); border-left: 1px solid var(--borde); box-shadow: -12px 0 32px rgba(0,0,0,.45);
+    background: var(--caja); border-left: 1px solid var(--borde); box-shadow: -12px 0 32px rgba(0, 0, 0, .45);
     display: flex; flex-direction: column;
   }
-  .drawer-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--borde); }
-  .drawer-lista { overflow-y: auto; padding: 10px 14px; display: flex; flex-direction: column; gap: 10px; }
-  .ticket-fila { background: var(--caja2); border: 1px solid var(--borde); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+  .drawer-head { display: flex; align-items: center; gap: 8px; padding: 14px 16px; border-bottom: 1px solid var(--borde); }
+  .drawer-lista { overflow-y: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; }
+  .ticket-fila {
+    background: var(--caja2); border: 1px solid var(--borde); border-radius: var(--radio);
+    padding: 12px 14px; display: flex; flex-direction: column; gap: 6px;
+  }
   .ticket-fila.cerrado { opacity: .6; }
   .ticket-fila-arriba { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
   .ticket-fila-asunto { font-size: 13px; }
-  .opcion-borrar { background: var(--caja2); border: 1px solid var(--borde); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 6px; }
+  .opcion-borrar {
+    background: var(--caja2); border: 1px solid var(--borde); border-radius: var(--radio);
+    padding: 14px; display: flex; flex-direction: column; gap: 6px;
+  }
   .opcion-borrar p { margin: 0; }
-  .opcion-borrar.peligro-caja { border-color: rgba(224,108,108,.4); }
-  .mini.peligro, .icon.peligro { color: var(--rojo, #e06c6c); }
-  .icon.peligro:hover { border-color: rgba(224,108,108,.5); }
-  #hilo-tickets-btn { display: inline-flex; align-items: center; gap: 5px; }
-  #hilo-tickets-btn.con-abiertos { border-color: rgba(232,185,90,.45); color: var(--ambar); }
-  .ico { width: 18px; height: 18px; flex-shrink: 0; }
-  .logo svg { width: 16px; height: 16px; }
-  .icon svg { width: 18px; height: 18px; vertical-align: middle; }
-  .nav-items button.active .ico { color: var(--azul); }
-  .chat { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 8px; background: var(--fondo); }
+  .opcion-borrar.peligro-caja { border-color: rgba(248, 113, 113, .4); }
+  #hilo-tickets-btn { display: inline-flex; align-items: center; gap: 6px; }
+  #hilo-tickets-btn svg { width: 16px; height: 16px; }
+  #hilo-tickets-btn.con-abiertos { border-color: var(--ambar-borde); color: var(--ambar); }
+
+  .chat {
+    flex: 1; overflow-y: auto; padding: 16px 16px 8px; display: flex; flex-direction: column; gap: 6px;
+    background: var(--fondo);
+  }
+  .dia {
+    align-self: center; margin: 10px 0 6px; padding: 3px 12px; border-radius: 999px;
+    background: var(--caja2); color: var(--suave); font-size: 11px; font-weight: 700;
+  }
   .burbuja {
-    max-width: 84%; padding: 8px 11px; border-radius: 10px; font-size: 13px;
+    max-width: 84%; padding: 9px 13px 7px; border-radius: 16px; font-size: 13.5px; line-height: 1.5;
     white-space: pre-wrap; word-break: break-word; position: relative;
   }
-  .burbuja.entra { background: #1e222c; align-self: flex-start; border-bottom-left-radius: 3px; }
-  .burbuja.sale { background: #14452f; align-self: flex-end; border-bottom-right-radius: 3px; }
+  .burbuja strong { font-weight: 700; }
+  .burbuja.entra { background: var(--caja3); align-self: flex-start; border-bottom-left-radius: 5px; }
+  .burbuja.sale {
+    background: linear-gradient(160deg, #3a3280, #2d2766); align-self: flex-end;
+    border-bottom-right-radius: 5px; color: #f1efff;
+  }
   .burbuja.pendiente { opacity: .6; }
-  .burbuja.fallo { opacity: 1; background: #3d1a1a; }
-  .hora { display: block; font-size: 10px; color: var(--suave); margin-top: 3px; text-align: right; }
-  .hilo-form { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--borde); align-items: flex-end; }
-  .hilo-form textarea { flex: 1; resize: none; max-height: 140px; line-height: 1.4; }
-  .hilo-form button { padding: 9px 14px; }
-  .solo-movil { display: none; }
+  .burbuja.fallo { opacity: 1; background: var(--rojo-suave); border: 1px solid rgba(248, 113, 113, .35); }
+  .burbuja .pill.tipo { display: table; margin-bottom: 6px; background: rgba(255, 255, 255, .07); color: var(--suave); }
+  .burbuja .pill.tipo-queja, .burbuja .pill.molesto { background: var(--rojo-suave); color: var(--rojo); }
+  .adjunto {
+    display: flex; align-items: center; gap: 10px; white-space: normal;
+    background: rgba(0, 0, 0, .22); border-radius: 10px; padding: 9px 11px; margin: 2px 0 6px;
+  }
+  .adjunto .ico { width: 22px; height: 22px; color: #c9c1ff; }
+  .adjunto span { font-weight: 700; font-size: 13px; word-break: break-all; }
+  .hora { display: block; font-size: 10.5px; color: var(--suave); margin-top: 3px; text-align: right; }
+  .burbuja.sale .hora { color: rgba(241, 239, 255, .6); }
+  .hilo-form {
+    padding: 12px 14px max(14px, env(safe-area-inset-bottom));
+    border-top: 1px solid var(--borde); background: var(--caja);
+  }
+  .compositor {
+    display: flex; align-items: flex-end; gap: 8px; background: var(--fondo);
+    border: 1px solid var(--borde2); border-radius: 16px; padding: 6px 6px 6px 14px;
+  }
+  .compositor:focus-within { border-color: var(--acento-borde); }
+  .compositor textarea {
+    flex: 1; resize: none; max-height: 160px; line-height: 1.45; border: none; background: none;
+    padding: 8px 0; min-height: 38px; overflow-y: hidden; font-size: 14px;
+  }
+  .compositor textarea::placeholder { color: var(--tenue); }
+  .compositor-ayuda { font-size: 11px; color: var(--tenue); margin: 6px 4px 0; }
+  .compositor textarea:focus { border: none; }
+  .compositor button[type=submit] {
+    width: 38px; height: 38px; padding: 0; border-radius: 12px; display: grid; place-items: center; flex-shrink: 0;
+  }
+  .compositor button svg { width: 18px; height: 18px; }
+  .solo-movil { display: none !important; }
 
   /* ── Avisos ──────────────────────────────────────────────────────── */
   .toast {
-    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
-    background: #1e222c; border: 1px solid var(--borde); color: var(--texto);
-    padding: 11px 18px; border-radius: 10px; z-index: 50; font-size: 13px;
-    box-shadow: 0 8px 24px rgba(0,0,0,.4); max-width: 90vw;
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: var(--caja3); border: 1px solid var(--borde2); color: var(--texto);
+    padding: 12px 18px; border-radius: 12px; z-index: 50; font-size: 13px; font-weight: 600;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, .45); max-width: 90vw;
   }
-  .toast.error { background: #3d1a1a; border-color: #6b2b2b; color: #f0a0a0; }
-  .login { display: flex; flex-direction: column; gap: 14px; width: min(320px, 92vw); }
-  .login h1 { font-size: 17px; margin: 0; }
-  .alert { background: #3d1a1a; color: #f0a0a0; padding: 10px 12px; border-radius: 8px; font-size: 13px; }
+  .toast.error { background: #2a1417; border-color: rgba(248, 113, 113, .4); color: var(--rojo); }
+  .login { display: flex; flex-direction: column; gap: 16px; width: min(360px, 92vw); padding: 28px; }
+  .login h1 { font-size: 22px; font-weight: 800; letter-spacing: -.02em; margin: 0; }
+  .login .logo { margin-bottom: 4px; }
+  .alert { background: var(--rojo-suave); color: var(--rojo); padding: 10px 12px; border-radius: 10px; font-size: 13px; }
 
   /* ── Pantallas medianas: el hilo se superpone en vez de partir ───── */
   @media (max-width: 1180px) {
     .app.con-hilo, .app.plegado.con-hilo { grid-template-columns: var(--nav) 1fr 0; }
     .app.plegado.con-hilo { grid-template-columns: var(--nav-plegado) 1fr 0; }
-    #hilo { position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 100vw); z-index: 20;
-            box-shadow: -12px 0 32px rgba(0,0,0,.45); }
+    #hilo {
+      position: fixed; top: 0; right: 0; bottom: 0; width: min(460px, 100vw); z-index: 20;
+      box-shadow: -12px 0 32px rgba(0, 0, 0, .45);
+    }
   }
 
   /* ── Móvil: menú fuera de pantalla, hilo a pantalla completa ─────── */
@@ -1535,15 +1809,25 @@ const STYLES = `<style>
     }
     .app.menu-abierto .nav { transform: none; }
     .plegado .nav-text { display: initial !important; }
-    .plegado .nav-items button { justify-content: flex-start; padding: 9px 10px; }
-    #nav-plegar { display: none; }
+    .plegado .nav-items button { justify-content: flex-start; padding: 10px 12px; }
+    .plegado .yo { flex-direction: row; }
+    #nav-plegar { display: none !important; }
     #hilo { width: 100vw; }
-    .solo-movil { display: inline-block; }
-    .no-movil { display: none; }
-    .cards { grid-template-columns: repeat(2, 1fr); padding: 12px 12px 0; gap: 8px; }
-    .metric strong { font-size: 20px; }
-    main { padding: 12px 12px 24px; }
+    .hilo-head { padding: 10px 10px 10px 8px; gap: 8px; }
+    .hilo-sub { padding: 0 12px 10px; }
+    .chat { padding: 12px 10px 6px; }
+    .burbuja { max-width: 90%; }
+    .hilo-form { padding: 8px 10px max(10px, env(safe-area-inset-bottom)); }
+    /* 16 px: con menos, el iPhone hace zoom al tocar el campo. */
+    .compositor textarea { font-size: 16px; }
+    .solo-movil { display: inline-grid !important; }
+    .no-movil { display: none !important; }
+    .top { padding: 16px 16px 12px; gap: 10px; }
+    .encabezado h1 { font-size: 21px; }
+    main { padding: 4px 16px 24px; }
+    .buscador { min-width: 0; flex: 1 1 100%; }
+    .fila { padding: 12px 14px; }
     .fila-abajo .recorte { max-width: 100%; }
-    th, td { padding: 9px 10px; }
+    th, td { padding: 10px 12px; }
   }
 </style>`;
