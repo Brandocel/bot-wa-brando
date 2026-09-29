@@ -60,6 +60,10 @@ async function main() {
   const { inject } = require('postject');
   await inject(EXE, 'NODE_SEA_BLOB', readFileSync(BLOB), { sentinelFuse: FUSE });
 
+  // Aplicación de Windows, no de consola: el cliente no ve una ventana
+  // negra, solo las ventanas con botones que abre el conector.
+  writeFileSync(EXE, aplicacionDeWindows(readFileSync(EXE)));
+
   console.log(`listo: ${EXE}`);
 }
 
@@ -85,6 +89,17 @@ function quitarFirma(buf) {
   limpio.writeUInt32LE(0, entrada);
   limpio.writeUInt32LE(0, entrada + 4);
   return limpio;
+}
+
+/**
+ * Cambia el subsistema del PE de consola (3) a ventanas (2). Está en el
+ * encabezado opcional, a 68 bytes de su inicio, igual en PE32 y PE32+.
+ */
+function aplicacionDeWindows(buf) {
+  const pe = buf.readUInt32LE(0x3c);
+  if (buf.toString('latin1', pe, pe + 4) !== 'PE\0\0') throw new Error('no es un ejecutable PE');
+  buf.writeUInt16LE(2, pe + 24 + 68);
+  return buf;
 }
 
 main().catch((err) => {

@@ -144,7 +144,195 @@ async function api(config, metodo, ruta, { json, bytes, headers = {} } = {}) {
   return datos;
 }
 
-// ── Consola ─────────────────────────────────────────────────────────────
+// ── Ventanas ────────────────────────────────────────────────────────────
+
+/**
+ * Como .exe no hay consola: build-exe.cjs lo arma como aplicación de
+ * Windows y todo se le dice al cliente con ventanas normales, con botones
+ * y sin texto técnico. Como script, en desarrollo, sigue siendo la consola.
+ */
+const VENTANAS = ES_EXE && process.platform === 'win32';
+
+/** El cliente cerró o canceló: no es un error, no hay nada que avisar. */
+class Cancelado extends Error {}
+
+/**
+ * Lo que necesitan todas las ventanas. ShowWindow va aparte a propósito:
+ * PowerShell se lanza oculto (para que no salga una consola), y Windows
+ * aplica ese "oculto" a la PRIMERA ventana que el proceso muestra, que es
+ * la nuestra. Sin volver a mostrarla en su evento Shown, la ventana
+ * existía, esperaba un clic y nadie la veía: el conector parecía colgado.
+ */
+const FORMULARIOS =
+  'Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing;' +
+  '[System.Windows.Forms.Application]::EnableVisualStyles();' +
+  "Add-Type -Name U -Namespace W -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool ShowWindow(IntPtr h, int c);';" +
+  'function Mostrar($v) { [void][W.U]::ShowWindow($v.Handle, 5); $v.Activate() }';
+
+/**
+ * Corre PowerShell y devuelve lo que escribió. Los textos entran por
+ * variables de entorno y el script va codificado: ni las comillas ni los
+ * acentos de un nombre de empresa o de una carpeta rompen nada. La salida
+ * se pide en UTF-8: "Imágenes" tiene que volver como "Imágenes".
+ */
+function powershell(script, env = {}, timeout = 0) {
+  const completo = '[Console]::OutputEncoding = [Text.Encoding]::UTF8;' + script;
+  return execFileSync(
+    'powershell.exe',
+    ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-EncodedCommand',
+      Buffer.from(completo, 'utf16le').toString('base64')],
+    { encoding: 'utf8', windowsHide: true, env: { ...process.env, ...env }, timeout },
+  ).trim();
+}
+
+/** Un aviso con un solo botón, con la misma ventana que las preguntas. */
+async function mensaje(texto) {
+  if (!VENTANAS) {
+    console.log(`\n${texto}\n`);
+    return;
+  }
+  await opciones(texto, ['Aceptar']);
+}
+
+/**
+ * Una pregunta con botones grandes, uno debajo de otro; el primero es el
+ * recomendado. Devuelve el índice del botón, o -1 si cerraron la ventana.
+ */
+async function opciones(texto, botones) {
+  if (!VENTANAS) {
+    console.log(`\n${texto}\n`);
+    botones.forEach((b, i) => console.log(`  ${i + 1}. ${b}`));
+    return Number(await preguntar('Opción', '1')) - 1;
+  }
+
+  const script =
+    FORMULARIOS +
+    '$f = New-Object System.Windows.Forms.Form;' +
+    "$f.Text = 'Conector del bot'; $f.StartPosition = 'CenterScreen'; $f.TopMost = $true;" +
+    "$f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false;" +
+    "$f.Font = New-Object System.Drawing.Font('Segoe UI', 10);" +
+    "$f.AutoSize = $true; $f.AutoSizeMode = 'GrowAndShrink';" +
+
+    '$p = New-Object System.Windows.Forms.FlowLayoutPanel;' +
+    "$p.FlowDirection = 'TopDown'; $p.AutoSize = $true; $p.WrapContents = $false;" +
+    // Márgenes a mano: el Padding del formulario no mueve un control sin Dock.
+    '$p.Location = New-Object System.Drawing.Point(22, 20);' +
+    '$p.Padding = New-Object System.Windows.Forms.Padding(0, 0, 22, 12);' +
+    '$l = New-Object System.Windows.Forms.Label;' +
+    '$l.Text = $env:CB_TEXTO; $l.AutoSize = $true;' +
+    '$l.MaximumSize = New-Object System.Drawing.Size(470, 0);' +
+    '$l.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 16);' +
+    '$p.Controls.Add($l);' +
+    '$script:r = -1; $i = 0;' +
+    "foreach ($t in $env:CB_BOTONES.Split('|')) {" +
+    '  $b = New-Object System.Windows.Forms.Button;' +
+    '  $b.Text = $t; $b.Width = 470; $b.Height = 42; $b.Tag = $i;' +
+    '  $b.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 8);' +
+    '  if ($i -eq 0) {' +
+    "    $b.FlatStyle = 'Flat'; $b.FlatAppearance.BorderSize = 0;" +
+    '    $b.BackColor = [System.Drawing.Color]::FromArgb(37, 99, 235);' +
+    '    $b.ForeColor = [System.Drawing.Color]::White;' +
+    "    $b.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold);" +
+    '    $f.AcceptButton = $b' +
+    '  }' +
+    '  $b.Add_Click({ $script:r = $this.Tag; $f.Close() });' +
+    '  $p.Controls.Add($b); $i++' +
+    '}' +
+    '$f.Controls.Add($p);' +
+    '$f.Add_Shown({ Mostrar $f });' +
+    '[void]$f.ShowDialog();' +
+    '[Console]::Out.Write($script:r)';
+
+  try {
+    return Number(powershell(script, { CB_TEXTO: texto, CB_BOTONES: botones.join('|') }));
+  } catch {
+    return -1;
+  }
+}
+
+/**
+ * "Conectando…" con una barra en movimiento, mientras se empareja, se
+ * instala y se confirma el arranque (unos segundos sin nada en pantalla
+ * hacían pensar que no había pasado nada, y la gente volvía a darle doble
+ * clic). No bloquea: se cierra matando su proceso.
+ */
+function ventanaEspera(texto) {
+  if (!VENTANAS) return { cerrar() {} };
+  const script =
+    FORMULARIOS +
+    '$f = New-Object System.Windows.Forms.Form;' +
+    "$f.Text = 'Conector del bot'; $f.StartPosition = 'CenterScreen'; $f.TopMost = $true;" +
+    "$f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false; $f.ControlBox = $false;" +
+    "$f.Font = New-Object System.Drawing.Font('Segoe UI', 10);" +
+    '$f.ClientSize = New-Object System.Drawing.Size(420, 110);' +
+    '$l = New-Object System.Windows.Forms.Label;' +
+    '$l.Text = $env:CB_TEXTO; $l.AutoSize = $true;' +
+    '$l.Location = New-Object System.Drawing.Point(22, 22);' +
+    '$b = New-Object System.Windows.Forms.ProgressBar;' +
+    "$b.Style = 'Marquee'; $b.MarqueeAnimationSpeed = 30;" +
+    '$b.Location = New-Object System.Drawing.Point(22, 60); $b.Size = New-Object System.Drawing.Size(376, 18);' +
+    '$f.Controls.Add($l); $f.Controls.Add($b);' +
+    '$f.Add_Shown({ Mostrar $f });' +
+    '[void]$f.ShowDialog()';
+  let hijo = null;
+  try {
+    hijo = spawn(
+      'powershell.exe',
+      ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-EncodedCommand',
+        Buffer.from(script, 'utf16le').toString('base64')],
+      { windowsHide: true, stdio: 'ignore', env: { ...process.env, CB_TEXTO: texto } },
+    );
+  } catch { /* sin ventana de espera no pasa nada */ }
+  return {
+    cerrar() {
+      try { hijo?.kill(); } catch { /* ya se cerró */ }
+    },
+  };
+}
+
+/** El selector de carpetas de Windows, siempre al frente. */
+function elegirCarpeta() {
+  try {
+    // El selector necesita una ventana dueña visible (ver FORMULARIOS):
+    // una transparente que se muestra, abre el selector y se cierra.
+    const elegida = powershell(
+      FORMULARIOS +
+        '$f = New-Object System.Windows.Forms.Form;' +
+        "$f.TopMost = $true; $f.Opacity = 0; $f.ShowInTaskbar = $false; $f.StartPosition = 'CenterScreen';" +
+        '$f.Add_Shown({' +
+        '  Mostrar $f;' +
+        '  $d = New-Object System.Windows.Forms.FolderBrowserDialog;' +
+        "  $d.Description = 'Elige la carpeta con los documentos que el bot puede mandar';" +
+        '  $d.ShowNewFolderButton = $true;' +
+        "  if ($d.ShowDialog($f) -eq 'OK') { $script:r = $d.SelectedPath };" +
+        '  $f.Close()' +
+        '});' +
+        '[void]$f.ShowDialog();' +
+        'if ($script:r) { [Console]::Out.Write($script:r) }',
+    );
+    return elegida || null;
+  } catch {
+    return null;
+  }
+}
+
+function abrirCarpeta(folder) {
+  if (process.platform !== 'win32') return;
+  spawn('explorer.exe', [folder], { detached: true, stdio: 'ignore' }).unref();
+}
+
+/** "Documentos" de verdad, aunque Windows lo tenga en OneDrive o en otro disco. */
+function carpetaDocumentos() {
+  if (process.platform === 'win32') {
+    try {
+      const ruta = powershell("[Console]::Out.Write([Environment]::GetFolderPath('MyDocuments'))", {}, 15000);
+      if (ruta) return ruta;
+    } catch { /* la de siempre */ }
+  }
+  return join(homedir(), 'Documents');
+}
+
+// ── Consola (solo desarrollo) ───────────────────────────────────────────
 
 /**
  * Una sola interfaz y leída como iterador: guarda las líneas que lleguen
@@ -157,32 +345,6 @@ async function preguntar(texto, porDefecto = '') {
   process.stdout.write(porDefecto ? `${texto} [${porDefecto}]: ` : `${texto}: `);
   const { value } = await lineas.next();
   return String(value ?? '').trim() || porDefecto;
-}
-
-/** Con doble clic la ventana se cierra al terminar: sin esto no se alcanza a leer nada. */
-async function pausa(texto = 'Presiona Enter para cerrar esta ventana') {
-  if (!ES_EXE || !process.stdin.isTTY) return;
-  await Promise.race([preguntar(`\n${texto}`), new Promise((r) => setTimeout(r, 5 * 60 * 1000))]);
-}
-
-/** En Windows abre el selector de carpetas de siempre. */
-function elegirCarpeta() {
-  if (process.platform !== 'win32') return null;
-  try {
-    const script =
-      'Add-Type -AssemblyName System.Windows.Forms;' +
-      '$d = New-Object System.Windows.Forms.FolderBrowserDialog;' +
-      '$d.Description = "Elige una carpeta SOLO con los documentos que el bot puede mandar";' +
-      '$d.ShowNewFolderButton = $false;' +
-      'if ($d.ShowDialog() -eq "OK") { [Console]::Out.Write($d.SelectedPath) }';
-    const elegida = execFileSync('powershell.exe', ['-NoProfile', '-STA', '-Command', script], {
-      encoding: 'utf8',
-      windowsHide: true,
-    }).trim();
-    return elegida || null;
-  } catch {
-    return null;
-  }
 }
 
 // ── Carpetas que no se aceptan ──────────────────────────────────────────
@@ -214,16 +376,14 @@ function carpetasAmplias() {
   // Y donde Windows las tenga de verdad: a veces están redirigidas.
   if (process.platform === 'win32') {
     try {
-      const script =
+      const salida = powershell(
         "[Environment]::GetFolderPath('Desktop');" +
-        "[Environment]::GetFolderPath('MyDocuments');" +
-        "[Environment]::GetFolderPath('MyPictures');" +
-        "(New-Object -ComObject Shell.Application).Namespace('shell:Downloads').Self.Path";
-      const salida = execFileSync('powershell.exe', ['-NoProfile', '-Command', script], {
-        encoding: 'utf8',
-        windowsHide: true,
-        timeout: 15000,
-      });
+          "[Environment]::GetFolderPath('MyDocuments');" +
+          "[Environment]::GetFolderPath('MyPictures');" +
+          "(New-Object -ComObject Shell.Application).Namespace('shell:Downloads').Self.Path",
+        {},
+        15000,
+      );
       lista.push(...salida.split(/\r?\n/).map((l) => l.trim()).filter(Boolean));
     } catch { /* con las de arriba basta */ }
   }
@@ -243,18 +403,55 @@ function carpetaDemasiadoAmplia(folder) {
 
   for (const amplia of carpetasAmplias()) {
     const a = norma(amplia);
-    if (elegida === a) return `es ${basename(amplia) || amplia}, que mezcla de todo`;
-    if (a.startsWith(elegida + sep.toLowerCase())) return `contiene ${amplia}`;
+    if (elegida === a) return `es la carpeta «${basename(amplia) || amplia}», que mezcla de todo`;
+    if (a.startsWith(elegida + sep.toLowerCase())) return `contiene la carpeta «${amplia}»`;
   }
   return null;
 }
 
+const TIPOS = [
+  [/\.pdf$/i, 'PDF'],
+  [/\.(xlsx?|csv)$/i, 'Excel'],
+  [/\.docx?$/i, 'Word'],
+  [/\.pptx$/i, 'PowerPoint'],
+  [/\.(png|jpe?g|webp)$/i, 'imágenes'],
+  [/\.txt$/i, 'texto'],
+];
+
 /**
- * Pide la carpeta hasta que elijan una que sirva. Antes de canjear el
- * código: si nadie elige nada, el instalador sigue sirviendo.
+ * Qué hay en la carpeta, en palabras: antes de conectar una carpeta que
+ * ya existe, la persona ve lo que el bot va a recibir y puede arrepentirse.
  */
-async function pedirCarpeta() {
-  // CONECTOR_CARPETA permite instalar sin ventana (por script o por soporte remoto).
+async function resumenCarpeta(folder) {
+  const archivos = await recorrer(folder);
+  const nombre = basename(folder);
+  if (archivos.length === 0) {
+    return `La carpeta «${nombre}» está vacía por ahora. Después pon ahí los documentos que el bot puede mandar.`;
+  }
+
+  const cuenta = new Map();
+  for (const a of archivos) {
+    const tipo = TIPOS.find(([re]) => re.test(a))?.[1] ?? 'otros';
+    cuenta.set(tipo, (cuenta.get(tipo) ?? 0) + 1);
+  }
+  const detalle = [...cuenta.entries()].map(([tipo, n]) => `${n} ${tipo}`).join(', ');
+
+  return (
+    `En «${nombre}» hay ${archivos.length} archivo${archivos.length === 1 ? '' : 's'} que el bot puede leer: ${detalle}.` +
+    (archivos.length > 300
+      ? '\n\nSon muchos. ¿Seguro que esta carpeta es solo de documentos para tus clientes?'
+      : '')
+  );
+}
+
+/**
+ * Pide la carpeta hasta tener una que sirva. Lo recomendado, a un clic, es
+ * una carpeta nueva solo para el bot: no hay forma de que se cuele algo.
+ * Va ANTES de canjear el código: si nadie elige nada, el instalador sigue
+ * sirviendo.
+ */
+async function pedirCarpeta(organizacion) {
+  // CONECTOR_CARPETA permite instalar sin ventanas (por script o por soporte remoto).
   if (process.env.CONECTOR_CARPETA) {
     const folder = resolve(process.env.CONECTOR_CARPETA);
     const motivo = carpetaDemasiadoAmplia(folder);
@@ -262,37 +459,61 @@ async function pedirCarpeta() {
     return folder;
   }
 
-  for (let intento = 0; intento < 4; intento++) {
-    console.log('Elige en la ventana la carpeta con los documentos que el bot puede mandar...');
-    let folder = elegirCarpeta();
-    if (!folder && !ES_EXE) folder = await preguntar('Ruta de la carpeta (ej. C:\\Documentos\\Facturas)');
-    if (!folder) {
-      console.log('No elegiste ninguna carpeta. Vamos otra vez.');
-      continue;
-    }
+  let texto =
+    `Vamos a conectar esta computadora con el bot de WhatsApp${organizacion ? ` de ${organizacion}` : ''}.\n\n` +
+    'El bot solo podrá mandar los documentos que pongas en UNA carpeta. Lo más fácil y seguro ' +
+    'es una carpeta nueva, solo para eso.';
 
+  for (let intento = 0; intento < 8; intento++) {
+    const r = await opciones(texto, [
+      'Crear carpeta nueva «Documentos para WhatsApp» (recomendado)',
+      'Usar una carpeta que ya tengo',
+      'Cancelar',
+    ]);
+
+    if (r === 0) {
+      const nueva = join(carpetaDocumentos(), 'Documentos para WhatsApp');
+      mkdirSync(nueva, { recursive: true });
+      return nueva;
+    }
+    if (r !== 1) throw new Cancelado('no se eligió carpeta');
+
+    let folder = VENTANAS ? elegirCarpeta() : await preguntar('Ruta de la carpeta');
+    if (!folder) continue;
     folder = resolve(folder);
     if (!existsSync(folder)) {
-      console.log(`No existe la carpeta ${folder}. Vamos otra vez.`);
+      texto = `No encuentro la carpeta ${folder}. Elige otra, o crea una nueva solo para el bot.`;
       continue;
     }
 
     const motivo = carpetaDemasiadoAmplia(folder);
-    if (!motivo) return folder;
+    if (motivo) {
+      texto =
+        `Esa carpeta no sirve: ${motivo}.\n\n` +
+        'El bot podría mandar por WhatsApp cualquier cosa que haya adentro. Crea una carpeta ' +
+        'nueva solo para los documentos de tus clientes, o elige otra.';
+      continue;
+    }
 
-    console.log(`\nEsa carpeta no sirve: ${motivo}.`);
-    console.log('El bot mandaría por WhatsApp todo lo que haya adentro. Crea una carpeta nueva');
-    console.log('(por ejemplo "Documentos para el bot"), pon ahí solo lo que tus clientes pueden');
-    console.log('recibir, y elígela.\n');
+    const confirmar = await opciones(
+      (await resumenCarpeta(folder)) +
+        '\n\nAntes de mandarse, cada archivo se revisa: lo que no sea un documento de tu empresa ' +
+        '(imágenes de un sitio web, archivos técnicos) o traiga contraseñas no se le entrega a nadie.' +
+        '\n\n¿Conectar esta carpeta?',
+      ['Conectar esta carpeta', 'Elegir otra', 'Cancelar'],
+    );
+    if (confirmar === 0) return folder;
+    if (confirmar !== 1) throw new Cancelado('no se confirmó la carpeta');
+    texto = 'Elige otra carpeta, o crea una nueva solo para los documentos del bot.';
   }
 
-  throw new Error('no se eligió una carpeta válida. Vuelve a abrir el conector cuando la tengas lista.');
+  throw new Cancelado('demasiados intentos');
 }
 
 // ── Primera vez: emparejar ──────────────────────────────────────────────
 
 async function emparejar(incrustada) {
-  console.log('\n=== Conectar esta computadora con el bot ===\n');
+  if (!VENTANAS) console.log('\n=== Conectar esta computadora con el bot ===\n');
 
   const server = (incrustada?.server || (await preguntar('Dirección del bot', process.env.CONECTOR_SERVER || '')))
     .replace(/\/+$/, '');
@@ -300,28 +521,70 @@ async function emparejar(incrustada) {
 
   const code = incrustada?.code || (await preguntar('Código de 6 dígitos que sale en el panel'));
 
-  const folder = await pedirCarpeta();
+  const folder = await pedirCarpeta(incrustada?.organization);
 
   let par;
+  const espera = ventanaEspera('Conectando esta computadora con el bot…');
   try {
     par = await api({ server }, 'POST', '/connector/pair', { json: { code, deviceName: hostname() } });
   } catch (err) {
+    espera.cerrar();
     if (err.status === 404) {
       throw new Error(
         incrustada
-          ? 'este instalador ya se usó o ya caducó. Descarga uno nuevo desde el panel ("Descargar conector").'
-          : 'el código no existe o ya caducó. Genera otro en el panel.',
+          ? 'Este instalador ya se usó o ya caducó. Pide uno nuevo a quien te lo mandó.'
+          : 'El código no existe o ya caducó. Genera otro en el panel.',
       );
+    }
+    if (!err.status) {
+      throw new Error('No pude comunicarme con el bot. Revisa tu conexión a internet y vuelve a abrir el conector.');
     }
     throw err;
   }
-  console.log(`Conectada a "${par.organization}".\n`);
+  log(`conectada a "${par.organization}", carpeta ${folder}`);
 
-  const config = { server, token: par.token, organization: par.organization, folder };
-  guardarJson(CONFIG_PATH, config);
+  const config = { server, token: par.token, organization: par.organization, folder, espera };
+  guardarJson(CONFIG_PATH, { server, token: par.token, organization: par.organization, folder });
   guardarJson(CACHE_PATH, {});
-  console.log(`Carpeta: ${folder}\n`);
   return config;
+}
+
+/**
+ * Cambia la carpeta sin volver a emparejar: el token sigue valiendo, y el
+ * primer manifiesto desde la carpeta nueva quita del bot lo de la vieja.
+ */
+async function cambiarCarpeta(config) {
+  const folder = await pedirCarpeta(config.organization);
+  const nuevo = { ...config, folder };
+  guardarJson(CONFIG_PATH, nuevo);
+  guardarJson(CACHE_PATH, {});
+  log(`carpeta cambiada a ${folder}`);
+  return nuevo;
+}
+
+/**
+ * Lanza el conector en segundo plano y comprueba que de verdad arrancó.
+ * Antes se daba por hecho, y un arranque que fallaba en silencio dejaba
+ * al cliente creyendo que sus documentos se estaban subiendo.
+ */
+async function arrancarYConfirmar() {
+  if (!arrancarEnSegundoPlano()) return false;
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    if (yaCorriendo()) return true;
+  }
+  return false;
+}
+
+async function mensajeListo(config) {
+  await mensaje(
+    `¡Listo! Esta computadora ya está conectada con el bot de ${config.organization}.\n\n` +
+      `Pon en la carpeta «${basename(config.folder)}» los documentos que tus clientes pueden ` +
+      'recibir por WhatsApp. Cada archivo se revisa antes de mandarse.\n\n' +
+      'No tienes que hacer nada más: el conector trabaja solo, sin ventanas, y arranca con ' +
+      'Windows. Ahora se abre la carpeta.',
+  );
+  abrirCarpeta(config.folder);
 }
 
 // ── Una sola copia corriendo ────────────────────────────────────────────
@@ -541,11 +804,15 @@ async function vigilar(config) {
   log(`vigilando ${config.folder} → ${config.organization}`);
 
   const tick = () =>
-    sincronizar(config).catch((err) => {
+    sincronizar(config).catch(async (err) => {
       if (err instanceof NoAutorizado) {
         log('este equipo fue desconectado desde el panel. Descarga un conector nuevo para volver a conectarlo.');
         // Sin esto, el próximo arranque trataría de usar el token revocado.
         try { unlinkSync(CONFIG_PATH); } catch { /* ya no está */ }
+        await mensaje(
+          `Esta computadora se desconectó del bot de ${config.organization} y ya no sube documentos.\n\n` +
+            'Si no fue a propósito, pide un conector nuevo a quien te lo mandó.',
+        );
         process.exit(2);
       }
       // Sin internet, bot reiniciándose...: se reintenta en la siguiente vuelta.
@@ -581,39 +848,60 @@ async function main() {
 
   let config = leerJson(CONFIG_PATH, null);
 
-  // Doble clic con el conector ya funcionando: solo avisar.
+  // Doble clic con el conector ya funcionando: abrir la carpeta o cambiarla.
   if (config?.token && yaCorriendo()) {
-    // También al log: si esto pasa en segundo plano, nadie ve la consola.
-    log(`ya hay un conector trabajando (pid ${leerJson(LOCK_PATH, {}).pid}); este no hace nada`);
-    console.log(`El conector ya está funcionando en segundo plano.`);
-    console.log(`Empresa: ${config.organization}\nCarpeta: ${config.folder}`);
-    return pausa();
+    // También al log: si esto pasa en segundo plano, nadie ve la ventana.
+    log(`ya hay un conector trabajando (pid ${leerJson(LOCK_PATH, {}).pid})`);
+    const r = await opciones(
+      `El conector ya está funcionando.\n\nEmpresa: ${config.organization}\nCarpeta: ${config.folder}`,
+      ['Abrir la carpeta', 'Cambiar de carpeta', 'Cerrar'],
+    );
+    if (r === 0) abrirCarpeta(config.folder);
+    if (r === 1) {
+      config = await cambiarCarpeta(config);
+      detenerAnterior();
+      const arranco = await arrancarYConfirmar();
+      await mensajeListo(config);
+      if (arranco) return;
+      return vigilar(config);
+    }
+    return;
   }
 
   if (!config?.token) {
-    config = await emparejar(configIncrustada());
+    const { espera, ...emparejada } = await emparejar(configIncrustada());
+    config = emparejada;
     detenerAnterior();
 
     // Como .exe: se copia a su lugar, se registra para arrancar con
-    // Windows y se lanza sin ventana. Esta ventana ya puede cerrarse.
-    if (ES_EXE && process.platform === 'win32') {
+    // Windows y se lanza en segundo plano. Si ese arranque no responde,
+    // este mismo proceso se queda trabajando: no tiene ventana que cerrar.
+    if (VENTANAS) {
       instalar();
-      if (arrancarEnSegundoPlano()) {
-        console.log('Listo. El conector ya está trabajando en segundo plano y arrancará solo');
-        console.log('cada vez que prendas esta computadora. Tus documentos se están subiendo.');
-        return pausa('Presiona Enter para cerrar esta ventana (el conector sigue trabajando)');
-      }
+      const arranco = await arrancarYConfirmar();
+      espera.cerrar();
+      await mensajeListo(config);
+      if (arranco) return;
+      log('el arranque en segundo plano no respondió; este proceso se queda trabajando');
     }
   }
 
   // Un emparejamiento viejo con una carpeta que hoy no se aceptaría: no se
-  // sube nada hasta que lo vuelvan a conectar con una carpeta dedicada.
+  // sube nada de ahí. Con ventanas se ofrece elegir otra en el momento.
   const motivo = carpetaDemasiadoAmplia(config.folder);
   if (motivo) {
-    throw new Error(
-      `la carpeta ${config.folder} no sirve (${motivo}). Ejecuta el conector con --olvidar ` +
-        'y vuelve a conectarlo eligiendo una carpeta solo con documentos para el bot.',
+    log(`la carpeta ${config.folder} no sirve (${motivo})`);
+    if (!VENTANAS) {
+      throw new Error(
+        `la carpeta ${config.folder} no sirve (${motivo}). Ejecuta el conector con --olvidar ` +
+          'y vuelve a conectarlo eligiendo una carpeta solo con documentos para el bot.',
+      );
+    }
+    await mensaje(
+      `La carpeta que usa el conector ya no se acepta: ${motivo}.\n\n` +
+        'Elige una carpeta solo con los documentos que el bot puede mandar.',
     );
+    config = await cambiarCarpeta(config);
   }
 
   if (args.has('--instalar')) instalar();
@@ -621,7 +909,11 @@ async function main() {
 }
 
 main().catch(async (err) => {
+  if (err instanceof Cancelado) {
+    log(`cancelado: ${err.message}`);
+    process.exit(0);
+  }
   log(`error: ${err.message}`);
   process.exitCode = 1;
-  await pausa();
+  if (VENTANAS) await mensaje(`No se pudo conectar esta computadora.\n\n${err.message}`);
 });
