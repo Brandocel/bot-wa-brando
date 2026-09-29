@@ -26,11 +26,11 @@ const { createHash } = require('node:crypto');
 const { execFileSync, spawn } = require('node:child_process');
 const {
   appendFileSync, closeSync, copyFileSync, existsSync, fstatSync, mkdirSync,
-  openSync, readFileSync, readSync, unlinkSync, watch, writeFileSync,
+  openSync, readdirSync, readFileSync, readSync, unlinkSync, watch, writeFileSync,
 } = require('node:fs');
 const { readdir, readFile, stat } = require('node:fs/promises');
 const { homedir, hostname } = require('node:os');
-const { basename, dirname, extname, join, relative, resolve, sep } = require('node:path');
+const { basename, dirname, extname, join, parse, relative, resolve, sep } = require('node:path');
 const { createInterface } = require('node:readline');
 
 /** true cuando corre como ConectorBot.exe y no como script. */
@@ -172,7 +172,7 @@ function elegirCarpeta() {
     const script =
       'Add-Type -AssemblyName System.Windows.Forms;' +
       '$d = New-Object System.Windows.Forms.FolderBrowserDialog;' +
-      '$d.Description = "Elige la carpeta donde guardas tus documentos";' +
+      '$d.Description = "Elige una carpeta SOLO con los documentos que el bot puede mandar";' +
       '$d.ShowNewFolderButton = $false;' +
       'if ($d.ShowDialog() -eq "OK") { [Console]::Out.Write($d.SelectedPath) }';
     const elegida = execFileSync('powershell.exe', ['-NoProfile', '-STA', '-Command', script], {
@@ -185,6 +185,110 @@ function elegirCarpeta() {
   }
 }
 
+// ── Carpetas que no se aceptan ──────────────────────────────────────────
+
+/**
+ * Un cliente eligió una vez el Escritorio entero y se subieron sus
+ * credenciales, código y logs. La carpeta tiene que ser SOLO de documentos
+ * para el bot: el Escritorio, Documentos, Descargas, la carpeta del
+ * usuario, la raíz de OneDrive o del disco (o cualquier carpeta que las
+ * contenga) mezclan de todo.
+ */
+function carpetasAmplias() {
+  const home = homedir();
+  const nombres = ['Desktop', 'Escritorio', 'Documents', 'Documentos', 'Mis documentos',
+    'Downloads', 'Descargas', 'Pictures', 'Imágenes', 'Imagenes', 'Videos', 'Music', 'Música'];
+  const bases = [home, process.env.USERPROFILE, process.env.OneDrive,
+    process.env.OneDriveCommercial, process.env.OneDriveConsumer].filter(Boolean);
+
+  // "OneDrive - Empresa" y compañía, dentro de la carpeta del usuario.
+  try {
+    for (const e of readdirSync(home, { withFileTypes: true })) {
+      if (e.isDirectory() && /^OneDrive( - .+)?$/i.test(e.name)) bases.push(join(home, e.name));
+    }
+  } catch { /* sin listado, quedan las de siempre */ }
+
+  const lista = [...bases];
+  for (const b of bases) for (const n of nombres) lista.push(join(b, n));
+
+  // Y donde Windows las tenga de verdad: a veces están redirigidas.
+  if (process.platform === 'win32') {
+    try {
+      const script =
+        "[Environment]::GetFolderPath('Desktop');" +
+        "[Environment]::GetFolderPath('MyDocuments');" +
+        "[Environment]::GetFolderPath('MyPictures');" +
+        "(New-Object -ComObject Shell.Application).Namespace('shell:Downloads').Self.Path";
+      const salida = execFileSync('powershell.exe', ['-NoProfile', '-Command', script], {
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: 15000,
+      });
+      lista.push(...salida.split(/\r?\n/).map((l) => l.trim()).filter(Boolean));
+    } catch { /* con las de arriba basta */ }
+  }
+
+  return lista.map((p) => resolve(p));
+}
+
+/** Por qué no sirve la carpeta, o null si sirve. */
+function carpetaDemasiadoAmplia(folder) {
+  const norma = (p) => {
+    const r = resolve(p).replace(/[\\/]+$/, '');
+    return process.platform === 'win32' ? r.toLowerCase() : r;
+  };
+  const elegida = norma(folder);
+
+  if (elegida === norma(parse(resolve(folder)).root)) return 'es la raíz del disco';
+
+  for (const amplia of carpetasAmplias()) {
+    const a = norma(amplia);
+    if (elegida === a) return `es ${basename(amplia) || amplia}, que mezcla de todo`;
+    if (a.startsWith(elegida + sep.toLowerCase())) return `contiene ${amplia}`;
+  }
+  return null;
+}
+
+/**
+ * Pide la carpeta hasta que elijan una que sirva. Antes de canjear el
+ * código: si nadie elige nada, el instalador sigue sirviendo.
+ */
+async function pedirCarpeta() {
+  // CONECTOR_CARPETA permite instalar sin ventana (por script o por soporte remoto).
+  if (process.env.CONECTOR_CARPETA) {
+    const folder = resolve(process.env.CONECTOR_CARPETA);
+    const motivo = carpetaDemasiadoAmplia(folder);
+    if (motivo) throw new Error(`la carpeta ${folder} no sirve: ${motivo}`);
+    return folder;
+  }
+
+  for (let intento = 0; intento < 4; intento++) {
+    console.log('Elige en la ventana la carpeta con los documentos que el bot puede mandar...');
+    let folder = elegirCarpeta();
+    if (!folder && !ES_EXE) folder = await preguntar('Ruta de la carpeta (ej. C:\\Documentos\\Facturas)');
+    if (!folder) {
+      console.log('No elegiste ninguna carpeta. Vamos otra vez.');
+      continue;
+    }
+
+    folder = resolve(folder);
+    if (!existsSync(folder)) {
+      console.log(`No existe la carpeta ${folder}. Vamos otra vez.`);
+      continue;
+    }
+
+    const motivo = carpetaDemasiadoAmplia(folder);
+    if (!motivo) return folder;
+
+    console.log(`\nEsa carpeta no sirve: ${motivo}.`);
+    console.log('El bot mandaría por WhatsApp todo lo que haya adentro. Crea una carpeta nueva');
+    console.log('(por ejemplo "Documentos para el bot"), pon ahí solo lo que tus clientes pueden');
+    console.log('recibir, y elígela.\n');
+  }
+
+  throw new Error('no se eligió una carpeta válida. Vuelve a abrir el conector cuando la tengas lista.');
+}
+
 // ── Primera vez: emparejar ──────────────────────────────────────────────
 
 async function emparejar(incrustada) {
@@ -195,6 +299,8 @@ async function emparejar(incrustada) {
   if (!/^https?:\/\//.test(server)) throw new Error('la dirección debe empezar con https://');
 
   const code = incrustada?.code || (await preguntar('Código de 6 dígitos que sale en el panel'));
+
+  const folder = await pedirCarpeta();
 
   let par;
   try {
@@ -210,19 +316,6 @@ async function emparejar(incrustada) {
     throw err;
   }
   console.log(`Conectada a "${par.organization}".\n`);
-
-  // CONECTOR_CARPETA permite instalar sin ventana (por script o por soporte remoto).
-  let folder = process.env.CONECTOR_CARPETA || null;
-  for (let intento = 0; !folder && intento < 2; intento++) {
-    console.log('Elige en la ventana la carpeta donde guardas tus documentos...');
-    folder = elegirCarpeta();
-    if (!folder && intento === 0) console.log('No elegiste ninguna carpeta. Vamos otra vez.');
-  }
-  if (!folder && !ES_EXE) folder = await preguntar('Ruta de la carpeta (ej. C:\\Documentos\\Facturas)');
-  if (!folder) throw new Error('no se eligió ninguna carpeta. Vuelve a abrir el conector cuando quieras.');
-
-  folder = resolve(folder);
-  if (!existsSync(folder)) throw new Error(`no existe la carpeta ${folder}`);
 
   const config = { server, token: par.token, organization: par.organization, folder };
   guardarJson(CONFIG_PATH, config);
@@ -280,12 +373,25 @@ function desinstalar() {
 
 // ── Recorrido y subida ──────────────────────────────────────────────────
 
+/**
+ * Credenciales por nombre: no se suben aunque estén en la carpeta. El
+ * servidor aplica la misma regla (document-safety.ts); esto solo evita
+ * mandarlas por la red.
+ */
+const SEP = '[\\/_\\-. ]';
+const SENSIBLE = new RegExp(
+  `(^|${SEP})(credencial(es)?|contrase(n|ñ)as?|passwords?|passwd|secrets?|tokens?|` +
+    `api${SEP}?keys?|private${SEP}?keys?|id_(rsa|dsa|ecdsa|ed25519)|csr|ssl)(?=${SEP}|$)`,
+  'i',
+);
+
 function ignorado(nombre) {
   return (
     nombre.startsWith('.') ||
     nombre.startsWith('~$') || // archivo de bloqueo de Office abierto
     /\.(tmp|part|crdownload)$/i.test(nombre) ||
-    /^(desktop\.ini|thumbs\.db)$/i.test(nombre)
+    /^(desktop\.ini|thumbs\.db|node_modules|__pycache__|vendor)$/i.test(nombre) ||
+    SENSIBLE.test(nombre)
   );
 }
 
@@ -459,6 +565,16 @@ async function main() {
         return pausa('Presiona Enter para cerrar esta ventana (el conector sigue trabajando)');
       }
     }
+  }
+
+  // Un emparejamiento viejo con una carpeta que hoy no se aceptaría: no se
+  // sube nada hasta que lo vuelvan a conectar con una carpeta dedicada.
+  const motivo = carpetaDemasiadoAmplia(config.folder);
+  if (motivo) {
+    throw new Error(
+      `la carpeta ${config.folder} no sirve (${motivo}). Ejecuta el conector con --olvidar ` +
+        'y vuelve a conectarlo eligiendo una carpeta solo con documentos para el bot.',
+    );
   }
 
   if (args.has('--instalar')) instalar();
