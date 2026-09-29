@@ -131,7 +131,13 @@ export function parseQuery(raw: string): SearchQuery {
     folio: folio ? folio.toUpperCase() : null,
     // Con folio no hacen falta palabras clave: el folio ya identifica el
     // documento, y "información de B2001" no debe filtrar por "informacion".
-    text: folio ? null : claves.length > 0 ? claves.join(' ') : hasMetadata ? null : raw.trim() || null,
+    text: folio
+      ? null
+      : claves.length > 0
+        ? claves.join(' ')
+        : hasMetadata || indicaFaltaDeIdentificador(text)
+          ? null
+          : raw.trim() || null,
   };
 }
 
@@ -157,6 +163,7 @@ const RUIDO = new Set([
   'sobre', 'acerca', 'respecto', 'entonces', 'ahi', 'aqui', 'alla', 'bien', 'mal', 'creo',
   'digo', 'dije', 'decia', 'era', 'ser', 'estar', 'estan', 'son', 'fue', 'sea',
   'tengo', 'tenia', 'tenemos', 'vez', 'sirve', 'sirven', 'ver',
+  'olvida', 'olvido', 'olvidar', 'olvides', 'decir', 'disponible', 'disponibles',
   'checar', 'revisar', 'buscar', 'encontrar', 'ubicar', 'localizar', 'mandaste', 'enviaste',
   'pasaste', 'llego', 'recibi', 'faltaba', 'falta', 'faltan', 'igual',
   'porfis', 'porfas', 'jefe', 'jefa', 'amigo', 'amiga', 'compa', 'brother', 'bro', 'rey',
@@ -180,8 +187,12 @@ const RUIDO = new Set([
   'consigueme', 'compartes', 'checas', 'revisas', 'revises', 'cheques', 'mandes', 'pases', 'envies',
 ]);
 
+// Solo se descarta la expresión ligada al dato desconocido, no palabras
+// como "acuerdo" que pueden formar parte del nombre de un documento.
+const FALTA_DE_IDENTIFICADOR = /\bno\s+(?:me\s+acuerdo(?:\s+de)?|recuerdo|se|tengo|conozco)\s+(?:(?:el|la|su|del|un)\s+)?(?:nombre|folio|archivo|documento|dato|identificador)\b/;
+
 export function palabrasClave(raw: string): string[] {
-  const text = normalize(raw);
+  const text = normalize(raw).replace(new RegExp(FALTA_DE_IDENTIFICADOR, 'g'), ' ');
   const meses = new Set(Object.keys(MONTHS));
   const tipos = new Set(Object.keys(CATEGORY_WORDS));
 
@@ -197,6 +208,11 @@ export function palabrasClave(raw: string): string[] {
         .filter((t) => !/^\d+$/.test(t)),
     ),
   ].slice(0, 4);
+}
+
+/** No conviertas una frase que declara desconocer un dato en un filtro libre. */
+function indicaFaltaDeIdentificador(text: string): boolean {
+  return FALTA_DE_IDENTIFICADOR.test(text);
 }
 
 /** "cotizcion" → COTIZACION: una letra de diferencia en una palabra larga. */
