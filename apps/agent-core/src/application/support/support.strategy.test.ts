@@ -231,7 +231,7 @@ class ObservedSlotExtractor extends SlotExtractorService {
   }
 }
 
-function makeHarness() {
+function makeHarness(options: { senderName?: string | null; scopes?: OrgScope[]; history?: Array<{ role: 'cliente' | 'bot'; text: string; at: Date }> } = {}) {
   const requests = new MemoryRequests();
   const search = new MemorySearch();
   const escalations: unknown[] = [];
@@ -239,7 +239,7 @@ function makeHarness() {
   const llmCalls: string[] = [];
   const draftCalls: string[] = [];
   const writerCalls: string[] = [];
-  const scopes = [orgScope];
+  const scopes = options.scopes ?? [orgScope];
   const llm: LlmPort = {
     extract: async (input) => {
       llmCalls.push(input.user);
@@ -269,7 +269,7 @@ function makeHarness() {
       casoEnRevision: async () => null,
     } as never,
     requests as never,
-    { recent: async () => [] } as never,
+    { recent: async () => options.history ?? [] } as never,
     {
       write: async (...args: Parameters<ReplyWriterService['write']>) => {
         writerCalls.push(args[0].fallback);
@@ -283,7 +283,7 @@ function makeHarness() {
     id: `message-${llmCalls.length}-${search.searches.length}`,
     chatId: 'chat-1',
     senderId: 'sender-1',
-    senderName: 'Prueba',
+    senderName: options.senderName === undefined ? 'Prueba' : options.senderName,
     body: text,
     kind: 'TEXT',
     isFromMe: false,
@@ -1336,6 +1336,222 @@ test('"la factura de octubre y noviembre con la de septiembre" entrega las tres,
   assert.equal(reply.awaiting, 'NADIE');
   assert.deepEqual(h.llmCalls, [], 'partir la lista es por reglas, sin modelo');
   assert.equal(h.escalations.length, 0);
+});
+
+test('gramática de pregunta de mes para factura, contrato, cotización, reporte y póliza', async () => {
+  const cases = [
+    ['FACTURA', /la factura/i], ['CONTRATO', /el contrato/i],
+    ['COTIZACION', /la cotización/i], ['REPORTE', /el reporte/i],
+    ['POLIZA', /la póliza/i],
+  ] as const;
+  for (const [category, expected] of cases) {
+    const scope = { ...orgScope, windows: [{ category, periodFrom: null, periodTo: null }] } as OrgScope;
+    const h = makeHarness({ scopes: [scope] });
+    h.search.catalog = Array.from({ length: 6 }, (_, i) => ({
+      ...document(`doc-${i}`, `${category}_2026-0${i + 1}.pdf`),
+      category, period: new Date(`2026-0${i + 1}-01T00:00:00.000Z`),
+    }));
+    const reply = await h.handle(`Necesito ${category.toLowerCase().replace('_', ' ')}`);
+    assert.ok(reply, category);
+    assert.match(reply.text, expected, category);
+    assert.doesNotMatch(reply.text, /\bla (contrato|reporte|estado de cuenta)\b/i);
+  }
+});
+
+test('estado de cuenta y documento contable llevan artículo masculino en la entrega', async () => {
+  for (const [category, expected] of [
+    ['ESTADO_CUENTA', /el estado de cuenta/i], ['CONTABLE', /el documento contable/i],
+  ] as const) {
+    const scope = { ...orgScope, windows: [{ category, periodFrom: null, periodTo: null }] } as OrgScope;
+    const h = makeHarness({ scopes: [scope] });
+    const filename = `${category}_2026-03.pdf`;
+    const doc = { ...document('selected', filename), category };
+    h.search.catalog = [doc];
+    h.requests.state.opciones = [{ n: 1, tipo: 'documento', id: 'selected', nombre: filename }];
+    const reply = await h.handle('la 1');
+    assert.ok(reply);
+    assert.equal(h.delivered.length, 1);
+    assert.match(String((h.delivered[0] as unknown[])[2]), expected);
+  }
+});
+
+test('cero resultados conserva contrato y mes; solo pide datos que faltan', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-06-15T12:00:00.000Z') });
+  const h = makeHarness();
+  h.search.catalog = [];
+  const reply = await h.handle('Pásame los contratos de marzo de 2026');
+  assert.ok(reply);
+  assert.match(reply.text, /contrato[s]? de .*marzo de 2026/i);
+  assert.match(reply.text, /folio|nombre del archivo/i);
+  assert.doesNotMatch(reply.text, /mes exacto|de qué mes|qué documento|perdón|disculpa/i);
+  assert.equal(h.requests.state.category, 'CONTRATO');
+  assert.equal(h.requests.state.period, '2026-03-01T00:00:00.000Z');
+  assert.equal(h.escalations.length, 0);
+});
+
+test('cero resultados con folio conocido no vuelve a pedirlo', async () => {
+  const h = makeHarness();
+  h.search.catalog = [];
+  const reply = await h.handle('Necesito la factura con folio A100');
+  assert.ok(reply);
+  assert.match(reply.text, /A100/);
+  assert.doesNotMatch(reply.text, /¿.*folio|si tienes el .*folio|dame el .*folio/i);
+  assert.equal(h.requests.state.folio, 'A100');
+});
+
+test('tras rechazar un archivo, cero resultados tampoco vuelve a pedir folio ni mes conocidos', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-06-15T12:00:00.000Z') });
+  const h = makeHarness();
+  h.search.catalog = [];
+  h.requests.state.rechazados = ['previous-doc'];
+  const reply = await h.handle('Necesito el contrato de marzo de 2026 con folio A100');
+  assert.ok(reply);
+  assert.match(reply.text, /contrato.*marzo de 2026.*A100/i);
+  assert.doesNotMatch(reply.text, /¿.*folio|si tienes el .*folio|mes exacto|si tienes el .*mes/i);
+});
+
+for (const frase of ['Mándamelo de nuevo', 'Mándamela otra vez', 'Reenvíamelo', 'Reenvíamela', '¿Me lo mandas de nuevo?', '¿Me la mandas otra vez?', 'Otra vez', 'De nuevo']) {
+  test(`reenvío solicitado: ${frase}`, async () => {
+    const h = makeHarness();
+    const doc = document('previous-invoice', 'FACTURA_2026-02_V3001.pdf');
+    h.requests.delivery = { documentId: doc.id, name: doc.name, category: doc.category, period: (doc.period as Date).toISOString(), at: new Date().toISOString() };
+    const before = structuredClone(h.requests.delivery);
+    const reply = await h.handle(frase);
+    assert.ok(reply);
+    assert.equal(h.delivered.length, 1);
+    assert.equal(h.search.searches.length, 0);
+    assert.equal(h.escalations.length, 0);
+    assert.deepEqual(h.requests.delivery, before);
+    assert.doesNotMatch(String((h.delivered[0] as unknown[])[2]), /perdón|disculpa|ahora sí/i);
+  });
+}
+
+test('preguntar por el origen de septiembre explica el nombre sin conceder una corrección ni reenviar', async () => {
+  const h = makeHarness();
+  const doc = document('sept-doc', 'FACTURA_2026-09.pdf', 'FACTURA', '2026-09');
+  h.search.catalog = [doc];
+  h.requests.delivery = { documentId: doc.id, name: doc.name, category: doc.category, period: (doc.period as Date).toISOString(), at: new Date().toISOString() };
+  const reply = await h.handle('¿Cómo sabes que es de septiembre?');
+  assert.ok(reply);
+  assert.match(reply.text, /nombre del archivo/i);
+  assert.match(reply.text, /septiembre de 2026/i);
+  assert.doesNotMatch(reply.text, /tienes razón|perdón/i);
+  assert.equal(h.delivered.length, 0);
+  assert.equal(h.search.searches.length, 0);
+});
+
+test('si el mes solo está en el registro, la explicación no lo atribuye al nombre ni al contenido', async () => {
+  const h = makeHarness();
+  const doc = document('indexed-doc', 'archivo.pdf', 'FACTURA', '2026-09');
+  h.search.catalog = [doc];
+  h.requests.delivery = { documentId: doc.id, name: doc.name, category: doc.category, period: (doc.period as Date).toISOString(), at: new Date().toISOString() };
+  const reply = await h.handle('¿Cómo sabes que es de septiembre?');
+  assert.ok(reply);
+  assert.match(reply.text, /registro/i);
+  assert.doesNotMatch(reply.text, /lo dice el nombre|lo leí en el documento|tienes razón/i);
+  assert.equal(h.delivered.length, 0);
+});
+
+test('saludo inicial presenta a JARVIS con nombre y empresa del alcance', async () => {
+  const h = makeHarness({ senderName: 'Ana López' });
+  const reply = await h.handle('Hola');
+  assert.ok(reply);
+  assert.match(reply.text, /Ana/);
+  assert.match(reply.text, /JARVIS/);
+  assert.match(reply.text, /Constructora Vega/);
+  assert.match(reply.text, /documentos?/i);
+  assert.equal(h.search.searches.length, 0);
+});
+
+test('saludo inicial de buenos días conserva esa cortesía al presentarse', async () => {
+  const h = makeHarness({ senderName: 'Ana López' });
+  const reply = await h.handle('Buenos días');
+  assert.ok(reply);
+  assert.match(reply.text, /^¡Buenos días, Ana!/);
+  assert.match(reply.text, /JARVIS/);
+});
+
+test('saludo sin nombre válido omite apelativo y usa la empresa correcta de cada línea', async () => {
+  for (const organizationName of ['Constructora Vega', 'Grupo Sol']) {
+    const h = makeHarness({ senderName: '🌸🌸', scopes: [{ ...orgScope, organizationId: organizationName, organizationName }] });
+    const reply = await h.handle('Hola');
+    assert.ok(reply);
+    assert.match(reply.text, /JARVIS/);
+    assert.ok(reply.text.includes(organizationName));
+    assert.doesNotMatch(reply.text, /🌸|Prueba|Ana/);
+  }
+});
+
+test('un nombre de perfil empresarial no se usa como nombre de pila', async () => {
+  const h = makeHarness({ senderName: 'Constructora Vega' });
+  const reply = await h.handle('Hola');
+  assert.ok(reply);
+  assert.doesNotMatch(reply.text, /¡Hola, Constructora!/);
+  assert.match(reply.text, /JARVIS/);
+});
+
+test('saludo repetido usa nombre y no repite la presentación', async () => {
+  const h = makeHarness({ senderName: 'Ana López', history: [{ role: 'bot', text: '¡Hola! Soy JARVIS.', at: new Date() }] });
+  const reply = await h.handle('Buenos días');
+  assert.ok(reply);
+  assert.match(reply.text, /Ana/);
+  assert.match(reply.text, /Buenos días/);
+  assert.doesNotMatch(reply.text, /soy JARVIS/i);
+});
+
+test('saludo repetido tras una presentación de buenos días tampoco vuelve a presentar a JARVIS', async () => {
+  const h = makeHarness({ senderName: 'Ana López', history: [{ role: 'bot', text: '¡Buenos días, Ana! Soy JARVIS.', at: new Date() }] });
+  const reply = await h.handle('Buenas tardes');
+  assert.ok(reply);
+  assert.match(reply.text, /^¡Buenas tardes, Ana!/);
+  assert.doesNotMatch(reply.text, /soy JARVIS/i);
+});
+
+test('una solicitud directa se entrega sin detenerla para presentar a JARVIS', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-06-15T12:00:00.000Z') });
+  const h = makeHarness({ senderName: 'Ana López' });
+  h.search.periodResults.set('2026-03', [document('march-direct', 'FACTURA_2026-03.pdf', 'FACTURA', '2026-03')]);
+  const reply = await h.handle('Necesito la factura de marzo de 2026');
+  assert.ok(reply);
+  assert.equal(h.requests.delivery?.documentId, 'march-direct');
+  assert.equal(h.delivered.length, 1);
+  assert.doesNotMatch(String((h.delivered[0] as unknown[])[2]), /soy JARVIS/i);
+});
+
+test('saludo con solicitud en el mismo mensaje conserva la entrega', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-06-15T12:00:00.000Z') });
+  const h = makeHarness({ senderName: 'Ana López' });
+  h.search.periodResults.set('2026-03', [document('march-hello', 'FACTURA_2026-03.pdf', 'FACTURA', '2026-03')]);
+  const reply = await h.handle('Hola, necesito la factura de marzo de 2026');
+  assert.ok(reply);
+  assert.equal(h.requests.delivery?.documentId, 'march-hello');
+  assert.equal(h.delivered.length, 1);
+  assert.match(String((h.delivered[0] as unknown[])[2]), /^¡Hola, Ana!/);
+  assert.doesNotMatch(String((h.delivered[0] as unknown[])[2]), /soy JARVIS/i);
+});
+
+test('saludo inicial sin alcance de empresa única presenta a JARVIS sin atribuir una empresa', async () => {
+  const h = makeHarness({ senderName: null, scopes: [orgScope, { ...orgScope, organizationId: 'org-sol', organizationName: 'Grupo Sol' }] });
+  const reply = await h.handle('Hola');
+  assert.ok(reply);
+  assert.match(reply.text, /JARVIS/);
+  assert.doesNotMatch(reply.text, /Constructora Vega|Grupo Sol/);
+});
+
+test('entrega de varios archivos conserva orden e identificación con leyendas breves', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-12-15T12:00:00.000Z') });
+  const h = makeHarness();
+  for (const mes of ['2026-09', '2026-10', '2026-11']) h.search.periodResults.set(mes, [document(mes, `FACTURA_${mes}.pdf`, 'FACTURA', mes)]);
+  await h.handle('Pásame las facturas de septiembre, octubre y noviembre');
+  assert.deepEqual(entregados(h), ['FACTURA_2026-09.pdf', 'FACTURA_2026-10.pdf', 'FACTURA_2026-11.pdf']);
+  assert.equal(h.delivered.length, 3);
+  for (const delivery of h.delivered) assert.match(String((delivery as unknown[])[2]), /factura de|FACTURA_2026/i);
+  for (const delivery of h.delivered.slice(1)) assert.doesNotMatch(String((delivery as unknown[])[2]), /cualquier cosa|avísame|si necesitas/i);
+  for (const delivery of h.delivered.slice(1)) assert.doesNotMatch(String((delivery as unknown[])[2]), /también te mando|aquí va también|listo, te mando/i);
+  for (const delivery of h.delivered.slice(1)) {
+    const [_, doc, caption] = delivery as unknown[];
+    assert.ok(String(caption).includes(String((doc as { name: string }).name)));
+  }
 });
 
 test('si falta uno de los meses, se entregan los demás y se dice cuál faltó', async (t) => {

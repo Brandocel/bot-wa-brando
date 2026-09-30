@@ -46,30 +46,16 @@ function mayuscula(texto: string): string {
   return texto.charAt(0).toUpperCase() + texto.slice(1);
 }
 
-/** La frase de siempre para pedir un dato que identifique el documento. */
-function comoUbicarla(): string {
-  return una([
-    'Si tienes el *folio* o el *nombre del archivo*, mándamelo y con eso la ubico.',
-    'Para dar con ella necesito un dato más: el *folio*, el *nombre del archivo* o el *mes exacto*.',
-  ]);
-}
-
 // ── Saludos y cortesía ─────────────────────────────────────────────────
 
-export function saludoInicial(empresa: string | null, nombre: string | null = null): string {
+export function saludoInicial(empresa: string | null, nombre: string | null = null, mensaje = ''): string {
   // Por su nombre, si WhatsApp trae uno que parezca nombre. Es la diferencia
   // entre "¡Hola!" de contestador y "¡Hola, Mariana!" de alguien del equipo.
-  const hola = nombre ? `¡Hola, ${nombre}!` : '¡Hola!';
-  return empresa
-    ? una([
-        `${hola} Qué gusto saludarte.\nDime qué documento necesitas de ${n(empresa)} y te lo busco enseguida.`,
-        `${hola} Aquí ando para lo que necesites de ${n(empresa)}.\n¿Qué documento te busco?`,
-        `${hola} Cuéntame qué documento de ${n(empresa)} necesitas y en un momento te lo mando.`,
-      ])
-    : una([
-        `${hola} Qué gusto saludarte.\nDime qué documento necesitas y de qué empresa, y te lo busco.`,
-        `${hola} Aquí ando.\n¿Qué documento te busco y de qué empresa?`,
-      ]);
+  const hola = saludoBreve(mensaje, nombre);
+  const presentacion = empresa
+    ? `Soy JARVIS, el asistente documental de ${n(empresa)}. Puedo ayudarte a encontrar y recibir documentos por aquí.`
+    : 'Soy JARVIS, tu asistente documental. Puedo ayudarte a encontrar y recibir documentos por aquí.';
+  return `${hola} Qué gusto saludarte. ${presentacion}\n¿En qué te puedo ayudar hoy?`;
 }
 
 /**
@@ -80,15 +66,20 @@ export function nombreDePila(pushName: string | null | undefined): string | null
   if (!pushName) return null;
   const primera = pushName.trim().split(/\s+/)[0] ?? '';
   if (!/^[A-Za-zÁÉÍÓÚÑáéíóúñ]{3,16}$/.test(primera)) return null;
+  if (/^(empresa|grupo|constructora|corporativo|despacho|oficina|servicios|administraci[oó]n)$/i.test(primera)) return null;
   return primera.charAt(0).toUpperCase() + primera.slice(1).toLowerCase();
 }
 
-export function saludoDeNuevo(): string {
-  return una([
-    'Aquí ando. ¿Qué documento te busco?',
-    'Qué gusto saludarte otra vez. ¿Qué necesitas?',
-    'Aquí sigo. Dime qué documento necesitas.',
-  ]);
+export function saludoDeNuevo(mensaje: string, nombre: string | null = null): string {
+  return `${saludoBreve(mensaje, nombre)} Qué gusto saludarte. ¿Qué documento necesitas hoy?`;
+}
+
+export function saludoBreve(mensaje: string, nombre: string | null): string {
+  let base = 'Hola';
+  if (/\bbuenos dias\b|\bbuen dia\b/.test(mensaje)) base = 'Buenos días';
+  else if (/\bbuenas tardes\b/.test(mensaje)) base = 'Buenas tardes';
+  else if (/\bbuenas noches\b/.test(mensaje)) base = 'Buenas noches';
+  return `¡${base}${nombre ? `, ${nombre}` : ''}!`;
 }
 
 /** Responde el saludo sin reabrir una solicitud documental pendiente. */
@@ -164,9 +155,8 @@ export function preguntaTipoConMes(mes: string): string {
 
 export function preguntaMes(tipo: string): string {
   return una([
-    `Va. ¿De qué *mes* necesitas la ${tipo}?`,
-    `Claro. ¿La ${tipo} de qué *mes*?`,
-    `Perfecto. Dime de qué *mes* es la ${tipo} y te la busco.`,
+    `Claro. ¿De qué *mes* necesitas ${tipo}?`,
+    `¿De qué *mes* es ${tipo}?`,
   ]);
 }
 
@@ -219,8 +209,8 @@ export function noEncontreVarios(pedidos: readonly string[]): string {
 
 export function yaEstabanArriba(nombres: readonly string[]): string {
   return nombres.length === 1
-    ? `${n(nombres[0]!)} ya te la había mandado hace un momento, está arriba.`
-    : `${enumerar(nombres.map(n))} ya te las había mandado hace un momento, están arriba.`;
+    ? `${n(nombres[0]!)} ya te lo había mandado hace un momento; está arriba.`
+    : `${enumerar(nombres.map(n))} ya te los había mandado hace un momento; están arriba.`;
 }
 
 export function hayMasDeLasEnviadas(cuantas: number): string {
@@ -228,7 +218,7 @@ export function hayMasDeLasEnviadas(cuantas: number): string {
 }
 
 export function comoUbicarVarios(): string {
-  return 'Si me das el *folio*, el *mes exacto* o el *nombre del archivo*, lo busco otra vez.';
+  return 'Si tienes el *folio* o el *nombre del archivo*, compártemelo y vuelvo a buscar.';
 }
 
 export function numerosFueraDeLista(cuantas: number): string {
@@ -249,25 +239,21 @@ export function pieInventario(): string {
 
 // ── Entregas ───────────────────────────────────────────────────────────
 
-export function entrega(que: string, esOtraMas: boolean): string {
-  return esOtraMas
-    ? una([
-        `Aquí va también ${n(que)}.`,
-        `Listo, te mando también ${n(que)}.`,
-        `Va ${n(que)} también. Cualquier cosa, me dices.`,
-      ])
+export function entrega(que: string, esOtraMas: boolean, saludo = '', nombreEnLote: string | null = null): string {
+  // Cada adjunto del lote conserva una leyenda identificable sin repetir la introducción.
+  if (nombreEnLote) return `${n(nombreEnLote)} — ${que}`;
+  const mensaje = esOtraMas
+    ? `También te mando ${n(que)}.`
     : una([
         `Listo, aquí tienes ${n(que)}.\nSi necesitas algo más, aquí ando.`,
         `Aquí está ${n(que)}.\nCualquier otra cosa, me dices.`,
         `Te mando ${n(que)}.\nAvísame si necesitas otro.`,
       ]);
+  return saludo ? `${saludo} ${mensaje}` : mensaje;
 }
 
-export function reenvio(nombre: string): string {
-  return una([
-    `Perdón, te lo mando otra vez: ${n(nombre)}.`,
-    `Va de nuevo: ${n(nombre)}.\nAvísame si ahora sí lo ves.`,
-  ]);
+export function reenvio(nombre: string, tipo: string): string {
+  return `Claro, te mando de nuevo ${tipo}: ${n(nombre)}.`;
 }
 
 export function entregaFallida(folio: string, agente: Agente | null): string {
@@ -286,7 +272,7 @@ export function reenvioFallido(nombre: string, folio: string): string {
 export function noEncontreParecidos(pedido: string): string {
   return una([
     `No encontré ${pedido}, pero tengo esto que se parece:`,
-    `${mayuscula(pedido)} no la veo. Lo más cercano que tengo es esto:`,
+    `${mayuscula(pedido)} no aparece. Lo más cercano que tengo es esto:`,
   ]);
 }
 
@@ -374,22 +360,42 @@ export function tocoElTecho(): string {
 export function seParecen(pedido: string): string {
   return una([
     `No tengo exactamente ${pedido}, pero estos se le parecen:`,
-    `${mayuscula(pedido)} tal cual no la veo. Mira si es alguno de estos:`,
+    `${mayuscula(pedido)} no aparece tal cual. Mira si es alguno de estos:`,
   ]);
 }
 
 export function muchosSinMes(cuantos: number, tipoPlural: string, mes: string): string {
   return una([
-    `Tengo ${n(String(cuantos))} ${tipoPlural}, pero ninguna de ${n(mes)}.\n${comoUbicarla()}`,
-    `De ${n(mes)} no veo ${tipoPlural}; tengo ${n(String(cuantos))} de otros meses.\n${comoUbicarla()}`,
+    `Tengo ${n(String(cuantos))} ${tipoPlural}, pero no de ${n(mes)}.\nSi tienes el *folio* o el *nombre del archivo*, compártemelo.`,
+    `De ${n(mes)} no veo ${tipoPlural}; tengo ${n(String(cuantos))} de otros meses.\nCon el *folio* o el *nombre del archivo* puedo buscarlo mejor.`,
   ]);
 }
 
 export function faltaInformacion(pedido: string): string {
-  return una([
-    `Con eso no me alcanza para ubicar ${pedido}.\n${comoUbicarla()}`,
-    `${mayuscula(pedido)} así no la encuentro.\n${comoUbicarla()}`,
-  ]);
+  return `Encontré varias opciones para ${pedido}. Si tienes el *folio* o el *nombre del archivo*, compártemelo y afino la búsqueda.`;
+}
+
+/** Cero coincidencias: ofrecer únicamente datos que aún no están en la solicitud. */
+interface DatosConocidos {
+  folio: boolean;
+  periodo: boolean;
+  nombre: boolean;
+}
+
+function datosFaltantes(conocidos: DatosConocidos): string[] {
+  return [
+    !conocidos.folio && 'el *folio*',
+    !conocidos.nombre && 'el *nombre del archivo*',
+    !conocidos.periodo && 'el *mes*',
+  ].filter((dato): dato is string => Boolean(dato));
+}
+
+export function sinCoincidencias(pedido: string, conocidos: DatosConocidos): string {
+  const faltan = datosFaltantes(conocidos);
+  const base = `Por ahora no encontré ${pedido}.`;
+  return faltan.length > 0
+    ? `${base} Si tienes ${faltan.join(' o ')}, compárteme ese dato y lo busco.`
+    : `${base} Si quieres, revisamos otro documento.`;
 }
 
 export function sinInformacionEscalado(pedido: string, folio: string, agente: Agente | null): string {
@@ -401,8 +407,8 @@ export function sinInformacionEscalado(pedido: string, folio: string, agente: Ag
 
 export function rechazoPideDetalle(pedido: string): string {
   return una([
-    `Entendido, no es ninguna de esas.\nPara dar con ${pedido} correcta necesito un dato más: el *folio*, el *nombre del archivo* o el *mes exacto*.`,
-    `Va, esas no.\n¿Tienes el *folio* o el *nombre del archivo* de ${pedido}? Con eso la ubico sin adivinar.`,
+    `Entendido, esas opciones no corresponden a ${pedido}. ¿Tienes el *folio* o el *nombre del archivo*?`,
+    `Va, esas no. Si tienes el *folio* o el *nombre del archivo* de ${pedido}, compártemelo y busco de nuevo.`,
   ]);
 }
 
@@ -410,7 +416,7 @@ export function mesesDisponibles(tipoPlural: string, meses: readonly string[]): 
   const lista = meses.map((m) => `• ${m}`).join('\n');
   return una([
     `De ${tipoPlural} tengo de estos meses:\n${lista}\n¿Cuál te mando?`,
-    `Hay ${tipoPlural} de:\n${lista}\nDime el *mes* y te la busco.`,
+    `Hay ${tipoPlural} de:\n${lista}\nDime el *mes* y busco el archivo.`,
   ]);
 }
 
@@ -419,61 +425,61 @@ export function mesesDisponibles(tipoPlural: string, meses: readonly string[]): 
 /** Solo hay un candidato y es de otro mes: se ofrece, no se manda. */
 export function unicaDeOtroMes(pedido: string, nombre: string, mes: string): string {
   return una([
-    `${mayuscula(pedido)} como tal no la tengo.\nLa única que veo es ${n(nombre)}, y esa es de ${n(mes)}.\n¿Te la mando, o buscamos otra?`,
-    `De ese mes no tengo nada. Lo más cercano es ${n(nombre)}, que es de ${n(mes)}.\nSi te sirve, dime *sí* y te la paso.`,
+    `No encontré ${pedido}. Veo ${n(nombre)}, de ${n(mes)}. ¿Te mando ese archivo o buscamos otro?`,
+    `De ese mes no encontré ${pedido}. Lo más cercano es ${n(nombre)}, de ${n(mes)}. Si te sirve, dime *sí* y te lo mando.`,
   ]);
 }
 
 /** Solo hay un candidato y no se sabe de qué mes es: se dice tal cual. */
 export function unicaSinMes(pedido: string, nombre: string): string {
   return una([
-    `Tengo ${n(nombre)}, pero no trae mes ni en el nombre ni por dentro.\nNo te puedo asegurar que sea ${pedido}. ¿Te la mando para que la revises?`,
-    `Lo único parecido es ${n(nombre)}. No dice de qué mes es, así que no sé si es ${pedido}.\nSi quieres, te la paso y la revisas.`,
+    `Tengo ${n(nombre)}, pero no indica el mes en el nombre ni en el contenido. No puedo asegurar que sea ${pedido}. ¿Te lo mando para que lo revises?`,
+    `Lo más parecido es ${n(nombre)}. No sé si es ${pedido} porque no indica el mes. Si quieres, te lo mando para que lo revises.`,
   ]);
 }
 
 /** La búsqueda cayó en lo mismo que se acaba de mandar. */
 export function esLaMisma(nombre: string): string {
   return una([
-    `Esa es la que te acabo de mandar: ${n(nombre)}.\n¿Buscas otra distinta? Si me das el *folio* o el *mes exacto*, la ubico.`,
-    `Es la misma de arriba: ${n(nombre)}.\nSi era esa, ya la tienes. Si necesitas otra, dime el *folio* o el *nombre* y la busco.`,
+    `Es el mismo archivo que te acabo de mandar: ${n(nombre)}. Si buscas otro, compárteme el *folio* o el *nombre del archivo*.`,
+    `${n(nombre)} ya está arriba. Si necesitas otro, dime el *folio* o el *nombre del archivo* y lo busco.`,
   ]);
 }
 
 /** Rechazó lo único que había: se dice así en vez de "no encontré". */
-export function soloTeniaEsa(pedido: string, cuantas: number): string {
-  return cuantas > 1
-    ? una([
-        `Fuera de las que ya viste, no tengo otra que sea ${pedido}.\n${comoUbicarla()} Si no aparece, lo reviso con el equipo.`,
-        `Ya te enseñé lo que tengo de eso y no hay más.\n${comoUbicarla()} Si no, lo paso con alguien del equipo.`,
-      ])
-    : una([
-        `Entonces solo tenía esa.\n¿Tienes el *folio* o el *nombre del archivo* de ${pedido}? Con eso la busco; si no está, lo veo con el equipo.`,
-        `Va, esa no. Para ${pedido} no veo otra.\n${comoUbicarla()} Si no aparece, lo reviso con el equipo.`,
-      ]);
+export function soloTeniaEsa(pedido: string, cuantas: number, conocidos: DatosConocidos): string {
+  const faltan = datosFaltantes(conocidos);
+  const ayuda = faltan.length > 0
+    ? `Si tienes ${faltan.join(' o ')}, compárteme ese dato y busco otra opción.`
+    : 'Si quieres, revisamos otra solicitud.';
+  const contexto = cuantas > 1
+    ? 'Los archivos que te mostré no eran los que necesitabas.'
+    : 'Ese archivo no era el que necesitabas.';
+  return `${contexto} Por ahora no encontré ${pedido}. ${ayuda}`;
 }
 
 // ── Explicar de dónde salió un dato ────────────────────────────────────
 
 export function mesPorNombre(nombre: string, mes: string): string {
   return una([
-    `Es de ${n(mes)}. Lo dice el nombre del archivo: ${n(nombre)}.\nSi tú sabes que es de otro mes, dime cuál y busco la correcta.`,
-    `Por el nombre del archivo, ${n(nombre)}, es de ${n(mes)}.\nSi no cuadra, dime de qué mes debería ser y la busco.`,
+    `Es de ${n(mes)}. Lo dice el nombre del archivo: ${n(nombre)}.\nSi sabes que es de otro mes, dime cuál y busco el correcto.`,
+    `Por el nombre del archivo, ${n(nombre)}, es de ${n(mes)}.\nSi no cuadra, dime de qué mes debería ser y busco otro.`,
   ]);
 }
 
 export function mesPorContenido(nombre: string, mes: string): string {
   return una([
-    `Es de ${n(mes)}. Lo leí del propio documento: ${n(nombre)} trae esa fecha por dentro.\nSi tú sabes que es de otro mes, dime cuál y busco la correcta.`,
-    `Por lo que dice adentro, ${n(nombre)} está fechado en ${n(mes)}.\nSi no es lo que esperabas, dime el mes y la busco.`,
+    `Es de ${n(mes)}. Lo leí en el propio documento: ${n(nombre)} trae esa fecha.\nSi sabes que es de otro mes, dime cuál y busco el correcto.`,
+    `Por lo que dice adentro, ${n(nombre)} está fechado en ${n(mes)}.\nSi no es lo que esperabas, dime el mes y busco otro.`,
   ]);
 }
 
-export function mesDesconocido(nombre: string, tipo: string): string {
-  return una([
-    `La verdad, no lo sé con certeza.\n${n(nombre)} no trae mes ni en el nombre ni por dentro, y es la única ${tipo} que tengo.\nSi me dices de qué mes debería ser, busco otra o lo reviso con el equipo.`,
-    `No te lo puedo asegurar.\n${n(nombre)} no dice de qué mes es, y es lo único que hay de ese tipo.\nDime el mes que necesitas y lo reviso, o lo paso con alguien del equipo.`,
-  ]);
+export function mesDesconocido(nombre: string): string {
+  return `No te lo puedo asegurar con certeza. ${n(nombre)} no indica el mes en el nombre ni en el contenido que tengo. Si sabes de qué mes debería ser, dímelo y busco otra opción.`;
+}
+
+export function mesPorIndice(nombre: string, mes: string): string {
+  return `El registro de ${n(nombre)} indica ${n(mes)}, pero no puedo confirmar de dónde salió ese dato.`;
 }
 
 export function mesPorContenidoCorrigiendo(nombre: string, mesDentro: string, mesNombre: string): string {
@@ -485,23 +491,19 @@ export function mesPorContenidoCorrigiendo(nombre: string, mesDentro: string, me
 
 export function perdonMesEquivocado(mesDicho: string): string {
   return una([
-    `Tienes razón: te la mandé como de ${mesDicho}, y no es así.`,
-    `Perdón, la etiqueté mal como de ${mesDicho}.`,
+    `Tienes razón: te envié el archivo como de ${mesDicho}, y no es así.`,
+    `Perdón, etiqueté mal el archivo como de ${mesDicho}.`,
   ]);
 }
 
-export function confirmaMes(): string {
-  return una(['Sí, tienes razón.', 'Así es.']);
-}
-
 export function siHayDeEseMes(tipoPlural: string, mes: string): string {
-  return `De ${n(mes)} sí tengo ${tipoPlural}. Dime el *número* y te la mando:`;
+  return `De ${n(mes)} sí tengo ${tipoPlural}. Dime el *número* y te mando el archivo:`;
 }
 
 export function noHayDeEseMes(tipoPlural: string, mes: string): string {
   return una([
-    `De ${n(mes)} no veo ${tipoPlural} en la carpeta.\n${comoUbicarla()} Si no, lo reviso con el equipo.`,
-    `${mayuscula(tipoPlural)} de ${n(mes)} no hay; puede que todavía no la suban.\nSi me das el *folio* la ubico, o lo reviso con el equipo.`,
+    `De ${n(mes)} no veo ${tipoPlural} en la carpeta.\nSi tienes el *folio* o el *nombre del archivo*, compártemelo.`,
+    `Por ahora no encontré ${tipoPlural} de ${n(mes)}.\nCon el *folio* puedo buscarlo mejor.`,
   ]);
 }
 

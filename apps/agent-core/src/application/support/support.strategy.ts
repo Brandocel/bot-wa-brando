@@ -162,9 +162,13 @@ export class SupportStrategy {
       clasificacion.tipo !== 'QUEJA' &&
       clasificacion.tipo !== 'CORTESIA';
 
+    const saludo = reply.text && saludoConSolicitud(message.body)
+      ? `${voz.saludoBreve(normalizar(message.body), voz.nombreDePila(message.senderName))} `
+      : '';
+
     return {
       ...reply,
-      text: reconocer ? `${voz.empatia()}\n${reply.text}` : reply.text,
+      text: reconocer ? `${voz.empatia()}\n${saludo}${reply.text}` : `${saludo}${reply.text}`,
       clasificacion,
     };
   }
@@ -622,7 +626,7 @@ export class SupportStrategy {
 
       if (candidatos.length > MAX_OPCIONES) {
         if (query.category) {
-          return this.ask(turn, asked, 'periodo', voz.preguntaMes(nombre(query.category)));
+          return this.ask(turn, asked, 'periodo', voz.preguntaMes(nombreConArticulo(query.category)));
         }
         return this.ask(
           turn,
@@ -658,7 +662,7 @@ export class SupportStrategy {
     if (results.length > MAX_OPCIONES) {
       const asked = readAsked(sol);
       if (!query.period) {
-        return this.ask(turn, asked, 'periodo', voz.preguntaMes(nombre(query.category)));
+        return this.ask(turn, asked, 'periodo', voz.preguntaMes(nombreConArticulo(query.category)));
       }
       return this.ask(turn, asked, 'detalle', voz.faltaInformacion(describirPedido(query)));
     }
@@ -758,6 +762,9 @@ export class SupportStrategy {
     await this.solicitudes.guardar(turn.ctx.conversationId, { fallos });
 
     const pedido = describirPedido(query);
+    const conocidos = {
+      folio: Boolean(query.folio), periodo: Boolean(query.period), nombre: Boolean(query.text),
+    };
 
     // 1. Parecidos por nombre, sin importar cómo estén clasificados.
     if (query.category && !query.folio) {
@@ -841,8 +848,8 @@ export class SupportStrategy {
       // Si ya rechazó lo único que había, decirlo así: "solo tenía esa".
       const pregunta =
         sol.rechazados.length > 0
-          ? voz.soloTeniaEsa(pedido, sol.rechazados.length)
-          : voz.faltaInformacion(pedido);
+          ? voz.soloTeniaEsa(pedido, sol.rechazados.length, conocidos)
+          : voz.sinCoincidencias(pedido, conocidos);
       return this.ask(turn, asked, 'detalle', pregunta);
     }
 
@@ -925,12 +932,19 @@ export class SupportStrategy {
       turn.history.some((t) => t.role === 'bot' && t.text.startsWith('[documento]'));
     const que =
       comoLlamarlo ??
-      `la ${nombre(doc.category)}${doc.period ? ` de ${mesEnPalabras(doc.period)}` : ''}`;
+      `${nombreConArticulo(doc.category)}${doc.period ? ` de ${mesEnPalabras(doc.period)}` : ''}`;
 
     const sent = await this.delivery.deliver(
       turn.message.chatId,
       doc,
-      voz.entrega(que, yaEntregoAlgo),
+      voz.entrega(
+        que,
+        yaEntregoAlgo,
+        otraMas === true || !saludoConSolicitud(turn.message.body)
+          ? ''
+          : voz.saludoBreve(normalizar(turn.message.body), voz.nombreDePila(turn.message.senderName)),
+        otraMas === true ? doc.name : null,
+      ),
       'Si tampoco lo ves, escríbeme "no me llegó" y te lo vuelvo a mandar.',
     );
 
@@ -1220,7 +1234,7 @@ export class SupportStrategy {
     const sent = await this.delivery.deliver(
       turn.message.chatId,
       documento,
-      voz.reenvio(documento.name),
+      voz.reenvio(documento.name, nombreConArticulo(documento.category)),
       'Si tampoco lo ves, escríbeme y lo pasamos con una persona del equipo.',
     );
 
@@ -1504,9 +1518,9 @@ export class SupportStrategy {
     } else if (mesDentro) {
       text = voz.mesPorContenido(doc.name, mesDentro);
     } else if (mesIndice) {
-      text = voz.mesPorNombre(doc.name, mesIndice);
+      text = voz.mesPorIndice(doc.name, mesIndice);
     } else {
-      text = voz.mesDesconocido(doc.name, nombre(doc.category));
+      text = voz.mesDesconocido(doc.name);
     }
 
     const mesReal = mesDentro && porNombre.periodoDebil ? mesDentro : (mesIndice ?? mesNombre ?? mesDentro);
@@ -1522,9 +1536,7 @@ export class SupportStrategy {
     const mesPreguntado = mesReclamado(turn.message.body);
     if (mesPreguntado && mesReal) {
       const pedido = mesEnPalabras(mesPreguntado);
-      if (pedido === mesReal) {
-        text = `${voz.confirmaMes()}\n${text}`;
-      } else {
+      if (pedido !== mesReal) {
         const organizationId =
           turn.scopes.length === 1 ? turn.scopes[0]!.organizationId : empresaGuardada(sol, turn.scopes);
         const deEseMes = await this.search.search(
@@ -1864,15 +1876,15 @@ function mergeSlots(stored: unknown, fresh: SearchQuery): SearchQuery {
 const VACIA: SearchQuery = { category: null, period: null, folio: null, text: null };
 
 /** Cómo se llama cada tipo de documento cuando se le habla a una persona. */
-const NOMBRES: Record<DocCategory, [string, string]> = {
-  FACTURA: ['factura', 'facturas'],
-  CONTRATO: ['contrato', 'contratos'],
-  COTIZACION: ['cotización', 'cotizaciones'],
-  REPORTE: ['reporte', 'reportes'],
-  POLIZA: ['póliza', 'pólizas'],
-  ESTADO_CUENTA: ['estado de cuenta', 'estados de cuenta'],
-  CONTABLE: ['documento contable', 'documentos contables'],
-  OTRO: ['documento', 'documentos'],
+const NOMBRES: Record<DocCategory, [string, string, 'el' | 'la']> = {
+  FACTURA: ['factura', 'facturas', 'la'],
+  CONTRATO: ['contrato', 'contratos', 'el'],
+  COTIZACION: ['cotización', 'cotizaciones', 'la'],
+  REPORTE: ['reporte', 'reportes', 'el'],
+  POLIZA: ['póliza', 'pólizas', 'la'],
+  ESTADO_CUENTA: ['estado de cuenta', 'estados de cuenta', 'el'],
+  CONTABLE: ['documento contable', 'documentos contables', 'el'],
+  OTRO: ['documento', 'documentos', 'el'],
 };
 
 function nombre(category: DocCategory | null): string {
@@ -1881,6 +1893,10 @@ function nombre(category: DocCategory | null): string {
 
 function nombrePlural(category: DocCategory | null): string {
   return category ? NOMBRES[category][1] : 'documentos';
+}
+
+function nombreConArticulo(category: DocCategory | null): string {
+  return category ? `${NOMBRES[category][2]} ${nombre(category)}` : 'el documento';
 }
 
 const MESES = [
@@ -1899,7 +1915,7 @@ function mesEnPalabras(period: Date): string {
  */
 function describirPedidoVarios(query: SearchQuery): string {
   if (query.folio) return `el folio ${query.folio}`;
-  const que = query.category ? `la ${nombre(query.category)}` : 'lo';
+  const que = query.category ? nombreConArticulo(query.category) : 'lo';
   const de = query.text && !nombreDeArchivo(query.text) ? ` de ${capitalizar(query.text)}` : '';
   const mes = query.period ? ` de ${mesEnPalabras(query.period)}` : '';
   return `${que}${de}${mes}`;
@@ -1917,11 +1933,11 @@ function porMes(a: Document, b: Document): number {
 }
 
 function describirPedido(query: SearchQuery): string {
-  if (query.folio) return `el documento con folio ${query.folio}`;
-
-  let base = `la ${nombre(query.category)}`;
+  let base = nombreConArticulo(query.category);
   if (query.text && !nombreDeArchivo(query.text)) base += ` de "${query.text}"`;
-  return query.period ? `${base} de ${mesEnPalabras(query.period)}` : base;
+  if (query.period) base += ` de ${mesEnPalabras(query.period)}`;
+  if (query.folio) base += ` con folio ${query.folio}`;
+  return base;
 }
 
 /**
@@ -2056,6 +2072,13 @@ function empresaGuardada(
   return scopes.some((s) => s.organizationId === guardado) ? guardado : null;
 }
 
+/** Un saludo al inicio que además trae datos documentales no detiene la solicitud. */
+function saludoConSolicitud(texto: string): boolean {
+  const limpio = normalizar(texto);
+  return /^(hola|buenos dias|buen dia|buenas tardes|buenas noches)\b/.test(limpio)
+    && parseQueryTieneDatos(limpio);
+}
+
 /**
  * Respuesta a saludos, agradecimientos y acuses, sin modelo.
  *
@@ -2090,14 +2113,13 @@ function respuestaRapida(
     // la persona la continúe cuando esté lista.
     if (pendiente) return voz.respuestaSocial(limpio);
 
-    const yaSaludo = turn.history.some(
-      (t) => t.role === 'bot' && /\bhola\b/i.test(t.text),
-    );
-    if (yaSaludo) return voz.saludoDeNuevo();
+    const yaConversaron = turn.history.some((t) => t.role === 'bot');
+    if (yaConversaron) return voz.saludoDeNuevo(limpio, voz.nombreDePila(turn.message.senderName));
 
     return voz.saludoInicial(
       turn.scopes.length === 1 ? turn.scopes[0]!.organizationName : null,
       voz.nombreDePila(turn.message.senderName),
+      limpio,
     );
   }
 

@@ -369,6 +369,11 @@ export function esQuejaDeNoRecibido(texto: string): boolean {
 
   if (limpio.length > 60) return false;
 
+  const peticion = limpio.replace(/[¿?!.]/g, '').trim();
+  if (/^(?:reenvia(?:me)?(?:lo|la)|(?:mandame(?:lo|la)|me (?:lo|la) mandas) (?:de nuevo|otra vez))$/.test(peticion)) {
+    return true;
+  }
+
   return /\b(no (lo |la |me )?(veo|llego|llega|recibi|aparece|abre)|no me lo mandaste|donde esta|no vino|no esta el (doc|archivo|pdf)|(mandala|mandalo|pasala|pasalo|enviala|envialo) (otra vez|de nuevo)|(otra vez|de nuevo)$|reenvia(la|lo|me)?|vuelve(la|lo)? a (mandar|pasar|enviar))\b/.test(
     limpio,
   );
