@@ -195,6 +195,42 @@ export function encabezadoLista(cuantos: number, que: string): string {
   ]);
 }
 
+// ── Varios documentos en un mensaje ─────────────────────────────────────
+
+/** "a", "a y b", "a, b y c". */
+function enumerar(cosas: readonly string[]): string {
+  if (cosas.length <= 1) return cosas[0] ?? '';
+  return `${cosas.slice(0, -1).join(', ')} y ${cosas[cosas.length - 1]}`;
+}
+
+export function encabezadoVariasDe(que: string): string {
+  return `De ${n(que)} encontré varias:`;
+}
+
+export function noEncontreVarios(pedidos: readonly string[]): string {
+  return pedidos.length === 1
+    ? `No encontré ${n(pedidos[0]!)}.`
+    : `No encontré ${enumerar(pedidos.map(n))}.`;
+}
+
+export function yaEstabanArriba(nombres: readonly string[]): string {
+  return nombres.length === 1
+    ? `${n(nombres[0]!)} ya te la había mandado hace un momento, está arriba.`
+    : `${enumerar(nombres.map(n))} ya te las había mandado hace un momento, están arriba.`;
+}
+
+export function hayMasDeLasEnviadas(cuantas: number): string {
+  return `Hay ${n(String(cuantas))} más. Si las necesitas, dime de qué mes y te las mando.`;
+}
+
+export function comoUbicarVarios(): string {
+  return 'Si me das el *folio*, el *mes exacto* o el *nombre del archivo*, lo busco otra vez.';
+}
+
+export function numerosFueraDeLista(cuantas: number): string {
+  return `Esos números no están en la lista: van del *1* al *${cuantas}*. ¿Cuáles te mando?`;
+}
+
 export function pieLista(): string {
   return una(['Responde con el *número*.', 'Con el *número* me basta.', 'Dime el *número* y te lo mando.']);
 }

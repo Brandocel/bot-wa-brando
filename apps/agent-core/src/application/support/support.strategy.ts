@@ -41,6 +41,7 @@ import {
   quejaParaPersona,
   type Clasificacion,
 } from './message-classifier';
+import { dividirPedidos, leerVariasOpciones, type VariosPedidos } from './pedidos';
 import * as voz from './voz';
 
 /**
@@ -75,6 +76,12 @@ const MAX_QUESTIONS = 3;
  * contesta enseñando las dos, no preguntando "¿de qué mes?".
  */
 const MAX_OPCIONES = 5;
+
+/**
+ * Cuántos documentos se mandan de un solo mensaje ("todas las de Oxxo").
+ * Más que eso satura el chat: se manda esto y se ofrece acotar.
+ */
+const MAX_ENTREGAS = 10;
 
 /** Dentro de este tiempo, el mismo archivo no se vuelve a mandar sin que lo pidan. */
 const REPETIDA_MS = 30 * 60 * 1000;
@@ -237,6 +244,12 @@ export class SupportStrategy {
      * oficial —se rompieron con multidispositivo—, así que la lista
      * numerada es la forma que sí llega a todos los teléfonos.
      */
+    // "La 1 y la 2", "las dos", "todas": varias de la lista a la vez.
+    const varias = leerVariasOpciones(message.body);
+    if (varias !== null && sol.opciones?.some((o) => o.tipo === 'documento')) {
+      return this.entregarVariasOpciones(varias, turn, sol);
+    }
+
     const eleccion = leerNumero(message.body);
     if (eleccion !== null) {
       const resuelto = await this.resolverOpcion(eleccion, turn, sol);
@@ -379,6 +392,17 @@ export class SupportStrategy {
     // con erratas también cuenta, y si se reconoce aquí el extractor puede
     // ahorrarse la llamada al modelo.
     const empresaEnTexto = this.resolveCompany(message.body, scope.scopes);
+
+    /**
+     * Varios documentos en un mensaje: "la factura de octubre y noviembre
+     * con la de septiembre", "todas las de Oxxo y McDonald's". Antes se
+     * leía como una sola búsqueda y se entregaba solo una parte, callando
+     * el resto. Va antes del modelo: partir la lista es por reglas.
+     */
+    const varios = dividirPedidos(message.body);
+    if (varios) {
+      return this.atenderVarios(turn, sol, contexto, varios, empresaEnTexto);
+    }
 
     const extraction = await this.slots.extract(message.body, {
       pendiente,
@@ -841,6 +865,8 @@ export class SupportStrategy {
     comoLlamarlo?: string,
     /** true = la persona lo pidió a propósito ("sí, esa"): se manda aunque sea repetido. */
     forzar = false,
+    /** true = va detrás de otro en el mismo lote: la leyenda dice "también". */
+    otraMas?: boolean,
   ): Promise<StrategyReply> {
     const { conversationId } = turn.ctx;
 
@@ -872,9 +898,9 @@ export class SupportStrategy {
       decidedBy: 'dentro del alcance',
     });
 
-    const yaEntregoAlgo = turn.history.some(
-      (t) => t.role === 'bot' && t.text.startsWith('[documento]'),
-    );
+    const yaEntregoAlgo =
+      otraMas ??
+      turn.history.some((t) => t.role === 'bot' && t.text.startsWith('[documento]'));
     const que =
       comoLlamarlo ??
       `la ${nombre(doc.category)}${doc.period ? ` de ${mesEnPalabras(doc.period)}` : ''}`;
@@ -904,6 +930,184 @@ export class SupportStrategy {
   }
 
   /**
+   * Varios pedidos de un solo mensaje. Cada uno se busca por su cuenta:
+   *
+   *  - Uno exacto (o "todas"): se entrega, en el orden del pedido.
+   *  - Varios candidatos: van a UNA lista numerada común, para elegir
+   *    con "la 2" o "la 1 y la 3".
+   *  - Nada: se dice al final cuál faltó, en vez de callarlo.
+   *
+   * Con varias empresas y sin decir de cuál, se pregunta una vez y el lote
+   * se retoma al contestar.
+   */
+  private async atenderVarios(
+    turn: Turn,
+    sol: Solicitud,
+    contexto: Solicitud,
+    varios: VariosPedidos,
+    empresaEnTexto: string | null,
+  ): Promise<StrategyReply> {
+    const { scopes } = turn;
+    const comun =
+      empresaEnTexto ??
+      (scopes.length === 1 ? scopes[0]!.organizationId : empresaGuardada(sol, scopes));
+
+    const pedidos = varios.pedidos.map((p) => {
+      // "Las de Oxxo y McDonald's": si el nombre es una empresa de su
+      // alcance, se busca en esa empresa; si no, es palabra clave.
+      const empresa = p.text ? this.resolveCompany(p.text, scopes) : null;
+      return {
+        ...p,
+        // "y la de octubre y noviembre" después de una factura: facturas.
+        category: p.category ?? (p.folio || p.text ? null : contexto.category),
+        text: empresa ? sinNombresDeEmpresa(p.text, scopes) : p.text,
+        organizationId: empresa ?? comun,
+      };
+    });
+
+    if (scopes.length > 1 && pedidos.some((p) => !p.organizationId)) {
+      await this.solicitudes.guardar(turn.ctx.conversationId, {
+        lote: turn.message.body,
+        opciones: scopes.map((s, i) => ({
+          n: i + 1,
+          tipo: 'empresa' as const,
+          id: s.organizationId,
+          nombre: s.organizationName,
+        })),
+      });
+      return this.ask(
+        turn,
+        readAsked(sol),
+        'empresa',
+        voz.preguntaEmpresa(),
+        scopes.map((s, i) => `*${i + 1}.* ${s.organizationName}`),
+      );
+    }
+
+    const limite = varios.todas ? MAX_ENTREGAS + 1 : MAX_OPCIONES + 1;
+    const aEntregar: Document[] = [];
+    const listas: { que: string; docs: Document[] }[] = [];
+    const faltan: string[] = [];
+
+    for (const p of pedidos) {
+      const docs = await this.search.search(
+        scopes,
+        { ...p, excludeIds: sol.rechazados },
+        limite,
+      );
+
+      if (docs.length === 0) {
+        faltan.push(describirPedidoVarios(p));
+        await this.scope.audit({
+          waId: turn.message.senderId,
+          query: turn.message.body,
+          documentId: null,
+          decision: 'NOT_FOUND',
+          decidedBy: 'sin coincidencias en el índice (pedido múltiple)',
+        });
+        continue;
+      }
+
+      if (docs.length === 1 || varios.todas) {
+        // "Todas", del mes más viejo al más nuevo.
+        aEntregar.push(...[...docs].sort(porMes));
+        continue;
+      }
+
+      listas.push({ que: describirPedidoVarios(p), docs: docs.slice(0, MAX_OPCIONES) });
+    }
+
+    // Un mismo archivo puede casar con dos pedidos: se manda una vez.
+    const unicos = [...new Map(aEntregar.map((d) => [d.id, d])).values()];
+    return this.entregarLote(turn, unicos, { faltan, listas, forzar: false });
+  }
+
+  /** "La 1 y la 3", "las dos", "todas": varias de la última lista. */
+  private async entregarVariasOpciones(
+    varias: number[] | 'todas',
+    turn: Turn,
+    sol: Solicitud,
+  ): Promise<StrategyReply> {
+    const opciones = (sol.opciones ?? []).filter((o) => o.tipo === 'documento');
+    const elegidas = varias === 'todas' ? opciones : opciones.filter((o) => varias.includes(o.n));
+
+    if (elegidas.length === 0) {
+      return { text: voz.numerosFueraDeLista(opciones.length), awaiting: 'CLIENTE' };
+    }
+
+    const docs: Document[] = [];
+    for (const o of elegidas) {
+      const doc = await this.search.byId(o.id);
+      if (doc) docs.push(doc);
+    }
+
+    // La lista sigue en su pantalla: se conserva para "y también la 4".
+    return this.entregarLote(turn, docs, { faltan: [], listas: [], forzar: true, conservar: opciones });
+  }
+
+  /**
+   * Manda un lote de documentos y arma UN mensaje con lo que quedó
+   * pendiente: lo repetido, lo que sobró, lo que no apareció y lo que hay
+   * que elegir. Las leyendas de cada archivo ya dicen qué es cada uno.
+   */
+  private async entregarLote(
+    turn: Turn,
+    docs: readonly Document[],
+    opts: {
+      faltan: readonly string[];
+      listas: readonly { que: string; docs: Document[] }[];
+      forzar: boolean;
+      conservar?: Opcion[];
+    },
+  ): Promise<StrategyReply> {
+    const repetidos: Document[] = [];
+    let enviados = 0;
+
+    for (const doc of docs.slice(0, MAX_ENTREGAS)) {
+      const reply = await this.entregar(turn, doc, undefined, opts.forzar, enviados > 0 ? true : undefined);
+      // La entrega falló y ya se escaló a una persona: eso es lo que se dice.
+      if (reply.awaiting === 'AGENTE') return reply;
+      if (reply.text) repetidos.push(doc);
+      else enviados += 1;
+    }
+
+    const partes: string[] = [];
+    if (repetidos.length > 0) partes.push(voz.yaEstabanArriba(repetidos.map((d) => d.name)));
+    if (docs.length > MAX_ENTREGAS) partes.push(voz.hayMasDeLasEnviadas(docs.length - MAX_ENTREGAS));
+    if (opts.faltan.length > 0) partes.push(voz.noEncontreVarios(opts.faltan));
+
+    // Lo que hay que elegir, numerado de corrido aunque venga de varios pedidos.
+    const paraElegir: Document[] = [];
+    for (const lista of opts.listas) {
+      const inicio = paraElegir.length;
+      paraElegir.push(...lista.docs);
+      partes.push(
+        [
+          voz.encabezadoVariasDe(lista.que),
+          ...lista.docs.map((doc, i) => `*${inicio + i + 1}.* ${describe(doc)}`),
+        ].join('\n'),
+      );
+    }
+
+    if (paraElegir.length > 0) {
+      partes.push(voz.pieLista());
+      await this.guardarOpciones(turn, paraElegir);
+    } else if (opts.conservar && opts.conservar.length > 1) {
+      await this.solicitudes.guardar(turn.ctx.conversationId, { opciones: opts.conservar });
+    } else if (enviados === 0 && repetidos.length === 0) {
+      // Nada que mandar ni que elegir: se ofrece cómo ubicarlo.
+      partes.push(voz.comoUbicarVarios());
+    }
+
+    const pendiente = paraElegir.length > 0 || opts.faltan.length > 0;
+    return {
+      text: partes.join('\n\n'),
+      awaiting: pendiente ? 'CLIENTE' : 'NADIE',
+      topic: docs[0]?.category ?? opts.listas[0]?.docs[0]?.category ?? null,
+    };
+  }
+
+  /**
    * Aplica la opción elegida de la última lista ofrecida.
    *
    * Devuelve null si no había lista o el número no corresponde: ahí el
@@ -930,7 +1134,16 @@ export class SupportStrategy {
       const actualizada = await this.solicitudes.guardar(turn.ctx.conversationId, {
         opciones: null,
         organizationId: elegida.id,
+        lote: null,
       });
+
+      // Se preguntó la empresa por un pedido de varios documentos: con la
+      // empresa ya elegida, el lote sigue donde se quedó.
+      const lote = sol.lote ? dividirPedidos(sol.lote) : null;
+      if (lote) {
+        return this.atenderVarios(turn, actualizada, actualizada, lote, elegida.id);
+      }
+
       return this.avanzar(turn, mergeSlots(actualizada, VACIA), actualizada);
     }
 
@@ -1624,6 +1837,29 @@ function mesEnPalabras(period: Date): string {
 }
 
 /** "la factura de febrero de 2026", "el documento con folio V3001". */
+/**
+ * Un pedido de un lote, en palabras: "la factura de octubre de 2026", "lo
+ * de Oxxo", "el folio A100". Corto, porque va en una lista.
+ */
+function describirPedidoVarios(query: SearchQuery): string {
+  if (query.folio) return `el folio ${query.folio}`;
+  const que = query.category ? `la ${nombre(query.category)}` : 'lo';
+  const de = query.text && !nombreDeArchivo(query.text) ? ` de ${capitalizar(query.text)}` : '';
+  const mes = query.period ? ` de ${mesEnPalabras(query.period)}` : '';
+  return `${que}${de}${mes}`;
+}
+
+function capitalizar(texto: string): string {
+  return texto.replace(/(^|\s)\p{L}/gu, (l) => l.toUpperCase());
+}
+
+/** Del mes más viejo al más nuevo; lo que no trae mes, al final. */
+function porMes(a: Document, b: Document): number {
+  if (!a.period) return b.period ? 1 : 0;
+  if (!b.period) return -1;
+  return a.period.getTime() - b.period.getTime();
+}
+
 function describirPedido(query: SearchQuery): string {
   if (query.folio) return `el documento con folio ${query.folio}`;
 

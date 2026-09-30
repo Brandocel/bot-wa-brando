@@ -84,8 +84,14 @@ class MemorySearch {
     '2025-09', '2025-10', '2025-11', '2025-12', '2026-01', '2026-02',
   ].map((month, index) => document(`invoice-${index}`, `FACTURA_${month}.pdf`, 'FACTURA', month));
 
+  /** Resultados por palabra clave exacta ("oxxo"). */
+  textResults = new Map<string, unknown[]>();
+
   async search(scopes: readonly unknown[], query: Record<string, unknown>): Promise<unknown[]> {
     this.searches.push({ scopes, query });
+    if (typeof query.text === 'string' && this.textResults.has(query.text)) {
+      return this.textResults.get(query.text)!;
+    }
     if (query.period instanceof Date) {
       const month = `${query.period.getUTCFullYear()}-${String(query.period.getUTCMonth() + 1).padStart(2, '0')}`;
       const exactMatches = this.periodResults.get(month);
@@ -112,7 +118,7 @@ class MemorySearch {
   async byId(id: string): Promise<unknown | null> {
     this.byIdCalls.push(id);
     if (id === 'previous-invoice') return document(id, 'FACTURA_2026-02_V3001.pdf');
-    const custom = [...this.periodResults.values()].flat();
+    const custom = [...this.periodResults.values(), ...this.textResults.values()].flat();
     return custom.find((doc) => (doc as { id?: string }).id === id) ??
       this.sixInvoices.find((doc) => doc.id === id) ?? null;
   }
@@ -1212,3 +1218,127 @@ for (const frase of [
     assert.equal(h.requests.delivery?.documentId, documentB.id);
   });
 }
+
+// ── Varios documentos en un mensaje ─────────────────────────────────────
+
+/** Nombres de los archivos entregados, en el orden en que salieron. */
+function entregados(h: ReturnType<typeof makeHarness>): string[] {
+  return h.delivered.map((args) => String(((args as unknown[])[1] as { name: string }).name));
+}
+
+test('"la factura de octubre y noviembre con la de septiembre" entrega las tres, en orden', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-12-15T12:00:00.000Z') });
+  const h = makeHarness();
+  for (const mes of ['2026-09', '2026-10', '2026-11']) {
+    h.search.periodResults.set(mes, [document(`invoice-${mes}`, `FACTURA_${mes}.pdf`, 'FACTURA', mes)]);
+  }
+
+  const reply = await h.handle('Pásame la factura de octubre y noviembre con la de septiembre');
+
+  assert.ok(reply);
+  assert.deepEqual(entregados(h), ['FACTURA_2026-09.pdf', 'FACTURA_2026-10.pdf', 'FACTURA_2026-11.pdf']);
+  assert.equal(reply.text, '', 'las leyendas de cada archivo ya lo dicen');
+  assert.equal(reply.awaiting, 'NADIE');
+  assert.deepEqual(h.llmCalls, [], 'partir la lista es por reglas, sin modelo');
+  assert.equal(h.escalations.length, 0);
+});
+
+test('si falta uno de los meses, se entregan los demás y se dice cuál faltó', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-12-15T12:00:00.000Z') });
+  const h = makeHarness();
+  for (const mes of ['2026-09', '2026-10']) {
+    h.search.periodResults.set(mes, [document(`invoice-${mes}`, `FACTURA_${mes}.pdf`, 'FACTURA', mes)]);
+  }
+
+  const reply = await h.handle('las facturas de septiembre, octubre y noviembre');
+
+  assert.ok(reply);
+  assert.deepEqual(entregados(h), ['FACTURA_2026-09.pdf', 'FACTURA_2026-10.pdf']);
+  assert.match(reply.text, /No encontré \*la factura de noviembre de 2026\*/);
+  assert.equal(reply.awaiting, 'CLIENTE');
+});
+
+test('un rango "de enero a marzo" es una factura por mes', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-06-15T12:00:00.000Z') });
+  const h = makeHarness();
+  for (const mes of ['2026-01', '2026-02', '2026-03']) {
+    h.search.periodResults.set(mes, [document(`invoice-${mes}`, `FACTURA_${mes}.pdf`, 'FACTURA', mes)]);
+  }
+
+  await h.handle('mándame las facturas de enero a marzo');
+
+  assert.deepEqual(entregados(h), ['FACTURA_2026-01.pdf', 'FACTURA_2026-02.pdf', 'FACTURA_2026-03.pdf']);
+});
+
+test('"todas en orden de Oxxo y McDonald" entrega todas las de cada uno, del mes más viejo al más nuevo', async () => {
+  const h = makeHarness();
+  h.search.textResults.set('oxxo', [
+    document('oxxo-sep', 'Oxxo_septiembre.pdf', 'FACTURA', '2026-09'),
+    document('oxxo-ago', 'Oxxo_agosto.pdf', 'FACTURA', '2026-08'),
+  ]);
+  h.search.textResults.set('macdonald', [document('mc-jul', 'McDonald_julio.pdf', 'FACTURA', '2026-07')]);
+
+  const reply = await h.handle('pasame todas en orden de Oxxo y macdonald');
+
+  assert.ok(reply);
+  assert.deepEqual(entregados(h), ['Oxxo_agosto.pdf', 'Oxxo_septiembre.pdf', 'McDonald_julio.pdf']);
+  assert.equal(reply.awaiting, 'NADIE');
+  const buscados = h.search.searches.map((s) => s.query.text);
+  assert.deepEqual(buscados, ['oxxo', 'macdonald'], 'cada nombre es su propia búsqueda');
+});
+
+test('con varios candidatos en un pedido, se entrega lo exacto y se numera lo que hay que elegir', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-12-15T12:00:00.000Z') });
+  const h = makeHarness();
+  h.search.periodResults.set('2026-10', [document('oct', 'FACTURA_2026-10.pdf', 'FACTURA', '2026-10')]);
+  h.search.periodResults.set('2026-11', [
+    document('nov-a', 'FACTURA_A_2026-11.pdf', 'FACTURA', '2026-11'),
+    document('nov-b', 'FACTURA_B_2026-11.pdf', 'FACTURA', '2026-11'),
+  ]);
+
+  const reply = await h.handle('la factura de octubre y la de noviembre');
+
+  assert.ok(reply);
+  assert.deepEqual(entregados(h), ['FACTURA_2026-10.pdf']);
+  assert.match(reply.text, /De \*la factura de noviembre de 2026\* encontré varias/);
+  assert.match(reply.text, /\*1\.\* \*FACTURA_A_2026-11\.pdf\*/);
+  assert.match(reply.text, /\*2\.\* \*FACTURA_B_2026-11\.pdf\*/);
+  assert.deepEqual(h.requests.state.opciones?.map((o) => o.id), ['nov-a', 'nov-b']);
+  assert.equal(reply.awaiting, 'CLIENTE');
+
+  // Y "las dos" de esa lista se entregan juntas.
+  const segunda = await h.handle('las dos');
+  assert.ok(segunda);
+  assert.deepEqual(entregados(h), ['FACTURA_2026-10.pdf', 'FACTURA_A_2026-11.pdf', 'FACTURA_B_2026-11.pdf']);
+});
+
+test('"la 1 y la 2" sobre una lista entrega ambas y conserva la lista', async () => {
+  const { h, documentA, documentB } = pendingDocumentOptions();
+
+  const reply = await h.handle('La 1 y la 2 por favor');
+
+  assert.ok(reply);
+  assert.deepEqual(h.search.byIdCalls, [documentA.id, documentB.id]);
+  assert.deepEqual(entregados(h), [documentA.name, documentB.name]);
+  assert.equal(h.requests.state.opciones?.length, 2, 'la lista sigue para "y también la 3"');
+  assert.equal(h.escalations.length, 0);
+});
+
+test('"la 1 y la 7" con una lista de dos entrega la 1 y no inventa la 7', async () => {
+  const { h, documentA } = pendingDocumentOptions();
+
+  await h.handle('la 1 y la 7');
+
+  assert.deepEqual(entregados(h), [documentA.name]);
+});
+
+test('una corrección "no era febrero, era marzo" sigue siendo un solo pedido', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-06-15T12:00:00.000Z') });
+  const h = makeHarness();
+  h.search.periodResults.set('2026-02', [document('feb', 'FACTURA_2026-02.pdf', 'FACTURA', '2026-02')]);
+  h.search.periodResults.set('2026-03', [document('mar', 'FACTURA_2026-03.pdf', 'FACTURA', '2026-03')]);
+
+  await h.handle('la factura, no era febrero, era marzo');
+
+  assert.deepEqual(entregados(h), ['FACTURA_2026-03.pdf']);
+});

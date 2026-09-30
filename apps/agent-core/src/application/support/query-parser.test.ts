@@ -2,6 +2,44 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { esCierre, esInventario, preguntaMeses } from './message-classifier';
 import { palabrasClave, parseQuery } from './query-parser';
+import { dividirPedidos, leerVariasOpciones } from './pedidos';
+
+// Un solo pedido no se parte aunque traiga comas o "y".
+for (const text of [
+  'hola buenos días, me pasas la factura de octubre',
+  'la factura con folio A100',
+  'no era febrero, era marzo',
+  'gracias, es todo',
+  'la factura de octubre y ya',
+]) {
+  test(`"${text}" es un solo pedido`, () => {
+    assert.equal(dividirPedidos(text), null);
+  });
+}
+
+test('"facturas y contratos de agosto": el mes dicho al final vale para los dos', () => {
+  const r = dividirPedidos('facturas y contratos de agosto de 2026');
+  assert.deepEqual(
+    r?.pedidos.map((p) => [p.category, p.period?.toISOString().slice(0, 7)]),
+    [['FACTURA', '2026-08'], ['CONTRATO', '2026-08']],
+  );
+});
+
+test('"de noviembre a febrero" cruza el cambio de año', () => {
+  const r = dividirPedidos('las facturas de noviembre de 2025 a febrero de 2026');
+  assert.deepEqual(
+    r?.pedidos.map((p) => p.period?.toISOString().slice(0, 7)),
+    ['2025-11', '2025-12', '2026-01', '2026-02'],
+  );
+});
+
+test('varias opciones de una lista', () => {
+  assert.deepEqual(leerVariasOpciones('la 1 y la 3'), [1, 3]);
+  assert.deepEqual(leerVariasOpciones('las dos'), [1, 2]);
+  assert.equal(leerVariasOpciones('todas'), 'todas');
+  assert.equal(leerVariasOpciones('la 2'), null, 'una sola va por el camino de siempre');
+  assert.equal(leerVariasOpciones('dame un segundo'), null, 'es una pausa, no la opción 2');
+});
 
 for (const text of [
   'No recuerdo el nombre',

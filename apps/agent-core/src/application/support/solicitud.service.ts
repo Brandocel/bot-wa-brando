@@ -43,6 +43,11 @@ export interface Solicitud {
   fallos: number;
   /** Documentos que ya dijo que no son: no se vuelven a ofrecer. */
   rechazados: string[];
+  /**
+   * Mensaje con varios pedidos que quedó esperando a que dijera de qué
+   * empresa. Al elegirla se vuelve a partir y se atiende entero.
+   */
+  lote?: string | null;
   /** Cuándo se tocó por última vez. null = no hay solicitud en curso. */
   updatedAt: string | null;
 }
