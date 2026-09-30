@@ -209,7 +209,11 @@ export function separarPeticionMixta(texto: string): {
 } | null {
   const peticiones = /\b(?:necesito|quiero|quisiera|ocupo|busco|dame|m[aá]ndame|p[aá]same|env[ií]ame|comp[aá]rteme)\s+/gi;
   for (const match of texto.matchAll(peticiones)) {
-    const prefijo = normalizar(texto.slice(0, match.index))
+    const inicio = texto.slice(0, match.index);
+    // Una pregunta inicial ("¿ya está?, quiero...") no abandona el pedido.
+    // Compruébalo antes de normalizar, que elimina los signos.
+    if (/[?¿]/.test(inicio)) continue;
+    const prefijo = normalizar(inicio)
       .replace(/(?:\s+(?:ahora|pero|mejor))+$/, '');
     // CIERRE también se usa para encontrar frases dentro de un mensaje;
     // aquí debe cubrir TODO el prefijo para no recortar contenido documental.
