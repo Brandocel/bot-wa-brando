@@ -38,6 +38,7 @@ const TRAZOS: Record<string, string> = {
   panel: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/>',
   buscar: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
   archivo: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15h6"/><path d="M9 11h6"/>',
+  ajustes: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
   bot: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>',
 };
 
@@ -107,6 +108,7 @@ export function panelPage(): string {
       <button data-view="documentos" title="Documentos">${icono('documentos')}<span class="nav-text">Documentos</span></button>
       <button data-view="cuarentena" title="Cuarentena">${icono('carpeta')}<span class="nav-text">Cuarentena</span><span class="badge nav-text" id="badge-cuarentena" hidden></span></button>
       <button data-view="auditoria" title="Auditoría">${icono('escudo')}<span class="nav-text">Auditoría</span></button>
+      <button data-view="ajustes" title="Ajustes">${icono('ajustes')}<span class="nav-text">Ajustes</span></button>
     </nav>
     <div class="nav-foot">
       <div class="yo">
@@ -202,7 +204,7 @@ let ultimoHilo = null;
 
 const TITULOS = {
   bandeja: 'Conversaciones', tickets: 'Tickets', directorio: 'Directorio',
-  empresas: 'Empresas', documentos: 'Documentos', cuarentena: 'Cuarentena', auditoria: 'Auditoría',
+  empresas: 'Empresas', documentos: 'Documentos', cuarentena: 'Cuarentena', auditoria: 'Auditoría', ajustes: 'Ajustes',
 };
 
 const api = async (ruta) => {
@@ -707,7 +709,7 @@ const VISTAS = {
       ? '<div class="lista">' + filas.map((c) => {
           const nombre = c.contact?.displayName || numeroBonito(c.contact?.waId) || c.chatId;
           const ultimo = c.ultimo
-            ? (c.ultimo.direction === 'OUT' ? '↩ ' : '') + c.ultimo.body.replace(/\\s+/g, ' ').slice(0, 90)
+            ? (c.ultimo.direction === 'OUT' ? '↩ ' : '') + c.ultimo.body.replace(/\\*/g, '').replace(/\\s+/g, ' ').slice(0, 90)
             : 'sin mensajes';
           const estado = c.enManosDePersona
             ? '<span class="estado persona"><i></i>lo atiendes tú</span>'
@@ -953,6 +955,68 @@ const VISTAS = {
     return cabecera + '<div class="docs-grid">' + secciones + '</div>';
   },
 
+  async ajustes() {
+    const r = await api('ajustes/limites');
+    const esAdmin = yo?.role === 'ADMIN';
+    const l = r.limites;
+
+    const barra = (valor, tope) => {
+      const pct = Math.min(100, Math.round((valor / tope) * 100));
+      const color = pct >= 100 ? 'rojo' : pct >= 80 ? 'ambar' : 'violeta';
+      return '<div class="medidor"><div class="medidor-barra ' + color + '" style="width:' + pct + '%"></div></div>';
+    };
+
+    const uso =
+      '<section class="card ajustes-uso">' +
+        '<h3>Cuántos lleva</h3>' +
+        '<p class="muted small">En la última hora, desde las ' + hora(r.desde) + '. Se actualiza solo.</p>' +
+        '<div class="uso-cifra"><strong>' + r.global + '</strong> <span class="muted">de ' + l.globalHora + ' mensajes en total</span></div>' +
+        barra(r.global, l.globalHora) +
+        (r.chats.length
+          ? '<div class="muted small uso-titulo">Chats con más mensajes (' +
+              (l.contarDocumentos ? 'contando documentos' : 'sin contar documentos') + ')</div>' +
+            r.chats.map((c) =>
+              '<div class="uso-chat">' +
+                '<span class="recorte">' + esc(c.nombre || numeroBonito(c.chatId)) + '</span>' +
+                '<span class="muted small">' + c.cuenta + ' de ' + l.porChatHora + '</span>' +
+                barra(c.cuenta, l.porChatHora) +
+              '</div>').join('')
+          : '<p class="muted small">Nadie ha recibido mensajes en la última hora.</p>') +
+      '</section>';
+
+    const campo = (clave, etiqueta, ayuda) =>
+      '<label>' + etiqueta +
+        '<input type="number" name="' + clave + '" value="' + l[clave] + '" min="' + r.rango[clave][0] +
+          '" max="' + r.rango[clave][1] + '" required' + (esAdmin ? '' : ' disabled') + '>' +
+        '<small class="muted">' + ayuda + ' Entre ' + r.rango[clave][0] + ' y ' + r.rango[clave][1] +
+          '; recomendado ' + r.defecto[clave] + '.</small>' +
+      '</label>';
+
+    const formulario =
+      '<form class="card form-alta" id="form-limites">' +
+        '<h3>Topes de mensajes</h3>' +
+        '<div class="aviso-riesgo">' +
+          '<strong>Antes de subirlos, ten en cuenta</strong>' +
+          '<p>El número del bot se conecta como WhatsApp Web, no por la API oficial de WhatsApp. ' +
+          'Si manda muchos mensajes seguidos, WhatsApp puede restringirlo o bloquearlo, y con él se ' +
+          'detiene la atención de <strong>todas</strong> las empresas. Súbelos poco a poco y solo si el tráfico es de clientes reales.</p>' +
+          '<p>Te avisamos por WhatsApp cuando el bot llegue al 80 % y al 100 % del tope total, y cuando un chat llegue a su tope.</p>' +
+        '</div>' +
+        '<div class="campos">' +
+          campo('porChatHora', 'Por chat, por hora', 'Respuestas a una misma persona en una hora.') +
+          campo('globalHora', 'En total, por hora', 'Todas las respuestas del bot sumadas. Al llegar, deja de contestar a todos.') +
+          campo('porChatMinuto', 'Por chat, por minuto', 'Seguro contra bucles.') +
+        '</div>' +
+        '<label class="check"><input type="checkbox" name="contarDocumentos"' + (l.contarDocumentos ? ' checked' : '') +
+          (esAdmin ? '' : ' disabled') + '> Contar también los documentos enviados en los topes por chat</label>' +
+        (esAdmin
+          ? '<button type="submit">Guardar topes</button>'
+          : '<p class="muted small">Solo un administrador puede cambiarlos.</p>') +
+      '</form>';
+
+    return '<div class="ajustes">' + uso + formulario + '</div>';
+  },
+
   async cuarentena() {
     const filas = await api('cuarentena?vista=' + filtroCuarentena);
     const esAdmin = yo?.role === 'ADMIN';
@@ -1097,6 +1161,25 @@ document.addEventListener('change', async (e) => {
 });
 
 document.addEventListener('submit', async (e) => {
+  if (e.target.id === 'form-limites') {
+    e.preventDefault();
+    const f = e.target;
+    const datos = {
+      porChatHora: Number(f.porChatHora.value),
+      globalHora: Number(f.globalHora.value),
+      porChatMinuto: Number(f.porChatMinuto.value),
+      contarDocumentos: f.contarDocumentos.checked,
+    };
+    if (!confirm('¿Guardar estos topes?\\n\\nSubirlos de más puede hacer que WhatsApp restrinja el número del bot, y con él se detiene la atención de todas las empresas.')) return;
+    try {
+      await enviar('ajustes/limites', datos);
+      aviso('Topes guardados: aplican desde el siguiente mensaje');
+      pintar('ajustes');
+      pintarResumen();
+    } catch (err) { aviso(err.message, 'error'); }
+    return;
+  }
+
   if (e.target.id === 'form-numero') {
     e.preventDefault();
     const categorias = [...document.querySelectorAll('#permisos input:checked')]
@@ -1321,7 +1404,14 @@ async function pintarResumen() {
         ).join('')
       : '<span class="muted">Todo al día: nadie espera respuesta.</span>') +
     '<span class="muted small">· ' + r.entregas24h + ' entrega' + (r.entregas24h === 1 ? '' : 's') +
-      ' y ' + r.denegados24h + ' negada' + (r.denegados24h === 1 ? '' : 's') + ' en 24 h</span>';
+      ' y ' + r.denegados24h + ' negada' + (r.denegados24h === 1 ? '' : 's') + ' en 24 h</span>' +
+    // Cuántos mensajes lleva en la hora contra el tope general. Se pone en
+    // ámbar al 80 % y en rojo al llegar: ahí el bot deja de contestar.
+    (r.topeHora
+      ? '<button class="dato ' + (r.mensajesHora >= r.topeHora ? 'rojo' : r.mensajesHora >= r.topeHora * 0.8 ? 'ambar' : 'neutro') +
+          '" data-ir="ajustes" title="Tope general de mensajes por hora">' +
+          r.mensajesHora + ' de ' + r.topeHora + ' mensajes esta hora</button>'
+      : '');
 
   const bp = document.getElementById('badge-persona');
   bp.textContent = r.revision; bp.hidden = !(r.revision > 0);
@@ -1527,6 +1617,34 @@ const STYLES = `<link rel="preconnect" href="https://fonts.googleapis.com">
   .dato.rojo { background: var(--rojo-suave); color: var(--rojo); border-color: rgba(248, 113, 113, .3); }
   .dato.violeta { background: var(--acento-suave); color: #b3a9ff; border-color: var(--acento-borde); }
   .dato:hover { filter: brightness(1.15); }
+  .dato.neutro { background: var(--caja2); color: var(--suave); border-color: var(--borde2); }
+
+  /* ── Ajustes ─────────────────────────────────────────────────────── */
+  .ajustes { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 16px; align-items: start; }
+  .ajustes h3 { margin: 0 0 4px; font-size: 16px; }
+  .uso-cifra { margin: 14px 0 8px; }
+  .uso-cifra strong { font-size: 32px; font-weight: 800; letter-spacing: -.02em; }
+  .uso-titulo { margin: 18px 0 6px; }
+  .uso-chat {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; align-items: center;
+    padding: 8px 0; border-top: 1px solid var(--borde);
+  }
+  .uso-chat .medidor { grid-column: 1 / -1; }
+  .medidor { height: 8px; border-radius: 999px; background: var(--caja3); overflow: hidden; }
+  .medidor-barra { height: 100%; border-radius: 999px; transition: width .3s ease; }
+  .medidor-barra.violeta { background: var(--acento); }
+  .medidor-barra.ambar { background: var(--ambar); }
+  .medidor-barra.rojo { background: var(--rojo); }
+  .aviso-riesgo {
+    background: var(--ambar-suave); border: 1px solid var(--ambar-borde); color: #f3dfae;
+    border-radius: 12px; padding: 12px 14px; margin-bottom: 16px; font-size: 13px;
+  }
+  .aviso-riesgo > strong { display: block; color: var(--ambar); margin-bottom: 4px; }
+  .aviso-riesgo p { margin: 6px 0 0; }
+  #form-limites .campos { margin-bottom: 14px; }
+  #form-limites label small { font-weight: 400; font-size: 12px; }
+  #form-limites .check { margin-bottom: 16px; font-weight: 600; }
+  @media (max-width: 1100px) { .ajustes { grid-template-columns: 1fr; } }
   .icon {
     background: none; border: 1px solid transparent; color: var(--suave); cursor: pointer;
     width: 36px; height: 36px; border-radius: 10px; display: inline-grid; place-items: center;

@@ -23,6 +23,12 @@ import {
   RevisionError,
 } from '../../../application/support/drive-sync.service';
 import { PrismaService } from '../../persistence/prisma.service';
+import {
+  LIMITES_DEFECTO,
+  LIMITES_RANGO,
+  LimitesService,
+  type Limites,
+} from '../../persistence/limites.service';
 import { OutboxDispatcher } from '../../persistence/outbox.dispatcher';
 import { PanelAuthService, SESSION_COOKIE } from './panel-auth.service';
 import { PanelGuard, readCookie, type PanelRequest } from './panel.guard';
@@ -48,6 +54,7 @@ export class PanelApiController {
     private readonly directory: DirectoryService,
     private readonly outbox: OutboxDispatcher,
     private readonly sync: DriveSyncService,
+    private readonly limites: LimitesService,
   ) {}
 
   /**
@@ -120,7 +127,9 @@ export class PanelApiController {
   async summary() {
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
-    const [abiertos, revision, alta, cuarentena, entregas24h, denegados24h] =
+    const hora = new Date(Date.now() - 60 * 60 * 1000);
+
+    const [abiertos, revision, alta, cuarentena, entregas24h, denegados24h, mensajesHora, limites] =
       await Promise.all([
         this.prisma.conversation.count({ where: { awaiting: 'BOT' } }),
         // Conversaciones, no tickets: una persona con tres tickets
@@ -144,9 +153,60 @@ export class PanelApiController {
         this.prisma.accessAudit.count({
           where: { decision: { not: 'ALLOW' }, createdAt: { gte: since } },
         }),
+        // Cuántos mensajes lleva el bot en la hora, contra su tope general.
+        this.prisma.message.count({ where: { direction: 'OUT', createdAt: { gte: hora } } }),
+        this.limites.actuales(),
       ]);
 
-    return { abiertos, revision, alta, cuarentena, entregas24h, denegados24h };
+    return {
+      abiertos,
+      revision,
+      alta,
+      cuarentena,
+      entregas24h,
+      denegados24h,
+      mensajesHora,
+      topeHora: limites.globalHora,
+    };
+  }
+
+  /** Los topes de mensajes, cuántos lleva y de qué rango se pueden mover. */
+  @UseGuards(PanelGuard)
+  @Get('ajustes/limites')
+  async limitsUsage() {
+    return {
+      ...(await this.limites.uso()),
+      rango: LIMITES_RANGO,
+      defecto: LIMITES_DEFECTO,
+    };
+  }
+
+  /**
+   * Cambia los topes. Solo ADMIN: subirlos de más arriesga el número del
+   * bot, y con él la atención de todas las empresas. Queda en el log quién
+   * y a qué.
+   */
+  @UseGuards(PanelGuard)
+  @Post('ajustes/limites')
+  async setLimits(@Req() req: PanelRequest, @Body() body: Partial<Limites>) {
+    const quien = this.requireAdmin(req);
+    const limpios: Partial<Limites> = {};
+    for (const clave of ['porChatHora', 'globalHora', 'porChatMinuto'] as const) {
+      if (body[clave] !== undefined) {
+        const n = Number(body[clave]);
+        if (!Number.isFinite(n)) throw new BadRequestException(`${clave} debe ser un número`);
+        const [min, max] = LIMITES_RANGO[clave];
+        if (n < min || n > max) {
+          throw new BadRequestException(`${clave} tiene que estar entre ${min} y ${max}`);
+        }
+        limpios[clave] = n;
+      }
+    }
+    if (body.contarDocumentos !== undefined) limpios.contarDocumentos = body.contarDocumentos === true;
+
+    const nuevos = await this.limites.guardar(limpios);
+    this.logger.warn(`topes de mensajes cambiados por ${quien}: ${JSON.stringify(nuevos)}`);
+    return nuevos;
   }
 
   @UseGuards(PanelGuard)

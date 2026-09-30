@@ -1,20 +1,28 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { config } from '../../../config';
+import { FlagsService } from '../../../infrastructure/persistence/flags.service';
+import { LimitesService } from '../../../infrastructure/persistence/limites.service';
 import { PrismaService } from '../../../infrastructure/persistence/prisma.service';
 import { type MessageFilter, type Next, type PipelineContext, stop } from '../pipeline';
 
 const WINDOW_MS = 60 * 60 * 1000; // 1 hora
-const MAX_REPLIES_PER_CHAT = 30;
-const MAX_REPLIES_GLOBAL = 120;
+
+/** Cuándo y en qué nivel se avisó al dueño del tope general. */
+const CLAVE_AVISO = 'limites.aviso';
 
 /**
  * Techo de mensajes salientes. Dos defensas distintas:
  *
- *  - Por chat: nadie recibe más de 30 respuestas por hora. Protege contra un
+ *  - Por chat: nadie recibe más de N respuestas por hora. Protege contra un
  *    contacto que se obsesiona con el bot y contra bucles lentos que el
- *    LoopGuardFilter (5 por minuto) deja pasar.
+ *    LoopGuardFilter deja pasar.
  *  - Global: si por un bug el bot empieza a contestarle a medio mundo, se
  *    frena solo antes de que WhatsApp lo note. Es lo único que separa un bug
  *    de una cuenta baneada.
+ *
+ * Los números se ajustan en el panel (Ajustes). Al acercarse al tope
+ * general, y al llegar, se le avisa al dueño por WhatsApp: un bot que se
+ * calla con todos sin que nadie lo sepa es peor que el tope mismo.
  *
  * Corre al final del pipeline: es la consulta más cara y no tiene sentido
  * pagarla por mensajes que ya se iban a descartar antes.
@@ -24,12 +32,17 @@ export class RateLimitFilter implements MessageFilter {
   readonly name = 'RateLimitFilter';
   private readonly logger = new Logger(RateLimitFilter.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly limites: LimitesService,
+    private readonly flags: FlagsService,
+  ) {}
 
   async handle(ctx: PipelineContext, next: Next): Promise<void> {
     // A mí no me limita: si me estoy pasando, es a propósito.
     if (ctx.role === 'OWNER') return next();
 
+    const limites = await this.limites.actuales();
     const since = new Date(Date.now() - WINDOW_MS);
 
     const [globalCount, conversation] = await Promise.all([
@@ -38,11 +51,13 @@ export class RateLimitFilter implements MessageFilter {
       }),
       this.prisma.conversation.findUnique({
         where: { chatId: ctx.message.chatId },
-        select: { id: true },
+        select: { id: true, contact: { select: { displayName: true } } },
       }),
     ]);
 
-    if (globalCount >= MAX_REPLIES_GLOBAL) {
+    await this.avisarGlobal(globalCount, limites.globalHora);
+
+    if (globalCount >= limites.globalHora) {
       this.logger.error(
         `TECHO GLOBAL alcanzado: ${globalCount} respuestas en 1h. Bot silenciado.`,
       );
@@ -53,12 +68,12 @@ export class RateLimitFilter implements MessageFilter {
       const perChat = await this.prisma.message.count({
         where: {
           conversationId: conversation.id,
-          direction: 'OUT',
+          ...this.limites.salientesQueCuentan(limites),
           createdAt: { gte: since },
         },
       });
 
-      if (perChat >= MAX_REPLIES_PER_CHAT) {
+      if (perChat >= limites.porChatHora) {
         this.logger.warn(
           `${ctx.message.chatId} llegó a ${perChat} respuestas en 1h`,
         );
@@ -66,7 +81,7 @@ export class RateLimitFilter implements MessageFilter {
         // Un solo aviso, justo al tocar el techo; después, silencio. Sin
         // esto la persona escribía y no pasaba nada, que desde fuera es
         // "el bot se murió" — y lo siguiente que hace es escribir más.
-        if (perChat === MAX_REPLIES_PER_CHAT) {
+        if (perChat === limites.porChatHora) {
           await this.prisma.outboxMessage.create({
             data: {
               chatId: ctx.message.chatId,
@@ -83,6 +98,13 @@ export class RateLimitFilter implements MessageFilter {
             where: { id: conversation.id },
             data: { awaiting: 'AGENTE' },
           });
+
+          const quien = conversation.contact?.displayName ?? ctx.message.chatId.replace(/@.*$/, '');
+          await this.avisarDueno(
+            `Jarvis: el chat de ${quien} llegó a ${perChat} mensajes en la última hora (tope por chat: ${limites.porChatHora}). ` +
+              'Ya no le contesta hasta que baje; quedó en "espera a una persona" en el panel. ' +
+              'Si es un cliente legítimo, puedes subir el tope en el panel → Ajustes.',
+          );
         }
 
         return stop(ctx, this.name, 'techo por chat');
@@ -90,5 +112,37 @@ export class RateLimitFilter implements MessageFilter {
     }
 
     await next();
+  }
+
+  /**
+   * Avisa al 80 % y al 100 % del tope general, una vez por nivel y por
+   * hora: lo bastante pronto para subirlo antes de que el bot se calle.
+   */
+  private async avisarGlobal(cuenta: number, tope: number): Promise<void> {
+    const nivel = cuenta >= tope ? 100 : cuenta >= Math.ceil(tope * 0.8) ? 80 : 0;
+    if (nivel === 0) return;
+
+    const ultimo = await this.flags.get<{ nivel: number; en: string } | null>(CLAVE_AVISO, null);
+    const reciente = ultimo && Date.now() - new Date(ultimo.en).getTime() < WINDOW_MS;
+    if (reciente && ultimo.nivel >= nivel) return;
+
+    await this.flags.set(CLAVE_AVISO, { nivel, en: new Date().toISOString() });
+    await this.avisarDueno(
+      nivel === 100
+        ? `Jarvis llegó al tope general: ${cuenta} de ${tope} mensajes en la última hora. ` +
+            'No le contesta a NADIE hasta que baje. Si es tráfico normal, súbelo en el panel → Ajustes.'
+        : `Jarvis lleva ${cuenta} de ${tope} mensajes en la última hora (80 % del tope general). ` +
+            'Si sigue así, pronto deja de contestar. Puedes subirlo en el panel → Ajustes.',
+    );
+  }
+
+  private async avisarDueno(text: string): Promise<void> {
+    try {
+      await this.prisma.outboxMessage.create({
+        data: { chatId: config.ownerWaId, payload: { kind: 'text', text } },
+      });
+    } catch (err) {
+      this.logger.warn(`no se pudo avisar al dueño: ${String(err)}`);
+    }
   }
 }
