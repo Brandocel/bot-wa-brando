@@ -1332,6 +1332,109 @@ test('"la 1 y la 7" con una lista de dos entrega la 1 y no inventa la 7', async 
   assert.deepEqual(entregados(h), [documentA.name]);
 });
 
+function selectionOptions() {
+  const h = makeHarness();
+  const docs = Array.from({ length: 5 }, (_, i) => document(`selection-${i + 1}`, `FACTURA_${i + 1}.pdf`));
+  h.search.periodResults.set('options', docs);
+  h.requests.state = {
+    ...emptyRequest(),
+    category: 'FACTURA',
+    opciones: docs.map((doc, i) => ({
+      n: i + 1, tipo: 'documento', id: String(doc.id), nombre: String(doc.name),
+    })),
+  };
+  return h;
+}
+
+for (const [text, selected] of [
+  ['La 1, no la 3', [1]],
+  ['La 1 pero no la 3', [1]],
+  ['La 2, excepto la 1', [2]],
+  ['La 1 y la 2, pero no la 3', [1, 2]],
+  ['Todas menos la 3', [1, 2, 4, 5]],
+  ['Todas excepto la 2', [1, 3, 4, 5]],
+  ['Todas menos la 1 y la 3', [2, 4, 5]],
+  ['La primera y la segunda, excepto la tercera', [1, 2]],
+  ['La 1 y la 1, no la 3', [1]],
+  ['La 1 y la 2', [1, 2]],
+  ['Solo la 1', [1]],
+  ['No, mejor la 2', [2]],
+  ['Todas', [1, 2, 3, 4, 5]],
+  ['Todas por favor', [1, 2, 3, 4, 5]],
+  ['Ahora la 3 y la 4', [3, 4]],
+  ['Y la 5', [5]],
+] as const) {
+  test(`selección de documentos: "${text}" entrega solo lo incluido y conserva la lista`, async (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-30T12:00:00Z') });
+    t.mock.method(Math, 'random', () => 0);
+    const h = selectionOptions();
+    const options = structuredClone(h.requests.state.opciones);
+
+    const reply = await h.handle(text);
+
+    assert.equal(reply?.awaiting, 'NADIE');
+    assert.deepEqual(h.search.byIdCalls, selected.map((n) => `selection-${n}`));
+    assert.deepEqual(entregados(h), selected.map((n) => `FACTURA_${n}.pdf`));
+    assert.deepEqual(h.requests.state.opciones, options);
+    assert.deepEqual(h.search.searches, []);
+    assert.deepEqual(h.extractCalls, []);
+    assert.deepEqual(h.llmCalls, []);
+    assert.deepEqual(h.draftCalls, []);
+    assert.deepEqual(h.escalations, []);
+  });
+}
+
+for (const text of [
+  'La 1, no la 1',
+  'La 1 y la 2 excepto la 1 y la 2',
+  'Todas menos la 1 y la 2',
+  'No la 2',
+  'Todas menos la 9',
+  'Todas menos la 10',
+  'Todas excepto la 0',
+  'La 1, no la 9',
+  'La 9 excepto la 1',
+]) {
+  test(`selección vacía o fuera de rango: "${text}" no consulta ni entrega documentos`, async (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-30T12:00:00Z') });
+    t.mock.method(Math, 'random', () => 0);
+    const { h } = pendingDocumentOptions();
+    const before = structuredClone(h.requests.state);
+
+    const reply = await h.handle(text);
+
+    assert.equal(reply?.awaiting, 'CLIENTE');
+    assert.ok(reply.text);
+    assert.deepEqual(h.search.byIdCalls, []);
+    assert.deepEqual(h.delivered, []);
+    assert.deepEqual(h.requests.state, before);
+    assert.deepEqual(h.search.searches, []);
+    assert.deepEqual(h.extractCalls, []);
+    assert.deepEqual(h.llmCalls, []);
+    assert.deepEqual(h.draftCalls, []);
+    assert.deepEqual(h.escalations, []);
+  });
+}
+
+test('una exclusión no renumera la lista ni afecta selecciones de turnos posteriores', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-30T12:00:00Z') });
+  t.mock.method(Math, 'random', () => 0);
+  const h = selectionOptions();
+  const options = structuredClone(h.requests.state.opciones);
+
+  await h.handle('Todas menos la 3');
+  assert.deepEqual(h.search.byIdCalls, ['selection-1', 'selection-2', 'selection-4', 'selection-5']);
+  await h.handle('Ahora la 3 y la 4');
+  await h.handle('Y la 5');
+
+  assert.deepEqual(h.search.byIdCalls, [
+    'selection-1', 'selection-2', 'selection-4', 'selection-5', 'selection-3', 'selection-4', 'selection-5',
+  ]);
+  assert.deepEqual(h.requests.state.opciones, options);
+  assert.deepEqual(h.llmCalls, []);
+  assert.deepEqual(h.draftCalls, []);
+});
+
 test('una corrección "no era febrero, era marzo" sigue siendo un solo pedido', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-06-15T12:00:00.000Z') });
   const h = makeHarness();

@@ -209,32 +209,62 @@ function clave(p: SearchQuery): string {
   return [p.category, valor(p.period), p.folio, p.text].join('|');
 }
 
+export type SeleccionOpciones = number[] | 'todas' | {
+  incluir: number[] | 'todas';
+  excluir: number[];
+};
+
+const ORDINALES_OPCION: Record<string, number> = {
+  primero: 1, primera: 1, segundo: 2, segunda: 2, tercero: 3, tercera: 3,
+  cuarto: 4, cuarta: 4, quinto: 5, quinta: 5,
+  uno: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5,
+};
+
+function numerosDeOpciones(texto: string, conExclusiones = false): number[] {
+  const numeros = texto.split(' ')
+    // En exclusiones se conservan también 0 y números de varias cifras:
+    // la lista real debe validarlos, nunca ignorarlos y entregar "todas".
+    .map((p) => ((conExclusiones ? /^\d+$/ : /^[1-9]$/).test(p) ? Number(p) : ORDINALES_OPCION[p] ?? null))
+    .filter((n): n is number => n !== null);
+  return [...new Set(numeros)];
+}
+
 /**
- * Varios números de una lista: "la 1 y la 2", "1, 3", "las dos", "ambas",
- * "todas". Devuelve 'todas' o los números (al menos dos), o null.
+ * Selecciones de la última lista. Las exclusiones se conservan incluso si
+ * queda una sola inclusión o ninguna, para evitar caer en leerNumero().
+ * Sin exclusiones, una sola opción sigue por el camino de siempre (null).
  */
-export function leerVariasOpciones(raw: string): number[] | 'todas' | null {
+export function leerVariasOpciones(raw: string): SeleccionOpciones | null {
   const texto = normalizar(raw).replace(/[^a-z0-9ñ\s]/g, ' ').replace(/\s+/g, ' ').trim();
   const palabras = texto.split(' ').filter(Boolean);
-  if (palabras.length === 0 || palabras.length > 10) return null;
+  if (palabras.length === 0) return null;
 
   // Con tipo, mes o folio es una petición, no una elección.
   if (new RegExp(`\\b(factura|contrato|cotizacion|reporte|poliza|${MES.slice(1, -1)}|20\\d\\d)\\b`).test(texto)) return null;
   if (/\b[a-z]{1,3}\d{3,}\b/.test(texto)) return null;
 
+  // "No, mejor la 2" no niega la opción 2. Solo hay exclusión cuando el
+  // marcador precede a una referencia numérica, no a una rectificación.
+  const exclusion = new RegExp(
+    `\\b(?:no|menos|excepto)\\s+(?=(?:(?:la|el|las|los|opcion|opciones|numero)\\s+)*(?:\\d+|${Object.keys(ORDINALES_OPCION).join('|')})\\b)`,
+  ).exec(texto);
+  if (exclusion) {
+    const antes = texto.slice(0, exclusion.index).replace(/\bpero\s*$/, '').trim();
+    const despues = texto.slice(exclusion.index + exclusion[0].length);
+    return {
+      incluir: /\b(?:todas|todos)\b/.test(antes) ? 'todas' : numerosDeOpciones(antes, true),
+      excluir: numerosDeOpciones(despues, true),
+    };
+  }
+
+  // Una exclusión puede alargar una lista válida (incluso excluirla entera).
+  // Las selecciones anteriores conservan su límite y comportamiento.
+  if (palabras.length > 10) return null;
+
   if (/^(?:(?:dame|mandame|pasame|enviame|quiero|me das|me pasas|me mandas)\s+)?(?:las|los)?\s*(?:dos|ambas|ambos|todas|todos|las dos|los dos)(?:\s+(?:por favor|porfa|plis|gracias))?$/.test(texto)) {
     return /\b(dos|ambas|ambos)\b/.test(texto) ? [1, 2] : 'todas';
   }
 
-  const ORDINALES: Record<string, number> = {
-    primero: 1, primera: 1, segundo: 2, segunda: 2, tercero: 3, tercera: 3,
-    cuarto: 4, cuarta: 4, quinto: 5, quinta: 5,
-    uno: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5,
-  };
-  const numeros = palabras
-    .map((p) => (/^[1-9]$/.test(p) ? Number(p) : ORDINALES[p] ?? null))
-    .filter((n): n is number => n !== null);
-
-  const unicos = [...new Set(numeros)];
+  const unicos = numerosDeOpciones(texto);
   return unicos.length >= 2 ? unicos : null;
 }

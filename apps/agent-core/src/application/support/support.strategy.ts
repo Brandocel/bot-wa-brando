@@ -42,7 +42,7 @@ import {
   quejaParaPersona,
   type Clasificacion,
 } from './message-classifier';
-import { dividirPedidos, leerVariasOpciones, type VariosPedidos } from './pedidos';
+import { dividirPedidos, leerVariasOpciones, type SeleccionOpciones, type VariosPedidos } from './pedidos';
 import * as voz from './voz';
 
 /**
@@ -247,7 +247,7 @@ export class SupportStrategy {
      * oficial —se rompieron con multidispositivo—, así que la lista
      * numerada es la forma que sí llega a todos los teléfonos.
      */
-    // "La 1 y la 2", "las dos", "todas": varias de la lista a la vez.
+    // También "la 1, no la 3" y "todas menos la 2", antes de leerNumero().
     const varias = leerVariasOpciones(message.body);
     if (varias !== null && sol.opciones?.some((o) => o.tipo === 'documento')) {
       return this.entregarVariasOpciones(varias, turn, sol);
@@ -1025,17 +1025,34 @@ export class SupportStrategy {
     return this.entregarLote(turn, unicos, { faltan, listas, forzar: false });
   }
 
-  /** "La 1 y la 3", "las dos", "todas": varias de la última lista. */
+  /** Selección de la última lista, restando exclusiones antes de buscar o entregar. */
   private async entregarVariasOpciones(
-    varias: number[] | 'todas',
+    varias: SeleccionOpciones,
     turn: Turn,
     sol: Solicitud,
   ): Promise<StrategyReply> {
     const opciones = (sol.opciones ?? []).filter((o) => o.tipo === 'documento');
-    const elegidas = varias === 'todas' ? opciones : opciones.filter((o) => varias.includes(o.n));
+    const conExclusiones = typeof varias === 'object' && !Array.isArray(varias);
+    const incluir = conExclusiones ? varias.incluir : varias;
+    const excluir = conExclusiones ? varias.excluir : [];
+
+    if (conExclusiones) {
+      const mencionadas = [...(incluir === 'todas' ? [] : incluir), ...excluir];
+      if (mencionadas.some((n) => !opciones.some((o) => o.n === n))) {
+        return { text: voz.numerosFueraDeLista(opciones.length), awaiting: 'CLIENTE' };
+      }
+    }
+
+    const elegidas = opciones.filter((o) =>
+      (incluir === 'todas' || incluir.includes(o.n)) && !excluir.includes(o.n));
 
     if (elegidas.length === 0) {
-      return { text: voz.numerosFueraDeLista(opciones.length), awaiting: 'CLIENTE' };
+      return {
+        text: conExclusiones
+          ? 'No quedó ninguna opción seleccionada. Dime cuáles de la lista quieres que te mande.'
+          : voz.numerosFueraDeLista(opciones.length),
+        awaiting: 'CLIENTE',
+      };
     }
 
     const docs: Document[] = [];
