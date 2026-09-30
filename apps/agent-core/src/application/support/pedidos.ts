@@ -1,4 +1,5 @@
 import type { SearchQuery } from './document-search.service';
+import { separarPeticionMixta } from './message-classifier';
 import { palabrasClave, parseQuery } from './query-parser';
 
 /**
@@ -58,8 +59,19 @@ function anioProbable(month: number, hoy = new Date()): number {
  * null = es un solo pedido (o ninguno) y sigue el camino de siempre.
  */
 export function dividirPedidos(raw: string, hoy = new Date()): VariosPedidos | null {
-  const texto = normalizar(raw);
+  let texto = normalizar(raw);
   if (texto.length === 0 || texto.length > 400) return null;
+
+  // Separa el prefijo ANTES de partir por comas/conectores: "espera,
+  // mejor necesito..." no son dos documentos. Se aplica también al retomar
+  // un lote pendiente de empresa, sin borrar palabras dentro del documento.
+  const mixta = separarPeticionMixta(raw);
+  if (mixta) {
+    const slots = parseQuery(mixta.peticion);
+    if (slots.category !== null || slots.period !== null || slots.folio !== null) {
+      texto = normalizar(mixta.peticion);
+    }
+  }
 
   // Una corrección no es una lista: "no era febrero, era marzo" pide marzo.
   if (/\bno (?:es|era|son|eran)\b/.test(texto)) return null;

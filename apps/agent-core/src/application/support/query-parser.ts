@@ -1,5 +1,6 @@
 import type { DocCategory } from '@prisma/client';
 import type { SearchQuery } from './document-search.service';
+import { separarPeticionMixta } from './message-classifier';
 
 /**
  * Extracción de slots SIN LLM.
@@ -351,7 +352,9 @@ function textoSinMarcadoresConversacionales(
 ): string {
   if (slots.category === null && slots.period === null && slots.folio === null) return text;
 
-  return text
+  // Solo se limpia un prefijo reconocido; las mismas palabras dentro de
+  // la descripción documental siguen teniendo valor de búsqueda.
+  return (separarPeticionMixta(text)?.peticion ?? text)
     .replace(/^\s*(?:no\s*,?\s*)?mejor\s+(?:(?:quiero|quisiera|necesito)\s+)?/, '')
     .replace(/\b(?:olvida|ignora)\s+(?:eso|lo anterior)\b/, ' ');
 }
