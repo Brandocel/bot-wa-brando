@@ -17,6 +17,8 @@ import type { Response } from 'express';
 import { config } from '../../../config';
 import { ConnectorService } from '../../../application/support/connector.service';
 import { PrismaService } from '../../persistence/prisma.service';
+import { LineasGatewayService } from '../../whatsapp/lineas-gateway.service';
+import { lineaDeEmpresa } from '../../../domain/message/linea';
 import { PanelGuard, type PanelRequest } from './panel.guard';
 
 /** Dónde deja build-exe.cjs el conector armado. En Render el cwd es la raíz del repo. */
@@ -42,7 +44,110 @@ export class PanelConnectorController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly connector: ConnectorService,
+    private readonly lineas: LineasGatewayService,
   ) {}
+
+  // ── WhatsApp propio de la empresa ───────────────────────────────────────
+
+  /** Estado del número de la empresa: sin conectar, esperando QR o conectado. */
+  @Get('whatsapp')
+  async whatsappStatus(@Query('id') organizationId: string) {
+    if (!organizationId) throw new BadRequestException('falta el id');
+    const org = await this.prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { waLineId: true, waNumber: true },
+    });
+    if (!org) throw new BadRequestException('no existe esa empresa');
+    if (!org.waLineId) return { conectada: false, estado: null, numero: null };
+
+    const estado = await this.lineas.estado(org.waLineId).catch(() => null);
+
+    // El número vinculado se guarda al conectarse, para enseñarlo aunque el
+    // gateway esté reiniciando.
+    if (estado?.state === 'CONNECTED' && estado.numero && estado.numero !== org.waNumber) {
+      await this.prisma.organization.update({
+        where: { id: organizationId },
+        data: { waNumber: estado.numero },
+      });
+    }
+
+    return {
+      conectada: true,
+      estado: estado?.state ?? 'DESCONOCIDO',
+      hasQr: estado?.hasQr ?? false,
+      error: estado?.lastError ?? null,
+      numero: estado?.numero ?? org.waNumber,
+    };
+  }
+
+  /**
+   * Crea la línea de la empresa en el gateway (o la reactiva si la
+   * desvincularon) y deja un QR listo para escanear.
+   */
+  @Post('whatsapp/conectar')
+  async whatsappConnect(@Req() req: PanelRequest, @Body() body: { id?: string }) {
+    this.requireAdmin(req);
+    if (!body.id) throw new BadRequestException('falta el id');
+    const linea = lineaDeEmpresa(body.id);
+
+    try {
+      await this.lineas.crear(linea);
+    } catch (err) {
+      throw new ServiceUnavailableException(
+        `no se pudo preparar el WhatsApp de la empresa: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    await this.prisma.organization.update({
+      where: { id: body.id },
+      data: { waLineId: linea },
+    });
+    return { ok: true };
+  }
+
+  /** El QR pendiente, como imagen. Solo ADMIN: vincula un número entero. */
+  @Get('whatsapp/qr')
+  async whatsappQr(
+    @Req() req: PanelRequest,
+    @Query('id') organizationId: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    this.requireAdmin(req);
+    const org = await this.prisma.organization.findUnique({
+      where: { id: organizationId ?? '' },
+      select: { waLineId: true },
+    });
+    const png = org?.waLineId ? await this.lineas.qr(org.waLineId) : null;
+    if (!png) {
+      res.status(404).json({ message: 'no hay QR pendiente' });
+      return;
+    }
+    res.setHeader('content-type', 'image/png');
+    res.setHeader('cache-control', 'no-store');
+    res.send(png);
+  }
+
+  /**
+   * Desconecta el número de la empresa: sale de "Dispositivos vinculados"
+   * de su teléfono y, desde ese momento, se la atiende por el principal.
+   */
+  @Post('whatsapp/desconectar')
+  async whatsappDisconnect(@Req() req: PanelRequest, @Body() body: { id?: string }) {
+    this.requireAdmin(req);
+    if (!body.id) throw new BadRequestException('falta el id');
+    const org = await this.prisma.organization.findUnique({
+      where: { id: body.id },
+      select: { waLineId: true },
+    });
+    if (org?.waLineId) {
+      await this.lineas.borrar(org.waLineId).catch(() => undefined);
+    }
+    await this.prisma.organization.update({
+      where: { id: body.id },
+      data: { waLineId: null, waNumber: null },
+    });
+    return { ok: true };
+  }
 
   private requireAdmin(req: PanelRequest): void {
     if (req.panelUser?.role !== 'ADMIN') {

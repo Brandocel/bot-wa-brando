@@ -45,6 +45,10 @@ services:
       # es justo el momento en que esa cola tiene mensajes dentro.
       - key: WA_PENDING_PATH
         value: /data/pending
+      # Un número por empresa: cada línea guarda su sesión aquí, en el mismo
+      # disco. Borrar una carpeta obliga a esa empresa a reescanear el QR.
+      - key: WA_LINEAS_PATH
+        value: /data/lineas
       - key: GATEWAY_API_KEY
         generateValue: true  # Render la genera; cópiala al agent-core
       - key: CORE_WEBHOOK_URL

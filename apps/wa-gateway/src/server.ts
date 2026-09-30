@@ -2,8 +2,12 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { timingSafeEqual } from 'node:crypto';
 import { config } from './config';
 import {
+  borrarLinea,
   checkNumber,
+  crearLinea,
   diagnosticar,
+  linea,
+  listarLineas,
   probarEnvioReal,
   getQrPng,
   markSeen,
@@ -69,12 +73,77 @@ export function buildServer() {
    * habría tiempo de escanear nada.
    */
   app.get('/healthz', (_req, res) => {
-    const estado = status();
+    // La salud del servicio es la de la línea principal: que una empresa
+    // desvincule su número no es motivo para que Render reinicie a todas.
+    let estado: ReturnType<typeof status> | { state: 'BOOTING' };
+    try {
+      estado = status();
+    } catch {
+      estado = { state: 'BOOTING' };
+    }
     res.status(estado.state === 'CRASHED' ? 503 : 200).json({
       ok: estado.state !== 'CRASHED',
       ...estado,
     });
   });
+
+  // ── Líneas: un número por empresa ─────────────────────────────────────
+
+  app.get(
+    '/lineas',
+    requireApiKey,
+    wrap(async (_req, res) => {
+      res.json(listarLineas());
+    }),
+  );
+
+  /** Crea (o reactiva) una línea y la arranca: en segundos tiene QR. */
+  app.post(
+    '/lineas',
+    requireApiKey,
+    wrap(async (req, res) => {
+      const { id } = req.body as { id?: string };
+      if (!id) {
+        res.status(400).json({ error: 'falta "id"' });
+        return;
+      }
+      res.json(crearLinea(id));
+    }),
+  );
+
+  app.get(
+    '/lineas/:id',
+    requireApiKey,
+    wrap(async (req, res) => {
+      res.json(linea(String(req.params.id)).status());
+    }),
+  );
+
+  /** El QR de una línea, para que el panel del core lo muestre. */
+  app.get(
+    '/lineas/:id/qr.png',
+    requireApiKey,
+    wrap(async (req, res) => {
+      const png = linea(String(req.params.id)).getQrPng();
+      if (!png) {
+        res.status(404).json({ error: 'no hay QR pendiente' });
+        return;
+      }
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('Cache-Control', 'no-store');
+      res.send(png);
+    }),
+  );
+
+  /** Cierra la sesión en WhatsApp y borra las credenciales de la línea. */
+  app.delete(
+    '/lineas/:id',
+    requireApiKey,
+    wrap(async (req, res) => {
+      await borrarLinea(String(req.params.id));
+      res.json({ ok: true });
+    }),
+  );
 
   /**
    * Pantalla de vinculación. Ábrela en el navegador:
@@ -123,21 +192,23 @@ export function buildServer() {
   app.get(
     '/me',
     requireApiKey,
-    wrap(async (_req, res) => {
-      res.json(await whoAmI());
+    wrap(async (req, res) => {
+      res.json(await whoAmI(req.query.linea ? String(req.query.linea) : null));
     }),
   );
 
+  // Todos los envíos aceptan `linea`: el número por el que sale. Sin ella,
+  // la principal, que es como funcionó siempre.
   app.post(
     '/messages/text',
     requireApiKey,
     wrap(async (req, res) => {
-      const { to, text } = req.body as { to?: string; text?: string };
+      const { to, text, linea: id } = req.body as { to?: string; text?: string; linea?: string };
       if (!to || !text) {
         res.status(400).json({ error: 'faltan "to" o "text"' });
         return;
       }
-      const messageId = await sendText(to, text);
+      const messageId = await sendText(to, text, id);
       res.json({ messageId });
     }),
   );
@@ -150,13 +221,14 @@ export function buildServer() {
     '/messages/file',
     requireApiKey,
     wrap(async (req, res) => {
-      const { to, url, base64, filename, caption, quotedMsgId } = req.body as {
+      const { to, url, base64, filename, caption, quotedMsgId, linea: id } = req.body as {
         to?: string;
         url?: string;
         base64?: string;
         filename?: string;
         caption?: string;
         quotedMsgId?: string;
+        linea?: string;
       };
 
       if (!to || !filename) {
@@ -168,7 +240,7 @@ export function buildServer() {
         return;
       }
 
-      const messageId = await sendFile({ to, url, base64, filename, caption, quotedMsgId });
+      const messageId = await sendFile({ to, url, base64, filename, caption, quotedMsgId }, id);
       res.json({ messageId });
     }),
   );
@@ -252,12 +324,12 @@ export function buildServer() {
     '/messages/typing',
     requireApiKey,
     wrap(async (req, res) => {
-      const { to, on } = req.body as { to?: string; on?: boolean };
+      const { to, on, linea: id } = req.body as { to?: string; on?: boolean; linea?: string };
       if (!to) {
         res.status(400).json({ error: 'falta "to"' });
         return;
       }
-      await setTyping(to, on ?? true);
+      await setTyping(to, on ?? true, id);
       res.json({ ok: true });
     }),
   );

@@ -297,6 +297,13 @@ model Organization {
   driveFolderId String?    @unique // carpeta raíz en Drive; null si el origen es PC
   active        Boolean    @default(true)
 
+  /// Línea de WhatsApp propia (id de sesión en el gateway). null = la
+  /// empresa se atiende por el número principal. Un mensaje que llega por
+  /// esta línea solo puede recibir documentos de ESTA empresa.
+  waLineId String? @unique
+  /// El número que quedó vinculado a la línea, para enseñarlo en el panel.
+  waNumber String?
+
   /// Cuando se recorrio su carpeta por completo. null = pendiente de
   /// barrido, que es el estado de una empresa nueva o de una que acaba
   /// de cambiar de carpeta.

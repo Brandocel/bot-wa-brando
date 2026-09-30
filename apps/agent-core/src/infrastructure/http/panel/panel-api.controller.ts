@@ -32,6 +32,15 @@ import {
 import { OutboxDispatcher } from '../../persistence/outbox.dispatcher';
 import { PanelAuthService, SESSION_COOKIE } from './panel-auth.service';
 import { PanelGuard, readCookie, type PanelRequest } from './panel.guard';
+import { prefijoDeLinea, separarChat } from '../../../domain/message/linea';
+
+/** Las conversaciones de esa persona en el mismo número de WhatsApp. */
+function mismaLinea(contactId: string, chatId: string): Prisma.ConversationWhereInput {
+  const linea = separarChat(chatId).linea;
+  return linea
+    ? { contactId, chatId: { startsWith: prefijoDeLinea(linea) } }
+    : { contactId, NOT: { chatId: { startsWith: 'linea:' } } };
+}
 
 /**
  * API del panel. Etapa 1: SOLO LECTURA.
@@ -80,6 +89,16 @@ export class PanelApiController {
     });
     if (!c) throw new BadRequestException('no existe esa conversación');
     return c.contactId;
+  }
+
+  /**
+   * Los hilos que forman UNA charla: los de esa persona (por número y por
+   * LID)… pero solo en el mismo número de WhatsApp. La misma persona
+   * hablando con dos empresas son dos charlas, y mezclarlas haría que la
+   * respuesta del panel saliera por el número de la otra empresa.
+   */
+  private async hiloDe(chatId: string): Promise<Prisma.ConversationWhereInput> {
+    return mismaLinea(await this.contactoDe(chatId), chatId);
   }
 
   @Post('login')
@@ -376,6 +395,8 @@ export class PanelApiController {
         driveFolderId: true,
         sourceType: true,
         active: true,
+        waLineId: true,
+        waNumber: true,
         _count: {
           select: {
             memberships: true,
@@ -497,7 +518,8 @@ export class PanelApiController {
     const enManos = new Set<string>();
 
     for (const row of rows) {
-      const clave = row.contact?.waId ?? row.chatId;
+      // Por persona Y por número: con dos empresas son dos charlas.
+      const clave = `${row.contact?.waId ?? row.chatId}|${separarChat(row.chatId).linea ?? ''}`;
       if (row.handoffUntil && row.handoffUntil.getTime() > Date.now()) enManos.add(clave);
 
       const actual = porContacto.get(clave);
@@ -551,7 +573,7 @@ export class PanelApiController {
      * mensajes por fecha, y se contesta por la que habló más reciente.
      */
     const hilos = await this.prisma.conversation.findMany({
-      where: { contactId: base.contactId },
+      where: mismaLinea(base.contactId, chatId),
       orderBy: { lastInboundAt: 'desc' },
       select: {
         id: true,
@@ -695,7 +717,7 @@ export class PanelApiController {
     // A todos los hilos de la persona: si la atiendes tú, la atiendes por
     // el número y por el LID por igual.
     await this.prisma.conversation.updateMany({
-      where: { contactId: await this.contactoDe(body.chatId) },
+      where: await this.hiloDe(body.chatId),
       data: {
         handoffUntil,
         awaiting: body.activo === false ? 'NADIE' : 'AGENTE',
@@ -737,10 +759,8 @@ export class PanelApiController {
     if (!body.chatId) throw new BadRequestException('falta chatId');
 
     const modo = body.modo === 'todo' ? 'todo' : 'mensajes';
-    const contactId = await this.contactoDe(body.chatId);
-
     const hilos = await this.prisma.conversation.findMany({
-      where: { contactId },
+      where: await this.hiloDe(body.chatId),
       select: { id: true, chatId: true },
     });
     const ids = hilos.map((h) => h.id);
@@ -1003,7 +1023,7 @@ export class PanelApiController {
     // suelte o venza el plazo. Antes el cliente contestaba al operador y
     // el bot se metía en medio con "¿qué documento necesitas?".
     await this.prisma.conversation.updateMany({
-      where: { contactId: await this.contactoDe(body.chatId) },
+      where: await this.hiloDe(body.chatId),
       data: {
         awaiting: 'CLIENTE',
         lastOutboundAt: new Date(),

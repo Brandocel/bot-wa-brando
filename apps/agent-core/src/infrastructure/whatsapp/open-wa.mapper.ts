@@ -4,6 +4,7 @@ import type {
   IncomingMessage,
   MessageKind,
 } from '../../domain/message/incoming-message';
+import { LINEA_PRINCIPAL, chatDeLinea } from '../../domain/message/linea';
 
 /**
  * ANTI-CORRUPTION LAYER.
@@ -44,11 +45,17 @@ function mapKind(rawType: string | null): MessageKind {
 export class OpenWaMessageMapper {
   toDomain(raw: RawMessage): IncomingMessage | null {
     const id = str(raw['id']);
-    const chatId = str(raw['chatId']) ?? str(raw['from']);
+    const chatDeWhatsApp = str(raw['chatId']) ?? str(raw['from']);
 
     // Sin id no hay idempotencia y sin chatId no hay a quién responder.
     // Un mensaje así se descarta: es preferible perderlo que duplicarlo.
-    if (!id || !chatId) return null;
+    if (!id || !chatDeWhatsApp) return null;
+
+    // Por qué número llegó. Por la línea de una empresa, la conversación es
+    // otra aunque la persona sea la misma: ver domain/message/linea.ts.
+    const linea = str(raw['linea']);
+    const deLineaDeEmpresa = linea !== null && linea !== LINEA_PRINCIPAL;
+    const chatId = chatDeLinea(linea, chatDeWhatsApp);
 
     const isGroup = raw['isGroupMsg'] === true;
     const sender = (raw['sender'] ?? {}) as Record<string, unknown>;
@@ -84,14 +91,17 @@ export class OpenWaMessageMapper {
     const chat = (raw['chat'] ?? {}) as Record<string, unknown>;
     const chatContact = (chat['contact'] ?? {}) as Record<string, unknown>;
 
+    // El chat propio del dueño solo existe en el número principal: en el
+    // de una empresa, "yo" es la empresa, no el dueño del bot.
     const isSelfChat =
+      !deLineaDeEmpresa &&
       // Señal semántica y la buena: el contacto de este chat soy yo.
-      (!isGroup && chatContact['isMe'] === true) ||
+      ((!isGroup && chatContact['isMe'] === true) ||
       // Respaldo explícito por si el payload llega sin `chat`.
       (config.ownerSelfChatId !== null && chatId === config.ownerSelfChatId) ||
       // Formas clásicas, previas al direccionamiento por LID.
       (to !== null && from !== null && to === from) ||
-      chatId === config.ownerWaId;
+      chatId === config.ownerWaId);
 
     /**
      * En un mensaje de texto, `body` ES el texto. En uno con media, `body`
@@ -133,7 +143,7 @@ export class OpenWaMessageMapper {
         chatId === 'status@broadcast' ||
         chatId.endsWith('@broadcast') ||
         chatId.endsWith('@newsletter'),
-      mentionsMe: mentions.includes(config.ownerWaId),
+      mentionsMe: !deLineaDeEmpresa && mentions.includes(config.ownerWaId),
       timestamp: seconds ? new Date(seconds * 1000) : new Date(),
       raw,
     };

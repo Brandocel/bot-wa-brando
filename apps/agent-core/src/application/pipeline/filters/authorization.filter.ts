@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { config } from '../../../config';
+import { separarChat } from '../../../domain/message/linea';
 import { PrismaService } from '../../../infrastructure/persistence/prisma.service';
 import { type MessageFilter, type Next, type PipelineContext, stop } from '../pipeline';
 
@@ -20,7 +21,11 @@ export class AuthorizationFilter implements MessageFilter {
   async handle(ctx: PipelineContext, next: Next): Promise<void> {
     // OWNER se decide SOLO comparando contra la env var. Nunca por contenido
     // del mensaje, nunca por un campo que venga del gateway.
-    if (ctx.message.senderId === config.ownerWaId) {
+    //
+    // Y solo en el número principal: escribiéndole al número de una
+    // empresa, el dueño es un cliente más. Sus comandos (/pausa, /sync...)
+    // no deben poder correr desde la línea de nadie más.
+    if (ctx.message.senderId === config.ownerWaId && separarChat(ctx.message.chatId).linea === null) {
       ctx.role = 'OWNER';
       return next();
     }

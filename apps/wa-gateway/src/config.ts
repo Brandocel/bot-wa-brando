@@ -36,5 +36,15 @@ export const config = {
    */
   pendingPath: process.env.WA_PENDING_PATH ?? './data/pending',
 
+  /**
+   * Credenciales de las líneas de empresa, una carpeta por línea. Por
+   * defecto al lado de la sesión principal (en Render, /data/lineas), en el
+   * mismo disco persistente: una línea que se borra al desplegar obligaría
+   * a la empresa a volver a escanear el QR.
+   */
+  lineasPath:
+    process.env.WA_LINEAS_PATH ??
+    `${(process.env.WA_SESSION_PATH ?? './data/baileys').replace(/[\\/][^\\/]+[\\/]?$/, '')}/lineas`,
+
   coreWebhookUrl: normalizeBaseUrl(required('CORE_WEBHOOK_URL')),
 } as const;

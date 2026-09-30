@@ -173,7 +173,8 @@ export class SupportStrategy {
     ctx: StrategyContext,
     clas: Clasificacion,
   ): Promise<StrategyReply | null> {
-    const scope = await this.scope.resolve(message.senderId);
+    // Con el chat: por la línea de una empresa, solo esa empresa.
+    const scope = await this.scope.resolve(message.senderId, message.chatId);
 
     // Sin membresía no hay conversación de soporte. Que conteste el eco o,
     // más adelante, la Strategy de ventas.

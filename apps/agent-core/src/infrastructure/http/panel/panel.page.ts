@@ -251,7 +251,21 @@ const hace = (iso) => {
   return new Date(iso).toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit' });
 };
 
-const numeroBonito = (waId) => String(waId ?? '').replace(/@.*$/, '');
+// Los chats que llegan por el número de una empresa traen un id compuesto
+// ("linea:<id>:<chat>"): aquí se separa para enseñar el número de verdad.
+const separarLinea = (chatId) => {
+  const m = /^linea:([^:]+):(.*)$/.exec(String(chatId ?? ''));
+  return m ? { linea: m[1], chat: m[2] } : { linea: null, chat: String(chatId ?? '') };
+};
+const numeroBonito = (waId) => separarLinea(waId).chat.replace(/@.*$/, '');
+
+/** Qué empresa atiende cada línea, para etiquetar los chats. */
+let nombresDeLinea = {};
+async function cargarLineas() {
+  const empresas = await api('empresas');
+  nombresDeLinea = {};
+  for (const o of empresas ?? []) if (o.waLineId) nombresDeLinea[o.waLineId] = o.name;
+}
 const iniciales = (nombre) => String(nombre ?? '?').trim().split(/\\s+/).slice(0, 2).map((p) => p[0]).join('').toUpperCase();
 // Un color por persona, estable: el mismo nombre siempre se ve igual.
 const tono = (nombre) => { let h = 0; for (const ch of String(nombre ?? '')) h = (h * 31 + ch.charCodeAt(0)) % 360; return h; };
@@ -692,7 +706,7 @@ document.addEventListener('input', (e) => {
 const VISTAS = {
   async bandeja() {
     const consulta = filtroBandeja === 'todas' ? 'bandeja' : 'bandeja?esperando=' + filtroBandeja;
-    const filas = await api(consulta);
+    const [filas] = await Promise.all([api(consulta), cargarLineas()]);
 
     const chips = [
       ['todas', 'Todas'], ['persona', 'Esperan a una persona'], ['BOT', 'Sin responder'], ['CLIENTE', 'Esperan al cliente'],
@@ -728,6 +742,11 @@ const VISTAS = {
                 '<span class="muted small">' + hace(c.lastInboundAt) + '</span></div>' +
               '<div class="fila-abajo"><span class="muted recorte">' + esc(ultimo) + '</span></div>' +
               '<div class="fila-pills">' + estado +
+                // Por qué número llegó, si fue por el de una empresa.
+                (separarLinea(c.chatId).linea
+                  ? ' <span class="pill linea" title="Llegó al WhatsApp de esta empresa">' +
+                      esc(nombresDeLinea[separarLinea(c.chatId).linea] ?? 'otra línea') + '</span>'
+                  : '') +
                 (c.topic ? ' <span class="pill">' + esc(c.topic) + '</span>' : '') +
                 (c.quejas ? ' <span class="pill tipo-queja">queja</span>' : '') +
                 (c.tickets[0] ? ' <span class="folio">#' + c.tickets[0].number + '</span>' : '') +
@@ -871,14 +890,17 @@ const VISTAS = {
     // consultas aparte y no deben frenar la vista.
     setTimeout(() => {
       for (const o of filas.filter((x) => x.sourceType === 'PC')) pintarEstadoPc(o.id);
+      for (const o of filas.filter((x) => x.waLineId)) pintarEstadoWa(o.id, o.name);
     }, 0);
 
-    return formulario + '<div id="codigo-pc">' + codigoPcVigente() + '</div>' + tabla(
-      ['Empresa', 'RFC', 'Origen de documentos', 'Números', 'Documentos', 'Tickets', ''],
+    return formulario + '<div id="codigo-pc">' + codigoPcVigente() + '</div>' +
+      '<div id="qr-wa">' + qrWaVigente() + '</div>' + tabla(
+      ['Empresa', 'RFC', 'Origen de documentos', 'WhatsApp', 'Números', 'Documentos', 'Tickets', ''],
       filas.map((o) => '<tr>' +
         '<td>' + esc(o.name) + (o.active ? '' : ' <span class="pill warn">inactiva</span>') + '</td>' +
         '<td>' + esc(o.taxId ?? '—') + '</td>' +
         '<td>' + origen(o) + '</td>' +
+        '<td data-estado-wa="' + o.id + '">' + celdaWa(o, null) + '</td>' +
         '<td>' + o._count.memberships + '</td>' +
         '<td>' + o._count.documents + '</td>' +
         '<td>' + o._count.tickets + '</td>' +
@@ -1241,6 +1263,45 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
+  const conectarWa = e.target.closest('[data-conectar-wa]');
+  if (conectarWa) {
+    const nombre = conectarWa.dataset.nombre;
+    if (!confirm('¿Conectar el WhatsApp de ' + nombre + '?\\n\\nVas a necesitar el teléfono de la empresa para escanear un código QR. Desde ese número, el bot solo entregará documentos de ' + nombre + '.')) return;
+    try {
+      await enviar('empresas/whatsapp/conectar', { id: conectarWa.dataset.conectarWa });
+      mostrarQrWa(conectarWa.dataset.conectarWa, nombre);
+      // La fila pasa a "falta escanear" sin esperar al refresco.
+      pintar('empresas', true);
+    } catch (err) { aviso(err.message, 'error'); }
+    return;
+  }
+
+  const verQr = e.target.closest('[data-ver-qr]');
+  if (verQr) {
+    mostrarQrWa(verQr.dataset.verQr, verQr.dataset.nombre);
+    return;
+  }
+
+  if (e.target.closest('[data-cerrar-qr-wa]')) {
+    qrWa = null;
+    clearInterval(qrWaTimer);
+    pintarQrWa();
+    pintar('empresas', true);
+    return;
+  }
+
+  const desconectarWa = e.target.closest('[data-desconectar-wa]');
+  if (desconectarWa) {
+    if (!confirm('¿Desconectar este número?\\n\\nSale de "Dispositivos vinculados" del teléfono de la empresa y, desde ese momento, a la empresa se la atiende por el número principal.')) return;
+    try {
+      await enviar('empresas/whatsapp/desconectar', { id: desconectarWa.dataset.desconectarWa });
+      if (qrWa?.id === desconectarWa.dataset.desconectarWa) { qrWa = null; clearInterval(qrWaTimer); }
+      aviso('Número desconectado');
+      pintar('empresas');
+    } catch (err) { aviso(err.message, 'error'); }
+    return;
+  }
+
   const codigoPc = e.target.closest('[data-codigo-pc]');
   if (codigoPc) {
     mostrarCodigoPc(codigoPc.dataset.codigoPc, codigoPc.dataset.nombre);
@@ -1303,6 +1364,117 @@ document.addEventListener('click', async (e) => {
 });
 
 // ── Conector de PC ──────────────────────────────────────────────────────
+
+// ── WhatsApp propio de cada empresa ─────────────────────────────────────
+
+/**
+ * La celda "WhatsApp" de una empresa. Sin número propio se atiende por el
+ * principal; con él, se enseña si está conectado, esperando el QR o si lo
+ * desvincularon desde el teléfono.
+ */
+function celdaWa(o, estado) {
+  const esAdmin = yo?.role === 'ADMIN';
+  const nombre = esc(o.name ?? o.nombre ?? '');
+  if (!o.waLineId && !(estado && estado.conectada)) {
+    return '<span class="muted small">número principal</span>' +
+      (esAdmin ? ' <button class="mini" data-conectar-wa="' + o.id + '" data-nombre="' + nombre + '">Conectar WhatsApp</button>' : '');
+  }
+
+  const e = estado?.estado ?? 'CONSULTANDO';
+  const numero = estado?.numero ?? o.waNumber;
+  const pill = {
+    CONNECTED: '<span class="pill ok">conectado</span>',
+    WAITING_QR: '<span class="pill warn">falta escanear</span>',
+    DISCONNECTED: '<span class="pill warn">desvinculado</span>',
+    CRASHED: '<span class="pill warn">con error</span>',
+  }[e] ?? '<span class="pill">conectando…</span>';
+
+  const accion = !esAdmin ? '' :
+    e === 'WAITING_QR'
+      ? ' <button class="mini" data-ver-qr="' + o.id + '" data-nombre="' + nombre + '">Ver QR</button>'
+      : e === 'DISCONNECTED' || e === 'CRASHED' || e === 'DESCONOCIDO'
+        ? ' <button class="mini" data-conectar-wa="' + o.id + '" data-nombre="' + nombre + '">Volver a conectar</button>'
+        : '';
+
+  return pill + (numero ? ' <span class="mono">+' + esc(numero) + '</span>' : '') + accion +
+    (esAdmin ? ' <button class="mini peligro" data-desconectar-wa="' + o.id + '" title="Desconectar este número">×</button>' : '');
+}
+
+async function pintarEstadoWa(id, nombre) {
+  const celda = document.querySelector('[data-estado-wa="' + id + '"]');
+  if (!celda) return;
+  const r = await api('empresas/whatsapp?id=' + encodeURIComponent(id));
+  if (!r) return;
+  celda.innerHTML = celdaWa({ id, name: nombre, waLineId: r.conectada ? 'si' : null, waNumber: r.numero }, r);
+}
+
+/**
+ * La tarjeta con el QR de la empresa que se está conectando. Se guarda
+ * aquí porque el panel se repinta cada 20 s: sin esto, la tarjeta
+ * desaparecía mientras la persona buscaba el teléfono.
+ */
+let qrWa = null;
+let qrWaTimer = null;
+
+function qrWaVigente() {
+  if (!qrWa) return '';
+  const url = '/panel/api/empresas/whatsapp/qr?id=' + encodeURIComponent(qrWa.id) + '&t=' + Date.now();
+  return '<div class="card qr-wa">' +
+    '<div class="qr-wa-caja">' +
+      (qrWa.conectado
+        ? '<div class="qr-wa-listo">✓</div>'
+        : '<img id="qr-wa-img" alt="Código QR" src="' + url + '" onerror="this.style.visibility=\\'hidden\\'" onload="this.style.visibility=\\'visible\\'">') +
+    '</div>' +
+    '<div class="qr-wa-texto">' +
+      '<h3>WhatsApp de ' + esc(qrWa.nombre) + '</h3>' +
+      (qrWa.conectado
+        ? '<p>Conectado' + (qrWa.numero ? ' como <strong>+' + esc(qrWa.numero) + '</strong>' : '') +
+          '. Desde ahora, lo que le escriban a ese número lo atiende el bot, solo con documentos de esta empresa.</p>' +
+          '<button class="mini" data-cerrar-qr-wa>Listo</button>'
+        : '<ol class="muted">' +
+            '<li>En el teléfono de la empresa, abre <strong>WhatsApp</strong>.</li>' +
+            '<li>Ve a <em>Ajustes → Dispositivos vinculados → Vincular un dispositivo</em>.</li>' +
+            '<li>Escanea este código. Se renueva solo cada 20 segundos.</li>' +
+          '</ol>' +
+          '<p class="muted small" id="qr-wa-estado">' + esc(qrWa.aviso ?? 'Esperando el escaneo…') + '</p>' +
+          '<p class="muted small">El teléfono sigue funcionando normal. Si la empresa desvincula el dispositivo, el bot deja de contestar por ese número hasta volver a conectarlo.</p>' +
+          '<button class="mini" data-cerrar-qr-wa>Cerrar</button>') +
+    '</div>' +
+  '</div>';
+}
+
+function pintarQrWa() {
+  const caja = document.getElementById('qr-wa');
+  if (caja) caja.innerHTML = qrWaVigente();
+}
+
+async function mostrarQrWa(id, nombre) {
+  qrWa = { id, nombre, conectado: false };
+  pintarQrWa();
+  document.getElementById('qr-wa')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+  clearInterval(qrWaTimer);
+  qrWaTimer = setInterval(async () => {
+    if (!qrWa || qrWa.id !== id) { clearInterval(qrWaTimer); return; }
+    const r = await api('empresas/whatsapp?id=' + encodeURIComponent(id));
+    if (!r) return;
+    if (r.estado === 'CONNECTED') {
+      clearInterval(qrWaTimer);
+      qrWa = { id, nombre, conectado: true, numero: r.numero };
+      pintarQrWa();
+      aviso('WhatsApp de ' + nombre + ' conectado');
+      pintarEstadoWa(id, nombre);
+      return;
+    }
+    qrWa.aviso = r.estado === 'WAITING_QR' ? 'Esperando el escaneo…'
+      : r.estado === 'DISCONNECTED' ? 'El teléfono rechazó o cerró la vinculación. Vuelve a intentarlo.'
+      : 'Preparando el código…';
+    const img = document.getElementById('qr-wa-img');
+    if (img) img.src = '/panel/api/empresas/whatsapp/qr?id=' + encodeURIComponent(id) + '&t=' + Date.now();
+    const texto = document.getElementById('qr-wa-estado');
+    if (texto) texto.textContent = qrWa.aviso;
+  }, 4000);
+}
 
 async function pintarEstadoPc(id) {
   const celda = document.querySelector('[data-estado-pc="' + id + '"]');
@@ -1657,6 +1829,17 @@ const STYLES = `<link rel="preconnect" href="https://fonts.googleapis.com">
   .top .icon.redondo { margin-top: 2px; }
   .card { background: var(--caja); border: 1px solid var(--borde); border-radius: var(--radio); padding: 16px 18px; }
   .codigo-pc { margin: 0 0 16px; }
+  .qr-wa { display: flex; gap: 22px; align-items: flex-start; margin: 0 0 16px; flex-wrap: wrap; }
+  .qr-wa-caja {
+    width: 236px; height: 236px; flex-shrink: 0; border-radius: 14px; background: #fff;
+    display: grid; place-items: center; padding: 10px;
+  }
+  .qr-wa-caja img { width: 216px; height: 216px; display: block; }
+  .qr-wa-listo { font-size: 72px; color: #16a34a; font-weight: 800; }
+  .qr-wa-texto { flex: 1; min-width: 240px; }
+  .qr-wa-texto h3 { margin: 0 0 8px; font-size: 16px; }
+  .qr-wa-texto ol { padding-left: 18px; margin: 0 0 10px; }
+  .pill.linea { background: var(--acento-suave); color: #c9c1ff; }
   .codigo-pc a.boton {
     display: inline-block; background: var(--acento); color: #fff; padding: 10px 18px;
     border-radius: 10px; text-decoration: none; font-weight: 700;

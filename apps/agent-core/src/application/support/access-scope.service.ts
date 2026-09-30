@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { DocCategory } from '@prisma/client';
 import { PrismaService } from '../../infrastructure/persistence/prisma.service';
+import { separarChat } from '../../domain/message/linea';
 
 /**
  * LA frontera de seguridad del módulo de soporte.
@@ -87,12 +88,32 @@ export class AccessScopeService {
    * de la búsqueda: nadie más abajo vuelve a ver el waId, así que no se puede
    * escribir por accidente una consulta que se olvide de filtrar.
    */
-  async resolve(waId: string): Promise<ScopeResult> {
+  async resolve(waId: string, chatId?: string): Promise<ScopeResult> {
     const now = new Date();
+
+    /**
+     * Por la línea de una empresa, el alcance es SOLO esa empresa, aunque
+     * la persona tenga membresía en varias. Es la regla que hace imposible
+     * que por el número de una empresa salga la factura de otra. Una línea
+     * que ya no corresponde a ninguna empresa no da acceso a nada.
+     */
+    const linea = chatId ? separarChat(chatId).linea : null;
+    let soloEmpresa: string | null = null;
+    if (linea) {
+      const empresa = await this.prisma.organization.findUnique({
+        where: { waLineId: linea },
+        select: { id: true },
+      });
+      if (!empresa) {
+        return { decision: 'DENY_NO_MEMBERSHIP', decidedBy: 'línea sin empresa asignada', scopes: [] };
+      }
+      soloEmpresa = empresa.id;
+    }
 
     const memberships = await this.prisma.membership.findMany({
       where: {
         contact: { waId },
+        ...(soloEmpresa ? { organizationId: soloEmpresa } : {}),
         revokedAt: null,
         validFrom: { lte: now },
         OR: [{ validUntil: null }, { validUntil: { gte: now } }],
@@ -107,7 +128,7 @@ export class AccessScopeService {
     if (memberships.length === 0) {
       return {
         decision: 'DENY_NO_MEMBERSHIP',
-        decidedBy: 'sin membresía vigente',
+        decidedBy: soloEmpresa ? 'sin membresía en la empresa de esta línea' : 'sin membresía vigente',
         scopes: [],
       };
     }

@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { config } from '../../config';
+import { separarChat } from '../../domain/message/linea';
 import type {
   MessagingPort,
   NumberCheck,
@@ -39,10 +40,21 @@ export class GatewayMessagingAdapter implements MessagingPort {
     return (await res.json()) as T;
   }
 
+  /**
+   * Los chats de la línea de una empresa llegan con un chatId compuesto
+   * (`linea:<id>:<chat>`). Aquí se separa: el gateway recibe el chat de
+   * WhatsApp de verdad y por qué línea mandarlo. Así la respuesta sale
+   * siempre por el mismo número por el que escribieron.
+   */
+  private destino(to: string): { to: string; linea?: string } {
+    const { linea, chat } = separarChat(to);
+    return linea ? { to: chat, linea } : { to: chat };
+  }
+
   async sendText(to: string, text: string): Promise<string> {
     const { messageId } = await this.post<{ messageId: string }>(
       '/messages/text',
-      { to, text },
+      { ...this.destino(to), text },
     );
     return messageId;
   }
@@ -52,7 +64,7 @@ export class GatewayMessagingAdapter implements MessagingPort {
     // archivo de Drive antes de poder mandarlo.
     const { messageId } = await this.post<{ messageId: string }>(
       '/messages/file',
-      { to, ...file },
+      { ...file, ...this.destino(to) },
       60_000,
     );
     return messageId;
@@ -78,7 +90,7 @@ export class GatewayMessagingAdapter implements MessagingPort {
   async setTyping(to: string, on: boolean): Promise<void> {
     // "Escribiendo..." es cosmético: si falla, no vale la pena tumbar el turno.
     try {
-      await this.post('/messages/typing', { to, on });
+      await this.post('/messages/typing', { ...this.destino(to), on });
     } catch (err) {
       this.logger.warn(`no se pudo simular typing: ${String(err)}`);
     }
@@ -86,7 +98,7 @@ export class GatewayMessagingAdapter implements MessagingPort {
 
   async markSeen(to: string): Promise<void> {
     try {
-      await this.post('/messages/seen', { to });
+      await this.post('/messages/seen', this.destino(to));
     } catch (err) {
       this.logger.warn(`no se pudo marcar como visto: ${String(err)}`);
     }

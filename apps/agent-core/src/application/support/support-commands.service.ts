@@ -84,7 +84,7 @@ export class SupportCommandsService {
 
   /** Para que el operador pueda verificar el alcance real de un número. */
   private async permisos(message: IncomingMessage): Promise<string> {
-    const scope = await this.scope.resolve(message.senderId);
+    const scope = await this.scope.resolve(message.senderId, message.chatId);
 
     if (scope.decision !== 'ALLOW') {
       return `Sin acceso: ${scope.decidedBy}.`;
