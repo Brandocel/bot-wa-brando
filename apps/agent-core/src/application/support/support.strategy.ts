@@ -42,7 +42,7 @@ import {
   quejaParaPersona,
   type Clasificacion,
 } from './message-classifier';
-import { dividirPedidos, leerVariasOpciones, type VariosPedidos } from './pedidos';
+import { dividirPedidos, leerVariasOpciones, type SeleccionOpciones, type VariosPedidos } from './pedidos';
 import * as voz from './voz';
 
 /**
@@ -247,7 +247,7 @@ export class SupportStrategy {
      * oficial —se rompieron con multidispositivo—, así que la lista
      * numerada es la forma que sí llega a todos los teléfonos.
      */
-    // "La 1 y la 2", "las dos", "todas": varias de la lista a la vez.
+    // También "la 1, no la 3" y "todas menos la 2", antes de leerNumero().
     const varias = leerVariasOpciones(message.body);
     if (varias !== null && sol.opciones?.some((o) => o.tipo === 'documento')) {
       return this.entregarVariasOpciones(varias, turn, sol);
@@ -669,10 +669,21 @@ export class SupportStrategy {
       const que = query.period
         ? `${nombrePlural(query.category)} de ${mesEnPalabras(query.period)}`
         : nombrePlural(query.category);
+      const total = results.length === MAX_OPCIONES
+        ? await this.search.count(turn.scopes, {
+          ...query,
+          organizationId: turn.scopes.length === 1
+            ? turn.scopes[0]!.organizationId
+            : empresaGuardada(sol, turn.scopes),
+          excludeIds: excluir(query, sol),
+        })
+        : results.length;
 
       return {
         text: [
-          voz.encabezadoLista(results.length, que),
+          total > results.length
+            ? voz.encabezadoListaLimitada(total, results.length, que)
+            : voz.encabezadoLista(results.length, que),
           ...results.map((doc, i) => `*${i + 1}.* ${describe(doc)}`),
           '',
           voz.pieLista(),
@@ -807,11 +818,19 @@ export class SupportStrategy {
       }
 
       if (otrosMeses.length > MAX_OPCIONES) {
+        const total = await this.search.count(scopes, {
+          category: query.category,
+          period: null,
+          folio: query.folio,
+          text: null,
+          organizationId,
+          excludeIds: excluir(query, sol),
+        });
         return this.ask(
           turn,
           readAsked(sol),
           'detalle',
-          voz.muchosSinMes(otrosMeses.length, nombrePlural(query.category), mesEnPalabras(query.period)),
+          voz.muchosSinMes(total, nombrePlural(query.category), mesEnPalabras(query.period)),
         );
       }
     }
@@ -1025,17 +1044,34 @@ export class SupportStrategy {
     return this.entregarLote(turn, unicos, { faltan, listas, forzar: false });
   }
 
-  /** "La 1 y la 3", "las dos", "todas": varias de la última lista. */
+  /** Selección de la última lista, restando exclusiones antes de buscar o entregar. */
   private async entregarVariasOpciones(
-    varias: number[] | 'todas',
+    varias: SeleccionOpciones,
     turn: Turn,
     sol: Solicitud,
   ): Promise<StrategyReply> {
     const opciones = (sol.opciones ?? []).filter((o) => o.tipo === 'documento');
-    const elegidas = varias === 'todas' ? opciones : opciones.filter((o) => varias.includes(o.n));
+    const conExclusiones = typeof varias === 'object' && !Array.isArray(varias);
+    const incluir = conExclusiones ? varias.incluir : varias;
+    const excluir = conExclusiones ? varias.excluir : [];
+
+    if (conExclusiones) {
+      const mencionadas = [...(incluir === 'todas' ? [] : incluir), ...excluir];
+      if (mencionadas.some((n) => !opciones.some((o) => o.n === n))) {
+        return { text: voz.numerosFueraDeLista(opciones.length), awaiting: 'CLIENTE' };
+      }
+    }
+
+    const elegidas = opciones.filter((o) =>
+      (incluir === 'todas' || incluir.includes(o.n)) && !excluir.includes(o.n));
 
     if (elegidas.length === 0) {
-      return { text: voz.numerosFueraDeLista(opciones.length), awaiting: 'CLIENTE' };
+      return {
+        text: conExclusiones
+          ? 'No quedó ninguna opción seleccionada. Dime cuáles de la lista quieres que te mande.'
+          : voz.numerosFueraDeLista(opciones.length),
+        awaiting: 'CLIENTE',
+      };
     }
 
     const docs: Document[] = [];
@@ -1276,9 +1312,14 @@ export class SupportStrategy {
       if (meses.length === 0) {
         return { text: voz.sinDocumentosDe(nombrePlural(tipoEnJuego), null, empresa, null), awaiting: 'NADIE' };
       }
+      const masDeUna = /\bmas de una\b/.test(normalizar(turn.message.body));
+      const visibles = masDeUna ? meses.filter((m) => m.period !== null && m.count > 1) : meses;
+      if (visibles.length === 0) {
+        return { text: `No tengo meses con más de una ${nombre(tipoEnJuego)}.`, awaiting: 'NADIE' };
+      }
       // Los que tienen mes primero; los que no, al final como "y 2 sin mes".
-      const conMes = meses.filter((m) => m.period !== null);
-      const sinMes = meses.filter((m) => m.period === null).reduce((n, m) => n + m.count, 0);
+      const conMes = visibles.filter((m) => m.period !== null);
+      const sinMes = visibles.filter((m) => m.period === null).reduce((n, m) => n + m.count, 0);
       const partes = conMes.map((m) =>
         mesEnPalabras(m.period!) + (m.count > 1 ? ` (${m.count})` : ''),
       );
@@ -1313,14 +1354,23 @@ export class SupportStrategy {
         };
       }
 
-      if (docs.length <= MAX_OPCIONES) {
-        await this.guardarOpciones(turn, docs);
+      if (period || docs.length <= MAX_OPCIONES) {
+        const mostrados = docs.slice(0, MAX_OPCIONES);
+        const total = docs.length > MAX_OPCIONES
+          ? await this.search.count(scopes, { category, period, folio: null, text: null, organizationId })
+          : docs.length;
+        await this.guardarOpciones(turn, mostrados);
         return {
           text: [
-            period
-              ? voz.encabezadoInventarioMes(mesEnPalabras(period), docs.length)
-              : voz.encabezadoLista(docs.length, nombrePlural(category)),
-            ...docs.map((doc, i) => `*${i + 1}.* ${describe(doc)}`),
+            total > mostrados.length
+              ? voz.encabezadoListaLimitada(
+                total, mostrados.length,
+                `${nombrePlural(category)}${period ? ` de ${mesEnPalabras(period)}` : ''}`,
+              )
+              : period
+                ? voz.encabezadoInventarioMes(mesEnPalabras(period), docs.length)
+                : voz.encabezadoLista(docs.length, nombrePlural(category)),
+            ...mostrados.map((doc, i) => `*${i + 1}.* ${describe(doc)}`),
             '',
             voz.pieInventario(),
           ].join('\n'),

@@ -41,6 +41,41 @@ test('varias opciones de una lista', () => {
   assert.equal(leerVariasOpciones('dame un segundo'), null, 'es una pausa, no la opción 2');
 });
 
+for (const [text, incluir, excluir] of [
+  ['La 1, no la 3', [1], [3]],
+  ['La 1 pero no la 3', [1], [3]],
+  ['La 2, excepto la 1', [2], [1]],
+  ['La 1 y la 2, pero no la 3', [1, 2], [3]],
+  ['Todas menos la 3', 'todas', [3]],
+  ['Todas excepto la 2', 'todas', [2]],
+  ['Todas menos la 1 y la 3', 'todas', [1, 3]],
+  ['La primera y la segunda, excepto la tercera', [1, 2], [3]],
+  ['La 1, no la 1', [1], [1]],
+  ['No la 3', [], [3]],
+  ['Todas menos la 10', 'todas', [10]],
+  ['Todas excepto la 0', 'todas', [0]],
+] as const) {
+  test(`selección con exclusiones: "${text}" separa inclusiones y exclusiones`, () => {
+    assert.deepEqual(leerVariasOpciones(text), { incluir, excluir });
+  });
+}
+
+for (const [text, expected] of [
+  ['La 1 y la 2', [1, 2]],
+  ['Solo la 1', null],
+  ['No, mejor la 2', null],
+  ['Todas', 'todas'],
+  ['Todas por favor', 'todas'],
+  ['Ahora la 3 y la 4', [3, 4]],
+  ['Y la 5', null],
+  ['La factura de marzo, excepto la 2', null],
+  ['El folio A100, no la 3', null],
+] as const) {
+  test(`selección sin regresión: "${text}" conserva su ruta`, () => {
+    assert.deepEqual(leerVariasOpciones(text), expected);
+  });
+}
+
 for (const text of [
   'No recuerdo el nombre',
   'No me acuerdo del nombre',

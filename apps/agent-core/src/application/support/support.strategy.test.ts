@@ -74,6 +74,7 @@ class MemoryRequests {
 
 class MemorySearch {
   searches: Array<{ scopes: readonly unknown[]; query: Record<string, unknown> }> = [];
+  catalog: Array<Record<string, unknown>> | null = null;
   periodResults = new Map<string, unknown[]>();
   monthLookups: string[] = [];
   monthScopes: Array<readonly unknown[]> = [];
@@ -87,8 +88,27 @@ class MemorySearch {
   /** Resultados por palabra clave exacta ("oxxo"). */
   textResults = new Map<string, unknown[]>();
 
-  async search(scopes: readonly unknown[], query: Record<string, unknown>): Promise<unknown[]> {
+  private catalogMatches(scopes: readonly unknown[], query: Record<string, unknown>): Array<Record<string, unknown>> {
+    return (this.catalog ?? []).filter((doc) =>
+      doc.status === 'INDEXED' &&
+      scopes.some((scope) => (scope as OrgScope).organizationId === doc.organizationId &&
+        (scope as OrgScope).windows.some((window) => window.category === doc.category &&
+          (!window.periodFrom || (doc.period as Date) >= window.periodFrom) &&
+          (!window.periodTo || (doc.period as Date) <= window.periodTo))) &&
+      (!query.organizationId || query.organizationId === doc.organizationId) &&
+      (!query.category || query.category === doc.category) &&
+      (!(query.period instanceof Date) || query.period.getTime() === (doc.period as Date).getTime()) &&
+      (!(query.excludeIds as string[] | undefined)?.includes(doc.id as string)) &&
+      (!query.text || String(doc.name).toLowerCase().includes(String(query.text).toLowerCase())),
+    );
+  }
+
+  async search(scopes: readonly unknown[], query: Record<string, unknown>, limit = 5): Promise<unknown[]> {
     this.searches.push({ scopes, query });
+    if (this.catalog) {
+      return this.catalogMatches(scopes, query).sort((a, b) => (b.period as Date).getTime() - (a.period as Date).getTime() ||
+        String(a.name).localeCompare(String(b.name))).slice(0, limit);
+    }
     if (typeof query.text === 'string' && this.textResults.has(query.text)) {
       return this.textResults.get(query.text)!;
     }
@@ -107,16 +127,53 @@ class MemorySearch {
   async mesesDe(scopes: readonly unknown[], category: string): Promise<Array<{ period: Date; count: number }>> {
     this.monthLookups.push(category);
     this.monthScopes.push(scopes);
+    if (this.catalog) {
+      const counts = new Map<number, { period: Date; count: number }>();
+      for (const doc of this.catalogMatches(scopes, { category })) {
+        const period = doc.period as Date;
+        const key = period.getTime();
+        const group = counts.get(key) ?? { period, count: 0 };
+        group.count++;
+        counts.set(key, group);
+      }
+      return [...counts.values()].sort((a, b) => b.period.getTime() - a.period.getTime());
+    }
     return this.sixInvoices.map((doc) => ({ period: doc.period as Date, count: 1 }));
   }
 
-  async inventario(scopes: readonly unknown[]): Promise<[]> {
+  async inventario(scopes: readonly unknown[]): Promise<Array<{ category: string; count: number; from: Date; to: Date }>> {
     this.inventoryScopes.push(scopes);
+    if (this.catalog) {
+      const docs = this.catalogMatches(scopes, {});
+      const groups = new Map<string, { category: string; count: number; from: Date; to: Date }>();
+      for (const doc of docs) {
+        const category = doc.category as string;
+        const period = doc.period as Date;
+        const group = groups.get(category) ?? { category, count: 0, from: period, to: period };
+        group.count++;
+        if (period < group.from) group.from = period;
+        if (period > group.to) group.to = period;
+        groups.set(category, group);
+      }
+      return [...groups.values()];
+    }
     return [];
+  }
+
+  async count(scopes: readonly unknown[], query: Record<string, unknown>): Promise<number> {
+    if (this.catalog) return this.catalogMatches(scopes, query).length;
+    if (query.period instanceof Date) {
+      const month = `${query.period.getUTCFullYear()}-${String(query.period.getUTCMonth() + 1).padStart(2, '0')}`;
+      return this.periodResults.get(month)?.length ?? 0;
+    }
+    if (query.category === 'FACTURA' && !query.text) return this.sixInvoices.length;
+    if (query.category === 'CONTRATO' && !query.text) return this.contracts.length;
+    return this.textResults.get(String(query.text))?.length ?? 0;
   }
 
   async byId(id: string): Promise<unknown | null> {
     this.byIdCalls.push(id);
+    if (this.catalog) return this.catalog.find((doc) => doc.id === id) ?? null;
     if (id === 'previous-invoice') return document(id, 'FACTURA_2026-02_V3001.pdf');
     const custom = [...this.periodResults.values(), ...this.textResults.values()].flat();
     return custom.find((doc) => (doc as { id?: string }).id === id) ??
@@ -385,6 +442,44 @@ test('DocumentSearchService compila filtros de empresa/categoría desde el alcan
   ]);
   await service.inventario([orgScope], 'org-not-allowed');
   assert.equal(inventoryCalls, 1);
+});
+
+test('el conteo de búsqueda usa los mismos filtros de permiso, estado, mes y exclusiones que la lista', async () => {
+  const whereForSearch: Record<string, unknown>[] = [];
+  const whereForCount: Record<string, unknown>[] = [];
+  const service = new DocumentSearchService({
+    document: {
+      findMany: async ({ where }: { where: Record<string, unknown> }) => {
+        whereForSearch.push(where);
+        return [];
+      },
+      count: async ({ where }: { where: Record<string, unknown> }) => {
+        whereForCount.push(where);
+        return 6;
+      },
+    },
+  } as never);
+  const query = {
+    category: 'FACTURA' as const,
+    period: new Date('2026-06-01T00:00:00Z'),
+    folio: null,
+    text: null,
+    organizationId: orgScope.organizationId,
+    excludeIds: ['rechazado'],
+  };
+
+  await service.search([orgScope], query);
+  assert.equal(await service.count([orgScope], query), 6);
+  assert.deepEqual(whereForCount, whereForSearch);
+  assert.equal(whereForCount[0]?.status, 'INDEXED');
+  assert.deepEqual(whereForCount[0]?.OR, [{ organizationId: 'org-allowed', category: 'FACTURA' }]);
+  assert.deepEqual(whereForCount[0]?.AND, [
+    { category: 'FACTURA' }, { period: query.period }, { id: { notIn: ['rechazado'] } },
+  ]);
+
+  const foreign = { ...query, organizationId: 'org-not-allowed' };
+  assert.equal(await service.count([orgScope], foreign), 0);
+  assert.equal(whereForCount.length, 1);
 });
 
 // Se crea la pregunta pendiente por el flujo real de Strategy: las seis
@@ -1332,6 +1427,109 @@ test('"la 1 y la 7" con una lista de dos entrega la 1 y no inventa la 7', async 
   assert.deepEqual(entregados(h), [documentA.name]);
 });
 
+function selectionOptions() {
+  const h = makeHarness();
+  const docs = Array.from({ length: 5 }, (_, i) => document(`selection-${i + 1}`, `FACTURA_${i + 1}.pdf`));
+  h.search.periodResults.set('options', docs);
+  h.requests.state = {
+    ...emptyRequest(),
+    category: 'FACTURA',
+    opciones: docs.map((doc, i) => ({
+      n: i + 1, tipo: 'documento', id: String(doc.id), nombre: String(doc.name),
+    })),
+  };
+  return h;
+}
+
+for (const [text, selected] of [
+  ['La 1, no la 3', [1]],
+  ['La 1 pero no la 3', [1]],
+  ['La 2, excepto la 1', [2]],
+  ['La 1 y la 2, pero no la 3', [1, 2]],
+  ['Todas menos la 3', [1, 2, 4, 5]],
+  ['Todas excepto la 2', [1, 3, 4, 5]],
+  ['Todas menos la 1 y la 3', [2, 4, 5]],
+  ['La primera y la segunda, excepto la tercera', [1, 2]],
+  ['La 1 y la 1, no la 3', [1]],
+  ['La 1 y la 2', [1, 2]],
+  ['Solo la 1', [1]],
+  ['No, mejor la 2', [2]],
+  ['Todas', [1, 2, 3, 4, 5]],
+  ['Todas por favor', [1, 2, 3, 4, 5]],
+  ['Ahora la 3 y la 4', [3, 4]],
+  ['Y la 5', [5]],
+] as const) {
+  test(`selección de documentos: "${text}" entrega solo lo incluido y conserva la lista`, async (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-30T12:00:00Z') });
+    t.mock.method(Math, 'random', () => 0);
+    const h = selectionOptions();
+    const options = structuredClone(h.requests.state.opciones);
+
+    const reply = await h.handle(text);
+
+    assert.equal(reply?.awaiting, 'NADIE');
+    assert.deepEqual(h.search.byIdCalls, selected.map((n) => `selection-${n}`));
+    assert.deepEqual(entregados(h), selected.map((n) => `FACTURA_${n}.pdf`));
+    assert.deepEqual(h.requests.state.opciones, options);
+    assert.deepEqual(h.search.searches, []);
+    assert.deepEqual(h.extractCalls, []);
+    assert.deepEqual(h.llmCalls, []);
+    assert.deepEqual(h.draftCalls, []);
+    assert.deepEqual(h.escalations, []);
+  });
+}
+
+for (const text of [
+  'La 1, no la 1',
+  'La 1 y la 2 excepto la 1 y la 2',
+  'Todas menos la 1 y la 2',
+  'No la 2',
+  'Todas menos la 9',
+  'Todas menos la 10',
+  'Todas excepto la 0',
+  'La 1, no la 9',
+  'La 9 excepto la 1',
+]) {
+  test(`selección vacía o fuera de rango: "${text}" no consulta ni entrega documentos`, async (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-30T12:00:00Z') });
+    t.mock.method(Math, 'random', () => 0);
+    const { h } = pendingDocumentOptions();
+    const before = structuredClone(h.requests.state);
+
+    const reply = await h.handle(text);
+
+    assert.equal(reply?.awaiting, 'CLIENTE');
+    assert.ok(reply.text);
+    assert.deepEqual(h.search.byIdCalls, []);
+    assert.deepEqual(h.delivered, []);
+    assert.deepEqual(h.requests.state, before);
+    assert.deepEqual(h.search.searches, []);
+    assert.deepEqual(h.extractCalls, []);
+    assert.deepEqual(h.llmCalls, []);
+    assert.deepEqual(h.draftCalls, []);
+    assert.deepEqual(h.escalations, []);
+  });
+}
+
+test('una exclusión no renumera la lista ni afecta selecciones de turnos posteriores', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-30T12:00:00Z') });
+  t.mock.method(Math, 'random', () => 0);
+  const h = selectionOptions();
+  const options = structuredClone(h.requests.state.opciones);
+
+  await h.handle('Todas menos la 3');
+  assert.deepEqual(h.search.byIdCalls, ['selection-1', 'selection-2', 'selection-4', 'selection-5']);
+  await h.handle('Ahora la 3 y la 4');
+  await h.handle('Y la 5');
+
+  assert.deepEqual(h.search.byIdCalls, [
+    'selection-1', 'selection-2', 'selection-4', 'selection-5', 'selection-3', 'selection-4', 'selection-5',
+  ]);
+  assert.deepEqual(h.requests.state.opciones, options);
+  assert.deepEqual(h.llmCalls, []);
+  assert.deepEqual(h.draftCalls, []);
+});
+
 test('una corrección "no era febrero, era marzo" sigue siendo un solo pedido', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-06-15T12:00:00.000Z') });
   const h = makeHarness();
@@ -1341,4 +1539,137 @@ test('una corrección "no era febrero, era marzo" sigue siendo un solo pedido', 
   await h.handle('la factura, no era febrero, era marzo');
 
   assert.deepEqual(entregados(h), ['FACTURA_2026-03.pdf']);
+});
+
+function inventoryCatalog() {
+  const h = makeHarness();
+  h.search.catalog = [
+    ...Array.from({ length: 6 }, (_, i) => document(`jun-${i + 1}`, `FACTURA_JUNIO_${i + 1}.pdf`, 'FACTURA', '2026-06')),
+    ...Array.from({ length: 3 }, (_, i) => document(`sep-${i + 1}`, `FACTURA_SEPTIEMBRE_${i + 1}.pdf`, 'FACTURA', '2026-09')),
+    document('apr-1', 'FACTURA_ABRIL.pdf', 'FACTURA', '2026-04'),
+    document('feb-1', 'FACTURA_FEBRERO.pdf', 'FACTURA', '2026-02'),
+  ];
+  return h;
+}
+
+test('inventario general 11 y consulta sin julio: el muestreo de 6 no se anuncia como total', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-30T12:00:00Z') });
+  t.mock.method(Math, 'random', () => 0);
+  const h = inventoryCatalog();
+
+  const inventory = await h.handle('¿Qué documentos tienes?');
+  assert.match(inventory?.text ?? '', /\*11\* facturas/);
+  assert.equal(h.search.inventoryScopes.length, 1);
+
+  const july = await h.handle('¿Qué facturas tienes de julio?');
+  const julyText = (july?.text ?? '').replaceAll('*', '');
+  assert.match(julyText, /julio de 2026/i);
+  assert.match(julyText, /11 facturas/i);
+  assert.doesNotMatch(julyText, /6 facturas/i);
+  assert.equal(h.search.searches.at(-1)?.query.period, null, 'el fallback consulta otros meses');
+  assert.deepEqual(h.delivered, []);
+  assert.deepEqual(h.llmCalls, []);
+});
+
+test('junio con 6 buscables: ofrece 5 sin llamar 5 al total, y las opciones son elegibles', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-30T12:00:00Z') });
+  t.mock.method(Math, 'random', () => 0);
+  const h = inventoryCatalog();
+
+  const months = await h.handle('¿De qué meses tienes facturas?');
+  assert.match(months?.text ?? '', /junio de 2026 \(6\)/i);
+  assert.deepEqual(h.search.monthLookups, ['FACTURA']);
+
+  const june = await h.handle('Pásame las facturas de junio');
+  const juneText = (june?.text ?? '').replaceAll('*', '');
+  assert.match(juneText, /6 facturas de junio de 2026/i);
+  assert.match(juneText, /(?:muestro|opciones).*5|5.*(?:muestro|opciones)/i);
+  assert.equal(h.requests.state.opciones?.length, 5);
+  assert.equal(h.search.searches.at(-1)?.query.category, 'FACTURA');
+  assert.deepEqual(h.search.searches.at(-1)?.query.period, new Date('2026-06-01T00:00:00.000Z'));
+  assert.deepEqual(h.delivered, []);
+  assert.deepEqual(h.llmCalls, []);
+});
+
+test('consulta de documentos de junio mantiene el foco en 6 y muestra 5 opciones', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-30T12:00:00Z') });
+  t.mock.method(Math, 'random', () => 0);
+  const h = inventoryCatalog();
+
+  const reply = await h.handle('¿Qué documentos tienes de junio?');
+
+  const replyText = (reply?.text ?? '').replaceAll('*', '');
+  assert.match(replyText, /6 documentos de junio de 2026/i);
+  assert.match(replyText, /(?:muestro|opciones).*5|5.*(?:muestro|opciones)/i);
+  assert.equal(h.requests.state.opciones?.length, 5);
+  assert.deepEqual(h.delivered, []);
+});
+
+test('más de una factura incluye septiembre 3 y junio 6, omite abril y febrero 1', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-30T12:00:00Z') });
+  t.mock.method(Math, 'random', () => 0);
+  const h = inventoryCatalog();
+
+  const reply = await h.handle('¿De qué meses tienes más de una factura?');
+
+  assert.match(reply?.text ?? '', /septiembre de 2026 \(3\)/i);
+  assert.match(reply?.text ?? '', /junio de 2026 \(6\)/i);
+  assert.doesNotMatch(reply?.text ?? '', /abril|febrero/i);
+  assert.deepEqual(h.search.monthLookups, ['FACTURA']);
+  assert.deepEqual(h.delivered, []);
+  assert.deepEqual(h.llmCalls, []);
+});
+
+test('más de una factura sin meses repetidos responde que no hay ninguno', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-30T12:00:00Z') });
+  const h = inventoryCatalog();
+  h.search.catalog = h.search.catalog!.filter((doc) => doc.id === 'apr-1' || doc.id === 'feb-1');
+
+  const reply = await h.handle('¿De qué meses tienes más de una factura?');
+
+  assert.match(reply?.text ?? '', /no tengo meses con más de una factura/i);
+  assert.doesNotMatch(reply?.text ?? '', /abril|febrero/i);
+  assert.deepEqual(h.delivered, []);
+});
+
+test('más de una factura no presenta documentos sin periodo como un mes', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-30T12:00:00Z') });
+  const h = inventoryCatalog();
+  t.mock.method(h.search, 'mesesDe', async () => [
+    { period: new Date('2026-09-01T00:00:00Z'), count: 3 },
+    { period: null, count: 2 },
+  ] as never);
+
+  const reply = await h.handle('¿De qué meses tienes más de una factura?');
+
+  assert.match(reply?.text ?? '', /septiembre de 2026 \(3\)/i);
+  assert.doesNotMatch(reply?.text ?? '', /sin mes/i);
+});
+
+test('el total mostrado respeta las exclusiones de la solicitud y no el tamaño del catálogo', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-30T12:00:00Z') });
+  t.mock.method(Math, 'random', () => 0);
+  const h = inventoryCatalog();
+  h.requests.state = { ...emptyRequest(), rechazados: ['jun-6'] };
+
+  const reply = await h.handle('Pásame las facturas de junio');
+
+  assert.match((reply?.text ?? '').replaceAll('*', ''), /5 facturas de junio de 2026/i);
+  assert.equal(h.requests.state.opciones?.length, 5);
+  assert.ok(h.requests.state.opciones?.every((option) => option.id !== 'jun-6'));
+  assert.deepEqual(h.delivered, []);
+});
+
+test('una página de cinco entre doce informa el total real, no cinco ni seis', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-30T12:00:00Z') });
+  t.mock.method(Math, 'random', () => 0);
+  const h = inventoryCatalog();
+  h.search.catalog = Array.from({ length: 12 }, (_, i) =>
+    document(`jun-${i + 1}`, `FACTURA_JUNIO_${i + 1}.pdf`, 'FACTURA', '2026-06'));
+
+  const reply = await h.handle('Pásame las facturas de junio');
+
+  assert.match((reply?.text ?? '').replaceAll('*', ''), /12 facturas de junio de 2026/i);
+  assert.equal(h.requests.state.opciones?.length, 5);
+  assert.deepEqual(h.delivered, []);
 });

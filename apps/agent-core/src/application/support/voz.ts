@@ -195,6 +195,10 @@ export function encabezadoLista(cuantos: number, que: string): string {
   ]);
 }
 
+export function encabezadoListaLimitada(total: number, mostrados: number, que: string): string {
+  return `Encontré ${n(String(total))} ${que}. Te muestro ${n(String(mostrados))} opciones:`;
+}
+
 // ── Varios documentos en un mensaje ─────────────────────────────────────
 
 /** "a", "a y b", "a, b y c". */

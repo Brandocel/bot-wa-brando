@@ -43,8 +43,28 @@ export class DocumentSearchService {
     query: SearchQuery,
     limit = 5,
   ): Promise<Document[]> {
+    const where = this.searchWhere(scopes, query);
+    if (!where) return [];
+
+    return this.prisma.document.findMany({
+      where,
+      orderBy: [{ period: 'desc' }, { name: 'asc' }],
+      take: limit,
+    });
+  }
+
+  /** Total buscable con exactamente los filtros de search(), sin paginar. */
+  async count(scopes: readonly OrgScope[], query: SearchQuery): Promise<number> {
+    const where = this.searchWhere(scopes, query);
+    return where ? this.prisma.document.count({ where }) : 0;
+  }
+
+  private searchWhere(
+    scopes: readonly OrgScope[],
+    query: SearchQuery,
+  ): Prisma.DocumentWhereInput | null {
     const scoped = this.scopeFilter(scopes, query);
-    if (scoped.length === 0) return [];
+    if (scoped.length === 0) return null;
 
     const filters: Prisma.DocumentWhereInput[] = [];
 
@@ -93,17 +113,13 @@ export class DocumentSearchService {
       });
     }
 
-    return this.prisma.document.findMany({
-      where: {
-        // QUARANTINE nunca se entrega: un archivo cuya organización no pudimos
-        // determinar es exactamente el que no debe salir. DELETED tampoco.
-        status: 'INDEXED',
-        OR: scoped,
-        AND: filters,
-      },
-      orderBy: [{ period: 'desc' }, { name: 'asc' }],
-      take: limit,
-    });
+    return {
+      // QUARANTINE nunca se entrega: un archivo cuya organización no pudimos
+      // determinar es exactamente el que no debe salir. DELETED tampoco.
+      status: 'INDEXED',
+      OR: scoped,
+      AND: filters,
+    };
   }
 
   /**
