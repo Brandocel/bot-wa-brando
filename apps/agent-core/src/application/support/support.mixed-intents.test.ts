@@ -645,6 +645,26 @@ test('cierre inicial con petición explícita usa la estructura, no amplía CIER
   }
 });
 
+test('"nada más" pegado al pedido es "solo", no un cierre', () => {
+  assert.equal(separarPeticionMixta('Nada más quiero la de marzo')?.marcador ?? null, null);
+  assert.equal(separarPeticionMixta('nada mas necesito la factura de marzo')?.marcador ?? null, null);
+  // Separado, sí cierra.
+  assert.equal(separarPeticionMixta('Nada más, ahora quiero un contrato')?.marcador, 'CIERRE');
+  assert.equal(separarPeticionMixta('Es todo ahora necesito un contrato')?.marcador, 'CIERRE');
+});
+
+test('"Nada más quiero la de marzo" con una factura pendiente conserva la factura', async (t) => {
+  fixedRuntime(t);
+  const h = harness();
+  h.seed({ ...empty(), category: 'FACTURA', ultimaPregunta: 'periodo', preguntas: 1, updatedAt: NOW });
+  await h.handle('Nada más quiero la de marzo');
+  // Cerrar solo al entregar, nunca antes de buscar (eso sería abandonarla).
+  assert.ok(h.events.indexOf('close') === -1 || h.events.indexOf('close') > h.events.indexOf('search'));
+  assert.equal(h.saves[0]?.category, 'FACTURA');
+  assert.equal(h.saves[0]?.period, '2026-03-01T00:00:00.000Z');
+  assert.deepEqual(h.deliveries.map((d) => d.id), ['invoice-03']);
+});
+
 test('una pregunta inicial seguida de petición no abandona la solicitud anterior', async (t) => {
   fixedRuntime(t);
   const h = harness();

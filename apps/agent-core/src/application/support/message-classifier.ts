@@ -213,12 +213,16 @@ export function separarPeticionMixta(texto: string): {
     // Una pregunta inicial ("¿ya está?, quiero...") no abandona el pedido.
     // Compruébalo antes de normalizar, que elimina los signos.
     if (/[?¿]/.test(inicio)) continue;
-    const prefijo = normalizar(inicio)
-      .replace(/(?:\s+(?:ahora|pero|mejor))+$/, '');
+    const sinSignos = normalizar(inicio);
+    const prefijo = sinSignos.replace(/(?:\s+(?:ahora|pero|mejor))+$/, '');
     // CIERRE también se usa para encontrar frases dentro de un mensaje;
     // aquí debe cubrir TODO el prefijo para no recortar contenido documental.
     const cierre = CIERRE.exec(prefijo);
-    const marcador = cierre?.[0] === prefijo && prefijo !== '' ? 'CIERRE'
+    // Y tiene que ir SEPARADO del pedido (coma, punto o "ahora/pero/mejor"):
+    // "Nada más, ahora quiero un contrato" cierra, pero "Nada más quiero la
+    // de marzo" es "solo quiero la de marzo" y no debe tirar la solicitud.
+    const separado = /[,.;:!]\s*$/.test(inicio) || sinSignos !== prefijo;
+    const marcador = cierre?.[0] === prefijo && prefijo !== '' && separado ? 'CIERRE'
       : PAUSA.test(prefijo) ? 'PAUSA'
       : /^(?:muchas )?gracias$/.test(prefijo) ? 'CORTESIA'
       : ACUSE.test(prefijo) ? 'ACUSE'
