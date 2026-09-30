@@ -1465,7 +1465,16 @@ for (const [text, selected] of [
     const h = selectionOptions();
     const options = structuredClone(h.requests.state.opciones);
 
-    const reply = await h.handle(text);
+    let reply = await h.handle(text);
+
+    // Con negaciones se confirma antes de mandar: la gente escribe rápido
+    // y esas frases se prestan a leerse al revés.
+    if (/\b(no|menos|excepto)\b/i.test(text) && !/^No, mejor/.test(text)) {
+      assert.equal(reply?.awaiting, 'CLIENTE');
+      assert.match(reply?.text ?? '', /Para confirmar/);
+      assert.deepEqual(h.delivered, [], 'nada sale antes del "sí"');
+      reply = await h.handle('sí');
+    }
 
     assert.equal(reply?.awaiting, 'NADIE');
     assert.deepEqual(h.search.byIdCalls, selected.map((n) => `selection-${n}`));
@@ -1518,6 +1527,7 @@ test('una exclusión no renumera la lista ni afecta selecciones de turnos poster
   const options = structuredClone(h.requests.state.opciones);
 
   await h.handle('Todas menos la 3');
+  await h.handle('sí');
   assert.deepEqual(h.search.byIdCalls, ['selection-1', 'selection-2', 'selection-4', 'selection-5']);
   await h.handle('Ahora la 3 y la 4');
   await h.handle('Y la 5');
@@ -1672,4 +1682,44 @@ test('una página de cinco entre doce informa el total real, no cinco ni seis', 
   assert.match((reply?.text ?? '').replaceAll('*', ''), /12 facturas de junio de 2026/i);
   assert.equal(h.requests.state.opciones?.length, 5);
   assert.deepEqual(h.delivered, []);
+});
+
+test('"la 2 no, la 1" confirma la 1 y con "sí" la entrega, nunca la rechazada', async () => {
+  const { h, documentA } = pendingDocumentOptions();
+
+  const confirmacion = await h.handle('la 2 no, la 1');
+  assert.match(confirmacion?.text ?? '', /Para confirmar[\s\S]*FACTURA_A\.pdf/);
+  assert.doesNotMatch(confirmacion?.text ?? '', /FACTURA_B\.pdf/);
+  assert.deepEqual(h.delivered, []);
+
+  await h.handle('sí');
+  assert.deepEqual(entregados(h), [documentA.name]);
+});
+
+test('si a la confirmación contesta "no", no se manda nada y se vuelve a preguntar', async () => {
+  const { h } = pendingDocumentOptions();
+
+  await h.handle('la 2 no, la 1');
+  const reply = await h.handle('no');
+
+  assert.deepEqual(h.delivered, []);
+  assert.match(reply?.text ?? '', /números/);
+  assert.equal(h.requests.state.porConfirmar, null);
+});
+
+test('"No, la 1" entrega la 1', async () => {
+  const { h, documentA } = pendingDocumentOptions();
+
+  await h.handle('No, la 1');
+
+  assert.deepEqual(entregados(h), [documentA.name]);
+});
+
+test('"la 2 no" no entrega la 2', async () => {
+  const { h } = pendingDocumentOptions();
+
+  const reply = await h.handle('la 2 no');
+
+  assert.deepEqual(h.delivered, []);
+  assert.equal(reply?.awaiting, 'CLIENTE');
 });

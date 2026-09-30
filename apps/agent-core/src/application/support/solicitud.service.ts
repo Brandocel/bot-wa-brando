@@ -44,6 +44,13 @@ export interface Solicitud {
   /** Documentos que ya dijo que no son: no se vuelven a ofrecer. */
   rechazados: string[];
   /**
+   * Números de la lista que el bot entendió de una selección con
+   * negaciones ("la 2 no, la 3", "todas menos la 2") y que esperan un "sí"
+   * antes de mandarse: la gente escribe rápido y esas frases se prestan a
+   * leerse al revés.
+   */
+  porConfirmar?: number[] | null;
+  /**
    * Mensaje con varios pedidos que quedó esperando a que dijera de qué
    * empresa. Al elegirla se vuelve a partir y se atiende entero.
    */

@@ -195,6 +195,15 @@ export function encabezadoLista(cuantos: number, que: string): string {
   ]);
 }
 
+/** Antes de mandar una selección con negaciones: lo que se entendió. */
+export function confirmarSeleccion(elegidas: readonly string[]): string {
+  return `Para confirmar, te mando:\n${elegidas.join('\n')}\n\n¿Va? Responde *sí* o dime los números correctos.`;
+}
+
+export function corregirSeleccion(): string {
+  return 'Va, no mando nada todavía. Dime los *números* que quieres de la lista.';
+}
+
 export function encabezadoListaLimitada(total: number, mostrados: number, que: string): string {
   return `Encontré ${n(String(total))} ${que}. Te muestro ${n(String(mostrados))} opciones:`;
 }
