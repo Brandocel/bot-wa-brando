@@ -49,11 +49,11 @@ export function loginPage(error = false): string {
   return `<!doctype html>
 <html lang="es"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Panel · Entrar</title>${STYLES}</head>
+<title>Jarvis · Entrar</title>${STYLES}</head>
 <body class="centered">
   <form class="card login" id="form">
     <span class="logo">${icono('bot', '')}</span>
-    <h1>Hortia</h1>
+    <h1>Jarvis</h1>
     <p class="muted small" style="margin:-10px 0 0">Panel de operación</p>
     ${error ? '<div class="alert">Correo o contraseña incorrectos.</div>' : ''}
     <label>Correo<input type="email" name="email" required autocomplete="username"></label>
@@ -88,7 +88,7 @@ export function panelPage(): string {
   return `<!doctype html>
 <html lang="es"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Panel de operación</title>${STYLES}</head>
+<title>Jarvis · Panel</title>${STYLES}</head>
 <body>
 <div class="app" id="app">
 
@@ -96,7 +96,7 @@ export function panelPage(): string {
   <aside class="nav" id="nav">
     <div class="nav-brand">
       <span class="logo">${icono('bot', '')}</span>
-      <span class="nav-text marca"><strong>Hortia</strong><small>Panel de operación</small></span>
+      <span class="nav-text marca"><strong>Jarvis</strong><small>Panel de operación</small></span>
       <button class="icon nav-text" id="nav-plegar" title="Plegar menú">${icono('panel')}</button>
     </div>
     <nav class="nav-items">
