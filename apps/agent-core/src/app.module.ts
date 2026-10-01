@@ -47,6 +47,7 @@ import { PanelGuard } from './infrastructure/http/panel/panel.guard';
 import { OutboxDispatcher } from './infrastructure/persistence/outbox.dispatcher';
 import { FlagsService } from './infrastructure/persistence/flags.service';
 import { LimitesService } from './infrastructure/persistence/limites.service';
+import { ModelosService } from './infrastructure/persistence/modelos.service';
 import { LineasGatewayService } from './infrastructure/whatsapp/lineas-gateway.service';
 import { PrismaService } from './infrastructure/persistence/prisma.service';
 import { MessageWorker } from './infrastructure/queue/message.worker';
@@ -71,6 +72,7 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     PrismaService,
     FlagsService,
     LimitesService,
+    ModelosService,
     LineasGatewayService,
     QueueService,
     MessageWorker,

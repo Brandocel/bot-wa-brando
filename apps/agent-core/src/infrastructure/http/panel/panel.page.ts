@@ -978,7 +978,7 @@ const VISTAS = {
   },
 
   async ajustes() {
-    const r = await api('ajustes/limites');
+    const [r, m] = await Promise.all([api('ajustes/limites'), api('ajustes/modelos')]);
     const esAdmin = yo?.role === 'ADMIN';
     const l = r.limites;
 
@@ -1036,7 +1036,38 @@ const VISTAS = {
           : '<p class="muted small">Solo un administrador puede cambiarlos.</p>') +
       '</form>';
 
-    return '<div class="ajustes">' + uso + formulario + '</div>';
+    const selector = (tarea, etiqueta, ayuda) =>
+      '<label>' + etiqueta +
+        '<select name="' + tarea + '"' + (esAdmin ? '' : ' disabled') + '>' +
+          m.disponibles.map((d) =>
+            '<option value="' + d.id + '"' + (m.modelos[tarea] === d.id ? ' selected' : '') + '>' +
+              esc(d.nombre) + ' · $' + d.entrada + ' / $' + d.salida + ' USD' +
+              (m.defecto[tarea] === d.id ? ' (recomendado)' : '') +
+            '</option>').join('') +
+        '</select>' +
+        '<small class="muted">' + ayuda + '</small>' +
+      '</label>';
+
+    const modelos =
+      '<form class="card form-alta" id="form-modelos">' +
+        '<h3>Modelos de IA</h3>' +
+        '<p class="muted small">Precio de lista por millón de tokens (entrada / salida). ' +
+          'Entender y redactar pasan en cada mensaje: ahí es donde se nota el gasto. ' +
+          'Clasificar pasa una vez por archivo.</p>' +
+        '<div class="campos">' +
+          selector('conversacion', 'Entender mensajes', 'Saca del mensaje qué documento, mes o folio pide el cliente.') +
+          selector('redaccion', 'Redactar respuestas', 'Escribe la respuesta en lenguaje natural.') +
+          selector('clasificacion', 'Clasificar archivos', 'Decide si un archivo se puede entregar o es interno o sensible.') +
+        '</div>' +
+        '<ul class="muted small modelos-ayuda">' +
+          m.disponibles.map((d) => '<li><strong>' + esc(d.nombre) + ':</strong> ' + esc(d.descripcion) + '</li>').join('') +
+        '</ul>' +
+        (esAdmin
+          ? '<button type="submit">Guardar modelos</button>'
+          : '<p class="muted small">Solo un administrador puede cambiarlos.</p>') +
+      '</form>';
+
+    return '<div class="ajustes">' + uso + formulario + modelos + '</div>';
   },
 
   async cuarentena() {
@@ -1198,6 +1229,22 @@ document.addEventListener('submit', async (e) => {
       aviso('Topes guardados: aplican desde el siguiente mensaje');
       pintar('ajustes');
       pintarResumen();
+    } catch (err) { aviso(err.message, 'error'); }
+    return;
+  }
+
+  if (e.target.id === 'form-modelos') {
+    e.preventDefault();
+    const f = e.target;
+    const datos = {
+      conversacion: f.conversacion.value,
+      redaccion: f.redaccion.value,
+      clasificacion: f.clasificacion.value,
+    };
+    try {
+      await enviar('ajustes/modelos', datos);
+      aviso('Modelos guardados: aplican desde el siguiente mensaje');
+      pintar('ajustes');
     } catch (err) { aviso(err.message, 'error'); }
     return;
   }
@@ -1816,6 +1863,10 @@ const STYLES = `<link rel="preconnect" href="https://fonts.googleapis.com">
   #form-limites .campos { margin-bottom: 14px; }
   #form-limites label small { font-weight: 400; font-size: 12px; }
   #form-limites .check { margin-bottom: 16px; font-weight: 600; }
+  #form-modelos .campos { margin-bottom: 12px; }
+  #form-modelos select { width: 100%; }
+  .modelos-ayuda { margin: 0 0 16px; padding-left: 18px; }
+  .modelos-ayuda li { margin-bottom: 4px; }
   @media (max-width: 1100px) { .ajustes { grid-template-columns: 1fr; } }
   .icon {
     background: none; border: 1px solid transparent; color: var(--suave); cursor: pointer;

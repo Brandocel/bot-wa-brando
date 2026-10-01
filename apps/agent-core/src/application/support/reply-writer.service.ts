@@ -53,6 +53,7 @@ export class ReplyWriterService {
 
   async write(brief: ReplyBrief, ctx: ReplyContext): Promise<string> {
     const drafted = await this.llm.draft({
+      tarea: 'redaccion',
       system: persona(ctx),
       user: instruction(brief),
       maxTokens: 150,

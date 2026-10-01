@@ -154,6 +154,7 @@ export class SlotExtractorService {
     }
 
     const extracted = await this.llm.extract({
+      tarea: 'conversacion',
       system: systemPrompt(
         today,
         pendiente,
