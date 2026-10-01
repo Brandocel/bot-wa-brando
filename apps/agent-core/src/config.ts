@@ -50,10 +50,6 @@ export const config = {
   /** Vacío = el bot funciona igual, pero sin conversación en lenguaje normal. */
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || null,
 
-  llm: {
-    model: process.env.ANTHROPIC_MODEL ?? 'claude-opus-5',
-  },
-
   google: {
     /**
      * JSON completo de la cuenta de servicio, tal como lo descarga Google.

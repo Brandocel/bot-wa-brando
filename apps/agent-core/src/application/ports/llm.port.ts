@@ -9,6 +9,12 @@
  * no hay ninguna herramienta que el modelo pueda invocar desde aquí.
  */
 
+/**
+ * Para qué se llama al modelo. Cada tarea puede ir con un modelo distinto
+ * (se elige en el panel): no todas pesan ni cuestan lo mismo.
+ */
+export type TareaLlm = 'conversacion' | 'redaccion' | 'clasificacion';
+
 export interface LlmPort {
   /**
    * Devuelve un objeto que cumple el esquema, o null si no lo logró.
@@ -16,6 +22,7 @@ export interface LlmPort {
    * hace es escalar a un humano, no adivinar.
    */
   extract<T>(input: {
+    tarea: TareaLlm;
     system: string;
     user: string;
     schema: Record<string, unknown>;
@@ -24,6 +31,7 @@ export interface LlmPort {
 
   /** Redacta una respuesta corta a partir de datos ya resueltos. */
   draft(input: {
+    tarea: TareaLlm;
     system: string;
     user: string;
     maxTokens?: number;

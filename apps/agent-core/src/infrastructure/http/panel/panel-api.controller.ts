@@ -29,6 +29,13 @@ import {
   LimitesService,
   type Limites,
 } from '../../persistence/limites.service';
+import {
+  MODELOS_DEFECTO,
+  MODELOS_DISPONIBLES,
+  ModelosService,
+  esModeloValido,
+  type Modelos,
+} from '../../persistence/modelos.service';
 import { OutboxDispatcher } from '../../persistence/outbox.dispatcher';
 import { PanelAuthService, SESSION_COOKIE } from './panel-auth.service';
 import { PanelGuard, readCookie, type PanelRequest } from './panel.guard';
@@ -64,6 +71,7 @@ export class PanelApiController {
     private readonly outbox: OutboxDispatcher,
     private readonly sync: DriveSyncService,
     private readonly limites: LimitesService,
+    private readonly modelos: ModelosService,
   ) {}
 
   /**
@@ -225,6 +233,36 @@ export class PanelApiController {
 
     const nuevos = await this.limites.guardar(limpios);
     this.logger.warn(`topes de mensajes cambiados por ${quien}: ${JSON.stringify(nuevos)}`);
+    return nuevos;
+  }
+
+  /** Qué modelo usa cada tarea y entre cuáles se puede elegir. */
+  @UseGuards(PanelGuard)
+  @Get('ajustes/modelos')
+  async models() {
+    return {
+      modelos: await this.modelos.actuales(),
+      disponibles: MODELOS_DISPONIBLES,
+      defecto: MODELOS_DEFECTO,
+    };
+  }
+
+  /** Cambia el modelo de una o varias tareas. Solo ADMIN: mueve el gasto. */
+  @UseGuards(PanelGuard)
+  @Post('ajustes/modelos')
+  async setModels(@Req() req: PanelRequest, @Body() body: Partial<Modelos>) {
+    const quien = this.requireAdmin(req);
+    const limpios: Partial<Modelos> = {};
+    for (const tarea of ['conversacion', 'redaccion', 'clasificacion'] as const) {
+      if (body[tarea] === undefined) continue;
+      if (!esModeloValido(body[tarea])) {
+        throw new BadRequestException(`${tarea}: modelo no permitido`);
+      }
+      limpios[tarea] = body[tarea];
+    }
+
+    const nuevos = await this.modelos.guardar(limpios);
+    this.logger.warn(`modelos de IA cambiados por ${quien}: ${JSON.stringify(nuevos)}`);
     return nuevos;
   }
 

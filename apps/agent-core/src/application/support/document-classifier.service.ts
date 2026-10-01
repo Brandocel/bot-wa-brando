@@ -33,6 +33,7 @@ export class DocumentClassifierService {
     if (!this.conModelo) return porReglas(archivo);
 
     const respuesta = await this.llm.extract({
+      tarea: 'clasificacion',
       system: SYSTEM,
       user: describir(archivo),
       schema: SCHEMA,

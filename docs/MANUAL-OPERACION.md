@@ -194,7 +194,10 @@ Detalles que importan:
 ## 6. Modelo de lenguaje y costo
 
 - `ANTHROPIC_API_KEY` vacía = el bot funciona con reglas y plantillas; solo pierde las frases libres.
-- `ANTHROPIC_MODEL` (por defecto `claude-opus-5`). Para este uso, `claude-haiku-4-5` es ~5× más barato y rinde igual: cámbialo en Render → agent-core → Environment. El código ya lo soporta.
+- El modelo se elige **por tarea** en el panel → Ajustes → Modelos de IA (solo ADMIN, aplica al siguiente mensaje):
+  - *Entender mensajes* y *Redactar respuestas* pasan en cada mensaje: por defecto Haiku 4.5, el más barato.
+  - *Clasificar archivos* pasa una vez por archivo y equivocarse ahí sale caro: por defecto Sonnet 5.5.
+- `ANTHROPIC_MODEL` ya no se usa; si sigue en Render, se puede borrar.
 - Cuándo se llama al modelo: solo cuando las reglas no bastan ("lo del contrato que firmamos") y en charla libre ("¿qué me mandaste?"). Facturas por mes, folios, listas, saludos, gracias: cero llamadas.
 - El modelo **nunca** decide permisos, qué entregar ni cuándo escalar. Eso es código. Un prompt malicioso de un cliente no puede sacar nada.
 
@@ -211,7 +214,7 @@ Detalles que importan:
 | `DATABASE_URL` | Internal Database URL de bot-wa-db (la interna, no la externa) |
 | `GATEWAY_URL` / `GATEWAY_API_KEY` | Se heredan del gateway por blueprint |
 | `OWNER_WA_ID` | Tu número: `521XXXXXXXXXX@c.us`. Si está mal, no eres OWNER y no tienes comandos. `/id` te lo dice |
-| `ANTHROPIC_API_KEY` · `ANTHROPIC_MODEL` | Modelo (opcional) |
+| `ANTHROPIC_API_KEY` | Llave de Anthropic (opcional). El modelo se elige en el panel |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | JSON de la cuenta de servicio en una línea (opcional: sin esto no hay Drive) |
 | `MAX_DELIVERABLE_BYTES` · `DRIVE_SYNC_INTERVAL_MS` · `INCOMING_WORKERS` (mensajes atendidos a la vez, 4) | Opcionales |
 

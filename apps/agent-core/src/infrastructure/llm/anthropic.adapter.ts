@@ -1,18 +1,19 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { Injectable, Logger } from '@nestjs/common';
 import { config } from '../../config';
-import type { LlmPort } from '../../application/ports/llm.port';
+import type { LlmPort, TareaLlm } from '../../application/ports/llm.port';
+import { ModelosService } from '../persistence/modelos.service';
 
 /**
  * Esfuerzo bajo en todas las llamadas.
  *
  * Extraer tres campos o redactar dos frases no requiere razonar, y en los
- * modelos que piensan por defecto (Opus 5) el razonamiento también se
- * paga. Haiku 4.5 no acepta el parámetro: ahí no se manda.
+ * modelos que piensan por defecto el razonamiento también se paga. Haiku
+ * 4.5 no acepta el parámetro: ahí no se manda.
  */
-const ESFUERZO: { effort?: 'low' } = /haiku/i.test(config.llm.model)
-  ? {}
-  : { effort: 'low' };
+function esfuerzo(model: string): { effort?: 'low' } {
+  return /haiku/i.test(model) ? {} : { effort: 'low' };
+}
 
 /**
  * ADAPTER del LlmPort contra la API de Anthropic.
@@ -26,6 +27,13 @@ export class AnthropicAdapter implements LlmPort {
   private readonly logger = new Logger(AnthropicAdapter.name);
   private client: Anthropic | null = null;
 
+  /** El modelo de cada tarea se elige en el panel (Ajustes). */
+  constructor(private readonly modelos: ModelosService) {}
+
+  private modelo(tarea: TareaLlm): Promise<string> {
+    return this.modelos.para(tarea);
+  }
+
   private sdk(): Anthropic | null {
     if (!config.anthropicApiKey) return null;
     this.client ??= new Anthropic({ apiKey: config.anthropicApiKey });
@@ -33,6 +41,7 @@ export class AnthropicAdapter implements LlmPort {
   }
 
   async extract<T>(input: {
+    tarea: TareaLlm;
     system: string;
     user: string;
     schema: Record<string, unknown>;
@@ -40,6 +49,7 @@ export class AnthropicAdapter implements LlmPort {
   }): Promise<T | null> {
     const client = this.sdk();
     if (!client) return null;
+    const model = await this.modelo(input.tarea);
 
     // Un reintento y nada más. Si el modelo no produjo un objeto válido dos
     // veces seguidas, el tercero tampoco va a servir y cada intento cuesta
@@ -47,7 +57,7 @@ export class AnthropicAdapter implements LlmPort {
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         const response = await client.messages.create({
-          model: config.llm.model,
+          model,
           max_tokens: 512,
           system: input.system,
           messages: [{ role: 'user', content: input.user }],
@@ -58,7 +68,7 @@ export class AnthropicAdapter implements LlmPort {
             // Esfuerzo bajo a propósito: sacar tres campos de una frase corta
             // no es un problema difícil, y del otro lado hay una persona
             // mirando "escribiendo..." en WhatsApp.
-            ...ESFUERZO,
+            ...esfuerzo(model),
           },
         });
 
@@ -78,6 +88,7 @@ export class AnthropicAdapter implements LlmPort {
   }
 
   async draft(input: {
+    tarea: TareaLlm;
     system: string;
     user: string;
     maxTokens?: number;
@@ -85,15 +96,17 @@ export class AnthropicAdapter implements LlmPort {
     const client = this.sdk();
     if (!client) return null;
 
+    const model = await this.modelo(input.tarea);
+
     try {
       const response = await client.messages.create({
-        model: config.llm.model,
+        model,
         max_tokens: input.maxTokens ?? 512,
         system: input.system,
         messages: [{ role: 'user', content: input.user }],
         // Esfuerzo bajo: redactar dos frases no requiere pensar, y en los
         // modelos que piensan por defecto el razonamiento también se paga.
-        ...(Object.keys(ESFUERZO).length > 0 ? { output_config: ESFUERZO } : {}),
+        ...(/haiku/i.test(model) ? {} : { output_config: esfuerzo(model) }),
       });
 
       return firstText(response);
