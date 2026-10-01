@@ -38,6 +38,7 @@ import {
   separarPeticionMixta,
   pideHumano,
   preguntaMeses,
+  preguntaNombreEntregado,
   preguntaSobreEntregado,
   quejaParaPersona,
   type Clasificacion,
@@ -380,7 +381,8 @@ export class SupportStrategy {
      * dar con el mismo archivo.
      */
     if (mencionaRechazo(message.body) || clas.motivo === 'documento_equivocado') {
-      await this.apuntarRechazo(turn, sol);
+      const rechazado = await this.apuntarRechazo(turn, sol);
+      if (rechazado) return rechazado;
     }
 
     /**
@@ -397,10 +399,14 @@ export class SupportStrategy {
      * factura es una factura. Es lo único que sobrevive al cierre.
      */
     const entregada = await this.solicitudes.ultimaEntrega(ctx.conversationId);
+    const necesitaContextoEntregado = !tieneDatos(sol) && !parseQuery(message.body).category;
+    const documentoEntregado = entregada && necesitaContextoEntregado
+      ? await this.search.byId(entregada.documentId, turn.scopes)
+      : null;
     const contexto: Solicitud =
-      tieneDatos(sol) || !entregada
+      tieneDatos(sol) || !documentoEntregado
         ? sol
-        : { ...sol, category: entregada.category };
+        : { ...sol, category: documentoEntregado.category };
 
     const conocido = describirSlots(contexto, scope.scopes);
     const enCurso = tieneDatos(contexto);
@@ -426,7 +432,13 @@ export class SupportStrategy {
     });
     if (intent.kind === 'other') {
       if (clas.tipo === 'SOLICITUD') clas.tipo = 'OTRO';
-      return { text: await this.smallTalk(turn, conocido, clas), awaiting: 'NADIE' };
+      // El historial y el contexto pueden nombrar la última entrega. Antes
+      // de enviarlos al redactor, comprobar su ID con el alcance actual.
+      const vigente = !entregada || (necesitaContextoEntregado
+        ? documentoEntregado !== null
+        : await this.search.byId(entregada.documentId, turn.scopes) !== null);
+      const writerTurn = vigente ? turn : { ...turn, history: [] };
+      return { text: await this.smallTalk(writerTurn, vigente ? conocido : [], clas), awaiting: 'NADIE' };
     }
     if (intent.kind === 'ambiguous') {
       const candidate = parseQuery(message.body);
@@ -1157,11 +1169,20 @@ export class SupportStrategy {
     // Con negaciones ("la 2 no, la 3", "todas menos la 2") se confirma
     // antes de mandar: son las frases que, mal escritas, se leen al revés.
     if (conExclusiones) {
+      const docs: Document[] = [];
+      const unavailable: string[] = [];
+      for (const opcion of elegidas) {
+        const doc = await this.search.byId(opcion.id, turn.scopes);
+        if (doc) docs.push(doc);
+        else unavailable.push(opcion.id);
+      }
+      if (unavailable.length > 0) return this.savedIdUnavailable(turn, unavailable);
+
       await this.solicitudes.guardar(turn.ctx.conversationId, {
         porConfirmar: elegidas.map((o) => o.n),
       });
       return {
-        text: voz.confirmarSeleccion(elegidas.map((o) => `*${o.n}.* ${o.nombre}`)),
+        text: voz.confirmarSeleccion(elegidas.map((o, index) => `*${o.n}.* ${docs[index]!.name}`)),
         awaiting: 'CLIENTE',
       };
     }
@@ -1176,10 +1197,13 @@ export class SupportStrategy {
     opciones: Opcion[],
   ): Promise<StrategyReply> {
     const docs: Document[] = [];
+    const unavailable: string[] = [];
     for (const o of elegidas) {
-      const doc = await this.search.byId(o.id);
+      const doc = await this.search.byId(o.id, turn.scopes);
       if (doc) docs.push(doc);
+      else unavailable.push(o.id);
     }
+    if (unavailable.length > 0) return this.savedIdUnavailable(turn, unavailable);
 
     // La lista sigue en su pantalla: se conserva para "y también la 4".
     return this.entregarLote(turn, docs, { faltan: [], listas: [], forzar: true, conservar: opciones });
@@ -1287,8 +1311,8 @@ export class SupportStrategy {
       return this.avanzar(turn, mergeSlots(actualizada, VACIA), actualizada);
     }
 
-    const documento = await this.search.byId(elegida.id);
-    if (!documento) return null;
+    const documento = await this.search.byId(elegida.id, turn.scopes);
+    if (!documento) return this.savedIdUnavailable(turn, [elegida.id]);
 
     // Una lista de UNA opción se consume al usarla: si siguiera viva, el
     // "ok" de después la volvería a entregar.
@@ -1315,8 +1339,16 @@ export class SupportStrategy {
     const entrega = await this.solicitudes.ultimaEntrega(turn.ctx.conversationId);
     if (!entrega) return null;
 
-    const documento = await this.search.byId(entrega.documentId);
-    if (!documento) return null;
+    const documento = await this.search.byId(entrega.documentId, turn.scopes);
+    if (!documento) return this.savedIdUnavailable(turn, [entrega.documentId]);
+
+    await this.scope.audit({
+      waId: turn.message.senderId,
+      query: turn.message.body,
+      documentId: documento.id,
+      decision: 'ALLOW',
+      decidedBy: 'ID guardado dentro del alcance vigente',
+    });
 
     const sent = await this.delivery.deliver(
       turn.message.chatId,
@@ -1334,6 +1366,23 @@ export class SupportStrategy {
       text: voz.reenvioFallido(documento.name, `#${ticket.number}`),
       awaiting: 'AGENTE',
       topic: documento.category,
+    };
+  }
+
+  /** Un ID guardado ya no es prueba de acceso; no revela cuál regla cambió. */
+  private async savedIdUnavailable(turn: Turn, ids: readonly string[]): Promise<StrategyReply> {
+    for (const documentId of ids) {
+      await this.scope.audit({
+        waId: turn.message.senderId,
+        query: turn.message.body,
+        documentId,
+        decision: 'DENY_SAVED_ID',
+        decidedBy: 'ID guardado sin coincidencia en el alcance vigente o el índice',
+      });
+    }
+    return {
+      text: 'Ya no puedo recuperar ese archivo de forma segura. Si todavía lo necesitas, dime cuál buscas.',
+      awaiting: 'CLIENTE',
     };
   }
 
@@ -1406,7 +1455,16 @@ export class SupportStrategy {
      * agosto?" → "no hay" → "¿de qué meses hay?" es de facturas).
      */
     const entregada = await this.solicitudes.ultimaEntrega(turn.ctx.conversationId);
-    const tipoEnJuego = categoriaDicha ?? sol.category ?? entregada?.category ?? null;
+    // La categoría de la solicitud pudo copiarse de una entrega anterior.
+    // Sin categoría explícita en este turno, revalidar también ese contexto.
+    const usaUltima = preguntaMeses(turn.message.body) && !categoriaDicha && entregada;
+    const documentoEntregado = usaUltima
+      ? await this.search.byId(entregada.documentId, turn.scopes)
+      : null;
+    if (usaUltima && !documentoEntregado) {
+      return this.savedIdUnavailable(turn, [entregada.documentId]);
+    }
+    const tipoEnJuego = categoriaDicha ?? sol.category ?? documentoEntregado?.category ?? null;
 
     if (preguntaMeses(turn.message.body) && tipoEnJuego) {
       const meses = await this.search.mesesDe(scopes, tipoEnJuego, organizationId);
@@ -1501,17 +1559,24 @@ export class SupportStrategy {
    */
   private async rechazar(turn: Turn, sol: Solicitud): Promise<StrategyReply | null> {
     const entregada = await this.solicitudes.ultimaEntrega(turn.ctx.conversationId);
+    const tieneOpciones = (sol.opciones?.length ?? 0) > 0;
+    const documentoEntregado = entregada && (!tieneOpciones || !sol.category)
+      ? await this.search.byId(entregada.documentId, turn.scopes)
+      : null;
+    if (!tieneOpciones && entregada && !documentoEntregado) {
+      return this.savedIdUnavailable(turn, [entregada.documentId]);
+    }
 
-    const ids = sol.opciones?.length
-      ? sol.opciones.filter((o) => o.tipo === 'documento').map((o) => o.id)
-      : entregada
-        ? [entregada.documentId]
+    const ids = tieneOpciones
+      ? (sol.opciones ?? []).filter((o) => o.tipo === 'documento').map((o) => o.id)
+      : documentoEntregado
+        ? [documentoEntregado.id]
         : [];
 
     if (ids.length === 0) return null;
 
     const rechazados = [...new Set([...sol.rechazados, ...ids])];
-    const category = sol.category ?? entregada?.category ?? null;
+    const category = sol.category ?? documentoEntregado?.category ?? null;
     const fallos = readFallos(sol) + 1;
 
     const actualizada = await this.solicitudes.guardar(turn.ctx.conversationId, {
@@ -1549,21 +1614,29 @@ export class SupportStrategy {
    * Apunta como rechazado lo último ofrecido o entregado, sin contestar
    * nada: el mensaje trae datos y sigue su camino con ellos.
    */
-  private async apuntarRechazo(turn: Turn, sol: Solicitud): Promise<void> {
+  private async apuntarRechazo(turn: Turn, sol: Solicitud): Promise<StrategyReply | null> {
     const entregada = await this.solicitudes.ultimaEntrega(turn.ctx.conversationId);
+    const tieneOpciones = (sol.opciones?.length ?? 0) > 0;
+    const documentoEntregado = entregada && (!tieneOpciones || !sol.category)
+      ? await this.search.byId(entregada.documentId, turn.scopes)
+      : null;
+    if (!tieneOpciones && entregada && !documentoEntregado) {
+      return this.savedIdUnavailable(turn, [entregada.documentId]);
+    }
 
-    const ids = sol.opciones?.length
-      ? sol.opciones.filter((o) => o.tipo === 'documento').map((o) => o.id)
-      : entregada
-        ? [entregada.documentId]
+    const ids = tieneOpciones
+      ? (sol.opciones ?? []).filter((o) => o.tipo === 'documento').map((o) => o.id)
+      : documentoEntregado
+        ? [documentoEntregado.id]
         : [];
-    if (ids.length === 0) return;
+    if (ids.length === 0) return null;
 
     await this.solicitudes.guardar(turn.ctx.conversationId, {
       rechazados: [...new Set([...sol.rechazados, ...ids])],
       opciones: null,
-      category: sol.category ?? entregada?.category ?? null,
+      category: sol.category ?? documentoEntregado?.category ?? null,
     });
+    return null;
   }
 
   /**
@@ -1577,8 +1650,13 @@ export class SupportStrategy {
     const entregada = await this.solicitudes.ultimaEntrega(turn.ctx.conversationId);
     if (!entregada) return null;
 
-    const doc = await this.search.byId(entregada.documentId);
-    if (!doc) return null;
+    const doc = await this.search.byId(entregada.documentId, turn.scopes);
+    if (!doc) return this.savedIdUnavailable(turn, [entregada.documentId]);
+
+    if (preguntaNombreEntregado(turn.message.body)) {
+      await this.guardarOpciones(turn, [doc]);
+      return { text: `El archivo que te mandé es *${doc.name}*.`, awaiting: 'CLIENTE', topic: doc.category };
+    }
 
     const porNombre = parseDocumentName(doc.name);
     const porDentro = parseDocumentContent(doc.extractedText);

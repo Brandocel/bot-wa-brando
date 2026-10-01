@@ -8,7 +8,7 @@ import { ReplyWriterService } from './reply-writer.service';
 import { SlotExtractorService } from './slot-extractor.service';
 import { SupportStrategy, type StrategyContext } from './support.strategy';
 import type { Solicitud } from './solicitud.service';
-import { clasificar, esPausa, leerNumero } from './message-classifier';
+import { clasificar, esPausa, leerNumero, preguntaSobreEntregado } from './message-classifier';
 
 const orgScope: OrgScope = {
   organizationId: 'org-allowed',
@@ -80,6 +80,7 @@ class MemorySearch {
   monthScopes: Array<readonly unknown[]> = [];
   inventoryScopes: Array<readonly unknown[]> = [];
   byIdCalls: string[] = [];
+  byIdScopes: Array<readonly OrgScope[] | undefined> = [];
   readonly contracts = [document('contract-1', 'CONTRATO_A.pdf'), document('contract-2', 'CONTRATO_B.pdf')];
   readonly sixInvoices = [
     '2025-09', '2025-10', '2025-11', '2025-12', '2026-01', '2026-02',
@@ -171,9 +172,13 @@ class MemorySearch {
     return this.textResults.get(String(query.text))?.length ?? 0;
   }
 
-  async byId(id: string): Promise<unknown | null> {
+  async byId(id: string, scopes?: readonly OrgScope[]): Promise<unknown | null> {
     this.byIdCalls.push(id);
-    if (this.catalog) return this.catalog.find((doc) => doc.id === id) ?? null;
+    this.byIdScopes.push(scopes);
+    if (this.catalog) {
+      const doc = this.catalog.find((entry) => entry.id === id) ?? null;
+      return doc && (!scopes || this.catalogMatches(scopes, {}).some((allowed) => allowed.id === id)) ? doc : null;
+    }
     if (id === 'previous-invoice') return document(id, 'FACTURA_2026-02_V3001.pdf');
     const custom = [...this.periodResults.values(), ...this.textResults.values()].flat();
     return custom.find((doc) => (doc as { id?: string }).id === id) ??
@@ -231,7 +236,7 @@ class ObservedSlotExtractor extends SlotExtractorService {
   }
 }
 
-function makeHarness(options: { senderName?: string | null; scopes?: OrgScope[]; history?: Array<{ role: 'cliente' | 'bot'; text: string; at: Date }>; llmResponse?: Record<string, unknown>; draftResponse?: string } = {}) {
+function makeHarness(options: { senderName?: string | null; scopes?: OrgScope[]; decision?: 'ALLOW' | 'DENY_NO_MEMBERSHIP' | 'DENY_UNVERIFIED'; history?: Array<{ role: 'cliente' | 'bot'; text: string; at: Date }>; llmResponse?: Record<string, unknown>; draftResponse?: string } = {}) {
   const requests = new MemoryRequests();
   const search = new MemorySearch();
   const escalations: unknown[] = [];
@@ -239,6 +244,8 @@ function makeHarness(options: { senderName?: string | null; scopes?: OrgScope[];
   const llmCalls: string[] = [];
   const draftCalls: string[] = [];
   const writerCalls: string[] = [];
+  const writerContexts: Array<Parameters<ReplyWriterService['write']>[1]> = [];
+  const audits: unknown[] = [];
   const scopes = options.scopes ?? [orgScope];
   const llm: LlmPort = {
     extract: async (input) => {
@@ -254,9 +261,9 @@ function makeHarness(options: { senderName?: string | null; scopes?: OrgScope[];
   const slots = new ObservedSlotExtractor(llm);
   const strategy = new SupportStrategy(
     {
-      resolve: async () => ({ decision: 'ALLOW', decidedBy: 'test', scopes }),
+      resolve: async () => ({ decision: options.decision ?? 'ALLOW', decidedBy: 'test', scopes }),
       denialFor: () => null,
-      audit: async () => undefined,
+      audit: async (input: unknown) => { audits.push(input); },
     } as never,
     slots,
     search as never,
@@ -273,6 +280,7 @@ function makeHarness(options: { senderName?: string | null; scopes?: OrgScope[];
     {
       write: async (...args: Parameters<ReplyWriterService['write']>) => {
         writerCalls.push(args[0].fallback);
+        writerContexts.push(structuredClone(args[1]));
         return replyWriter.write(...args);
       },
     } as never,
@@ -293,7 +301,7 @@ function makeHarness(options: { senderName?: string | null; scopes?: OrgScope[];
 
   return {
     handle, requests, search, escalations, delivered, llmCalls, draftCalls,
-    extractCalls: slots.calls, slotResults: slots.results, writerCalls, scopes,
+    extractCalls: slots.calls, slotResults: slots.results, writerCalls, writerContexts, scopes, audits,
   };
 }
 
@@ -1721,7 +1729,9 @@ for (const [text, selected] of [
     }
 
     assert.equal(reply?.awaiting, 'NADIE');
-    assert.deepEqual(h.search.byIdCalls, selected.map((n) => `selection-${n}`));
+    const ids = selected.map((n) => `selection-${n}`);
+    const confirma = /\b(no|menos|excepto)\b/i.test(text) && !/^No, mejor/.test(text);
+    assert.deepEqual(h.search.byIdCalls, confirma ? [...ids, ...ids] : ids);
     assert.deepEqual(entregados(h), selected.map((n) => `FACTURA_${n}.pdf`));
     assert.deepEqual(h.requests.state.opciones, options);
     assert.deepEqual(h.search.searches, []);
@@ -1772,12 +1782,17 @@ test('una exclusión no renumera la lista ni afecta selecciones de turnos poster
 
   await h.handle('Todas menos la 3');
   await h.handle('sí');
-  assert.deepEqual(h.search.byIdCalls, ['selection-1', 'selection-2', 'selection-4', 'selection-5']);
+  assert.deepEqual(h.search.byIdCalls, [
+    'selection-1', 'selection-2', 'selection-4', 'selection-5',
+    'selection-1', 'selection-2', 'selection-4', 'selection-5',
+  ]);
   await h.handle('Ahora la 3 y la 4');
   await h.handle('Y la 5');
 
   assert.deepEqual(h.search.byIdCalls, [
-    'selection-1', 'selection-2', 'selection-4', 'selection-5', 'selection-3', 'selection-4', 'selection-5',
+    'selection-1', 'selection-2', 'selection-4', 'selection-5',
+    'selection-1', 'selection-2', 'selection-4', 'selection-5',
+    'selection-3', 'selection-4', 'selection-5',
   ]);
   assert.deepEqual(h.requests.state.opciones, options);
   assert.deepEqual(h.llmCalls, []);
@@ -1968,6 +1983,31 @@ test('"la 2 no" no entrega la 2', async () => {
   assert.equal(reply?.awaiting, 'CLIENTE');
 });
 
+test('lectura por ID exacto reutiliza status y ventanas del filtro de búsqueda', async () => {
+  const searched: Record<string, unknown>[] = [];
+  const byId: Record<string, unknown>[] = [];
+  const service = new DocumentSearchService({
+    document: {
+      findMany: async ({ where }: { where: Record<string, unknown> }) => { searched.push(where); return []; },
+      findFirst: async ({ where }: { where: Record<string, unknown> }) => { byId.push(where); return null; },
+    },
+  } as never);
+  const scope: OrgScope = {
+    ...orgScope,
+    windows: [{ category: 'FACTURA', periodFrom: new Date('2026-03-01T00:00:00Z'), periodTo: new Date('2026-06-01T00:00:00Z') }],
+  };
+  await service.search([scope], { category: null, period: null, folio: null, text: null });
+  await service.byId('cached-B', [scope]);
+  assert.equal(byId[0]?.status, 'INDEXED');
+  assert.deepEqual(byId[0]?.OR, [{
+    organizationId: 'org-allowed', category: 'FACTURA',
+    period: { gte: scope.windows[0]!.periodFrom, lte: scope.windows[0]!.periodTo },
+  }]);
+  assert.deepEqual(byId, [{ ...searched[0], id: 'cached-B' }]);
+  assert.equal(await service.byId('cached-B', []), null);
+  assert.equal(byId.length, 1, 'sin scope no consulta la base');
+});
+
 const adversarialIntent = {
   categoria: 'FACTURA', periodo: '2026-03', folio: 'NINGUNO', empresa: 'NINGUNA',
   no_es_documento: false, tipo_mensaje: 'SOLICITUD',
@@ -2002,6 +2042,393 @@ for (const message of [
     assert.equal(h.draftCalls.length, h.writerCalls.length);
   });
 }
+
+function savedThreeOptions(
+  scopes: OrgScope[] = [structuredClone(orgScope)],
+  decision: 'ALLOW' | 'DENY_NO_MEMBERSHIP' | 'DENY_UNVERIFIED' = 'ALLOW',
+  harnessOptions: Parameters<typeof makeHarness>[0] = {},
+) {
+  const h = makeHarness({ ...harnessOptions, scopes, decision });
+  const docs = ['A', 'B', 'C'].map((letter) => document(`cached-${letter}`, `FACTURA_${letter}.pdf`));
+  h.search.catalog = docs;
+  h.requests.state = {
+    ...emptyRequest(), category: 'FACTURA',
+    opciones: docs.map((doc, index) => ({
+      n: index + 1, tipo: 'documento' as const, id: String(doc.id), nombre: String(doc.name),
+    })),
+  };
+  return { h, docs };
+}
+
+for (const decision of ['DENY_NO_MEMBERSHIP', 'DENY_UNVERIFIED'] as const) {
+  test(`alcance ${decision} impide consultar o entregar una opción guardada`, async () => {
+    const { h } = savedThreeOptions([], decision);
+    const reply = await h.handle('la 2');
+    assert.equal(reply, null);
+    assert.deepEqual(h.search.byIdCalls, []);
+    assert.deepEqual(h.search.searches, []);
+    assert.deepEqual(h.delivered, []);
+  });
+}
+
+test('opción guardada revalida el ID exacto con scopes vigentes sin nueva búsqueda', async () => {
+  const { h } = savedThreeOptions();
+  const options = structuredClone(h.requests.state.opciones);
+  await h.handle('la 2');
+  assert.deepEqual(h.search.byIdCalls, ['cached-B']);
+  assert.deepEqual(h.search.byIdScopes, [h.scopes]);
+  assert.deepEqual(entregados(h), ['FACTURA_B.pdf']);
+  assert.deepEqual(h.search.searches, []);
+  assert.deepEqual(h.requests.state.opciones, options);
+});
+
+const revocations: Array<[string, OrgScope[], string | null]> = [
+  ['categoría revocada', [{ ...orgScope, windows: [{ category: 'CONTRATO', periodFrom: null, periodTo: null }] }], null],
+  ['periodo fuera de ventana', [{ ...orgScope, windows: [{ category: 'FACTURA', periodFrom: new Date('2026-04-01T00:00:00Z'), periodTo: null }] }], null],
+  ['organización fuera de alcance', [{ ...orgScope, organizationId: 'org-other' }], null],
+  ['verificación retirada', [{ ...orgScope, windows: [{ category: 'COTIZACION', periodFrom: null, periodTo: null }], strippedByVerification: ['FACTURA'] }], null],
+  ['documento ya no indexado', [orgScope], 'QUARANTINE'],
+  ['documento eliminado', [orgScope], 'DELETED'],
+];
+for (const [reason, scopes, change] of revocations) {
+  test(`opción #2 ${reason}: niega sin sustitución ni búsqueda`, async () => {
+    const { h } = savedThreeOptions(structuredClone(scopes));
+    if (change) h.search.catalog![1]!.status = change;
+    const reply = await h.handle('la 2');
+    assert.equal(reply?.awaiting, 'CLIENTE');
+    assert.match(reply?.text ?? '', /no puedo|ya no|disponible/i);
+    assert.deepEqual(h.search.byIdCalls, ['cached-B']);
+    assert.deepEqual(h.search.searches, []);
+    assert.deepEqual(h.delivered, []);
+    assert.deepEqual(h.audits.map((audit) => ({
+      decision: (audit as { decision: string }).decision,
+      documentId: (audit as { documentId: string }).documentId,
+    })), [{ decision: 'DENY_SAVED_ID', documentId: 'cached-B' }]);
+    assert.deepEqual(h.requests.state.opciones?.map((o) => o.id), ['cached-A', 'cached-B', 'cached-C']);
+  });
+}
+
+test('selección múltiple parcialmente revocada no entrega ningún archivo', async () => {
+  const { h } = savedThreeOptions([{ ...orgScope, windows: [{ category: 'FACTURA', periodFrom: null, periodTo: null }] }]);
+  h.search.catalog![2]!.category = 'CONTRATO';
+  const reply = await h.handle('la 1 y la 3');
+  assert.equal(reply?.awaiting, 'CLIENTE');
+  assert.deepEqual(h.search.byIdCalls, ['cached-A', 'cached-C']);
+  assert.deepEqual(h.search.searches, []);
+  assert.deepEqual(h.delivered, []);
+  assert.doesNotMatch(reply?.text ?? '', /FACTURA_C|CONTRATO|marzo/i);
+  assert.deepEqual(h.audits.map((audit) => ({
+    decision: (audit as { decision: string }).decision,
+    documentId: (audit as { documentId: string }).documentId,
+  })), [{ decision: 'DENY_SAVED_ID', documentId: 'cached-C' }]);
+});
+
+test('exclusión confirma antes y revalida únicamente los IDs finales', async () => {
+  const { h } = savedThreeOptions();
+  const confirmation = await h.handle('todas menos la 2');
+  assert.equal(confirmation?.awaiting, 'CLIENTE');
+  assert.deepEqual(h.search.byIdCalls, ['cached-A', 'cached-C']);
+  await h.handle('sí');
+  assert.deepEqual(h.search.byIdCalls, ['cached-A', 'cached-C', 'cached-A', 'cached-C']);
+  assert.deepEqual(entregados(h), ['FACTURA_A.pdf', 'FACTURA_C.pdf']);
+  assert.deepEqual(h.search.searches, []);
+});
+
+test('exclusión revocada no confirma nombres guardados ni entrega el resto', async () => {
+  const { h } = savedThreeOptions([{ ...orgScope, windows: [{ category: 'FACTURA', periodFrom: null, periodTo: null }] }]);
+  h.search.catalog![2]!.category = 'CONTRATO';
+  const reply = await h.handle('todas menos la 2');
+  assert.equal(reply?.awaiting, 'CLIENTE');
+  assert.doesNotMatch(reply?.text ?? '', /FACTURA_A|FACTURA_C|CONTRATO|marzo/i);
+  assert.deepEqual(h.search.byIdCalls, ['cached-A', 'cached-C']);
+  assert.deepEqual(h.search.searches, []);
+  assert.deepEqual(h.delivered, []);
+  assert.equal(h.requests.state.porConfirmar, undefined);
+  assert.deepEqual(h.audits.map((audit) => ({
+    decision: (audit as { decision: string }).decision,
+    documentId: (audit as { documentId: string }).documentId,
+  })), [{ decision: 'DENY_SAVED_ID', documentId: 'cached-C' }]);
+});
+
+test('revocación posterior a confirmar una exclusión bloquea todo el envío', async () => {
+  const { h } = savedThreeOptions();
+  const confirmation = await h.handle('todas menos la 2');
+  assert.match(confirmation?.text ?? '', /FACTURA_A\.pdf.*FACTURA_C\.pdf/s);
+  h.scopes[0]!.windows = [{ category: 'CONTRATO', periodFrom: null, periodTo: null }];
+  const reply = await h.handle('sí');
+  assert.doesNotMatch(reply?.text ?? '', /FACTURA_A|FACTURA_C|marzo/i);
+  assert.deepEqual(h.search.byIdCalls, ['cached-A', 'cached-C', 'cached-A', 'cached-C']);
+  assert.deepEqual(h.search.searches, []);
+  assert.deepEqual(h.delivered, []);
+  assert.deepEqual(h.audits.map((audit) => ({
+    decision: (audit as { decision: string }).decision,
+    documentId: (audit as { documentId: string }).documentId,
+  })), [
+    { decision: 'DENY_SAVED_ID', documentId: 'cached-A' },
+    { decision: 'DENY_SAVED_ID', documentId: 'cached-C' },
+  ]);
+});
+
+for (const revoked of [false, true]) {
+  test(`una sola opción guardada elegida con esa ${revoked ? 'revocada' : 'autorizada'}`, async () => {
+    const scopes = revoked
+      ? [{ ...orgScope, windows: [{ category: 'CONTRATO' as const, periodFrom: null, periodTo: null }] }]
+      : [structuredClone(orgScope)];
+    const { h } = savedThreeOptions(scopes);
+    h.requests.state.opciones = [{ ...h.requests.state.opciones![1]!, n: 1 }];
+    const reply = await h.handle('esa');
+    assert.deepEqual(h.search.byIdCalls, ['cached-B']);
+    assert.deepEqual(h.search.searches, []);
+    assert.deepEqual(entregados(h), revoked ? [] : ['FACTURA_B.pdf']);
+    if (revoked) {
+      assert.doesNotMatch(reply?.text ?? '', /FACTURA_B|marzo/i);
+      assert.deepEqual(h.audits.map((audit) => ({
+        decision: (audit as { decision: string }).decision,
+        documentId: (audit as { documentId: string }).documentId,
+      })), [{ decision: 'DENY_SAVED_ID', documentId: 'cached-B' }]);
+    }
+  });
+}
+
+test('corrección no, la 3 conserva la referencia de la lista', async () => {
+  const { h } = savedThreeOptions();
+  await h.handle('no, la 3');
+  assert.deepEqual(h.search.byIdCalls, ['cached-C']);
+  assert.deepEqual(entregados(h), ['FACTURA_C.pdf']);
+  assert.deepEqual(h.search.searches, []);
+});
+
+for (const revoked of [false, true]) {
+  test(`reenvío de ID guardado ${revoked ? 'revocado' : 'autorizado'} no busca sustituto`, async () => {
+    const { h } = savedThreeOptions(revoked
+      ? [{ ...orgScope, windows: [{ category: 'CONTRATO', periodFrom: null, periodTo: null }] }]
+      : [structuredClone(orgScope)]);
+    h.requests.delivery = {
+      documentId: 'cached-B', name: 'FACTURA_B.pdf', category: 'FACTURA',
+      period: '2026-03-01T00:00:00.000Z', at: new Date().toISOString(),
+    };
+    const reply = await h.handle('Mándamela otra vez');
+    assert.deepEqual(h.search.byIdCalls, ['cached-B']);
+    assert.deepEqual(h.search.searches, []);
+    assert.deepEqual(entregados(h), revoked ? [] : ['FACTURA_B.pdf']);
+    if (revoked) {
+      assert.match(reply?.text ?? '', /no puedo|ya no|disponible/i);
+      assert.equal(h.audits.length, 1);
+    }
+  });
+}
+
+test('pregunta sobre última entrega revocada no lee ni revela metadatos del documento', async () => {
+  const { h } = savedThreeOptions([{ ...orgScope, windows: [{ category: 'CONTRATO', periodFrom: null, periodTo: null }] }]);
+  h.requests.delivery = {
+    documentId: 'cached-B', name: 'FACTURA_B.pdf', category: 'FACTURA',
+    period: '2026-03-01T00:00:00.000Z', at: new Date().toISOString(),
+  };
+  const reply = await h.handle('¿de qué mes es?');
+  assert.equal(reply?.awaiting, 'CLIENTE');
+  assert.doesNotMatch(reply?.text ?? '', /FACTURA_B|marzo/i);
+  assert.deepEqual(h.search.byIdCalls, ['cached-B']);
+  assert.deepEqual(h.search.searches, []);
+  assert.deepEqual(h.delivered, []);
+  assert.deepEqual(h.audits.map((audit) => ({
+    decision: (audit as { decision: string }).decision,
+    documentId: (audit as { documentId: string }).documentId,
+  })), [{ decision: 'DENY_SAVED_ID', documentId: 'cached-B' }]);
+});
+
+test('pregunta por nombre de última entrega autorizada responde con el archivo exacto', async () => {
+  const { h } = savedThreeOptions();
+  h.requests.delivery = {
+    documentId: 'cached-B', name: 'FACTURA_B.pdf', category: 'FACTURA',
+    period: '2026-03-01T00:00:00.000Z', at: new Date().toISOString(),
+  };
+  const reply = await h.handle('¿qué archivo me mandaste?');
+  assert.match(reply?.text ?? '', /FACTURA_B\.pdf/);
+  assert.deepEqual(h.search.byIdCalls, ['cached-B']);
+  assert.deepEqual(h.search.byIdScopes, [h.scopes]);
+  assert.deepEqual(h.search.searches, []);
+  assert.deepEqual(h.delivered, []);
+});
+
+for (const question of [
+  '¿qué archivo me mandaste?',
+  '¿cuál archivo me mandaste?',
+  '¿qué me mandaste?',
+  '¿cuál fue el archivo que me mandaste?',
+  '¿cómo se llama el archivo?',
+  '¿de qué mes es?',
+  '¿cómo sabes que es de marzo?',
+  '¿de dónde sacaste que es de marzo?',
+]) {
+  test(`última entrega revocada no filtra datos ni invoca redactor: ${question}`, async () => {
+    const { h } = savedThreeOptions(
+      [{ ...orgScope, windows: [{ category: 'CONTRATO', periodFrom: null, periodTo: null }] }],
+      'ALLOW',
+      {
+        history: [{ role: 'bot', text: '[documento] FACTURA_B.pdf, folio A100, marzo', at: new Date() }],
+        draftResponse: 'Te mandé FACTURA_B.pdf, folio A100, de marzo.',
+      },
+    );
+    h.requests.delivery = {
+      documentId: 'cached-B', name: 'FACTURA_B.pdf', category: 'FACTURA',
+      period: '2026-03-01T00:00:00.000Z', at: new Date().toISOString(),
+    };
+    const reply = await h.handle(question);
+    assert.equal(reply?.awaiting, 'CLIENTE');
+    assert.doesNotMatch(reply?.text ?? '', /FACTURA|FACTURA_B|A100|marzo|2026-03/i);
+    assert.deepEqual(h.search.byIdCalls, ['cached-B']);
+    assert.deepEqual(h.search.searches, []);
+    assert.deepEqual(h.delivered, []);
+    assert.deepEqual(h.writerCalls, []);
+    assert.deepEqual(h.draftCalls, []);
+    assert.deepEqual(h.audits.map((audit) => ({
+      decision: (audit as { decision: string }).decision,
+      documentId: (audit as { documentId: string }).documentId,
+    })), [{ decision: 'DENY_SAVED_ID', documentId: 'cached-B' }]);
+  });
+}
+
+test('redacción casual posterior a revocación no recibe historial ni metadatos de la última entrega', async () => {
+  const { h } = savedThreeOptions(
+    [{ ...orgScope, windows: [{ category: 'CONTRATO', periodFrom: null, periodTo: null }] }],
+    'ALLOW',
+    {
+      history: [{ role: 'bot', text: '[documento] FACTURA_B.pdf, folio A100, marzo', at: new Date() }],
+      draftResponse: 'Te escucho. Aquí sigo.',
+    },
+  );
+  h.requests.state = emptyRequest();
+  h.requests.delivery = {
+    documentId: 'cached-B', name: 'FACTURA_B.pdf', category: 'FACTURA',
+    period: '2026-03-01T00:00:00.000Z', at: new Date().toISOString(),
+  };
+  const before = structuredClone(h.requests.state);
+  await h.handle('jajaja mi amigo está loco');
+  assert.equal(h.writerContexts.length, 1);
+  assert.deepEqual(h.writerContexts[0]!.history, []);
+  assert.deepEqual(h.writerContexts[0]!.known, []);
+  assert.deepEqual(h.search.byIdCalls, ['cached-B']);
+  assert.deepEqual(h.search.searches, []);
+  assert.deepEqual(h.delivered, []);
+  assert.deepEqual(h.requests.state, before);
+});
+
+for (const question of [
+  '¿de dónde sacaste que es de marzo?',
+  '¿de dónde sacaste que esa factura es de marzo?',
+  '¿cómo sabes que es de marzo?',
+  '¿por qué dices que es de marzo?',
+]) {
+  test(`pregunta documental sobre última entrega conserva detección: ${question}`, () => {
+    assert.equal(preguntaSobreEntregado(question), true);
+  });
+}
+
+for (const question of [
+  '¿de dónde sacaste que Roberto hizo eso?',
+  '¿de dónde sacaste que mañana llueve?',
+  '¿de dónde sacaste que Oxxo cerró?',
+  '¿cómo sabes que Roberto viene?',
+  '¿por qué dices que Juan está aquí?',
+  'qué archivo necesitas',
+  'necesito un archivo',
+  'qué documentos tienes',
+  'qué factura me puedes mandar',
+  'cómo se llama Roberto',
+  'de qué mes necesitas la factura',
+]) {
+  test(`pregunta general no se interpreta como última entrega: ${question}`, () => {
+    assert.equal(preguntaSobreEntregado(question), false);
+  });
+}
+
+for (const revoked of [false, true]) {
+  test(`rechazo no es esa con última entrega ${revoked ? 'revocada' : 'autorizada'}`, async () => {
+    const { h } = savedThreeOptions(revoked
+      ? [{ ...orgScope, windows: [{ category: 'CONTRATO', periodFrom: null, periodTo: null }] }]
+      : [structuredClone(orgScope)]);
+    h.requests.state = emptyRequest();
+    h.requests.delivery = {
+      documentId: 'cached-B', name: 'FACTURA_B.pdf', category: 'FACTURA',
+      period: '2026-03-01T00:00:00.000Z', at: new Date().toISOString(),
+    };
+    const reply = await h.handle('no es esa');
+    assert.deepEqual(h.search.byIdCalls, ['cached-B']);
+    assert.deepEqual(h.search.searches, []);
+    assert.deepEqual(h.delivered, []);
+    if (revoked) {
+      assert.doesNotMatch(reply?.text ?? '', /FACTURA|factura|marzo|A100|FACTURA_B/);
+      assert.equal(h.requests.state.category, null);
+      assert.deepEqual(h.audits.map((audit) => ({
+        decision: (audit as { decision: string }).decision,
+        documentId: (audit as { documentId: string }).documentId,
+      })), [{ decision: 'DENY_SAVED_ID', documentId: 'cached-B' }]);
+    } else {
+      assert.match(reply?.text ?? '', /factura/i);
+      assert.equal(h.requests.state.category, 'FACTURA');
+    }
+  });
+}
+
+test('inventario contextual no usa categoría de última entrega revocada', async () => {
+  const { h } = savedThreeOptions([{ ...orgScope, windows: [{ category: 'CONTRATO', periodFrom: null, periodTo: null }] }]);
+  h.requests.state = emptyRequest();
+  h.requests.delivery = {
+    documentId: 'cached-B', name: 'FACTURA_B.pdf', category: 'FACTURA',
+    period: '2026-03-01T00:00:00.000Z', at: new Date().toISOString(),
+  };
+  const reply = await h.handle('¿de qué meses hay?');
+  assert.doesNotMatch(reply?.text ?? '', /FACTURA|factura|marzo|A100|FACTURA_B/);
+  assert.deepEqual(h.search.byIdCalls, ['cached-B']);
+  assert.deepEqual(h.search.monthLookups, []);
+  assert.deepEqual(h.search.searches, []);
+  assert.deepEqual(h.delivered, []);
+  assert.deepEqual(h.audits.map((audit) => ({
+    decision: (audit as { decision: string }).decision,
+    documentId: (audit as { documentId: string }).documentId,
+  })), [{ decision: 'DENY_SAVED_ID', documentId: 'cached-B' }]);
+});
+
+test('inventario no reutiliza categoría copiada de la última entrega tras revocación posterior', async () => {
+  const { h } = savedThreeOptions();
+  h.requests.state = emptyRequest();
+  h.requests.delivery = {
+    documentId: 'cached-B', name: 'FACTURA_B.pdf', category: 'FACTURA',
+    period: '2026-03-01T00:00:00.000Z', at: new Date().toISOString(),
+  };
+  await h.handle('no es esa');
+  assert.equal(h.requests.state.category, 'FACTURA');
+  h.scopes[0]!.windows = [{ category: 'CONTRATO', periodFrom: null, periodTo: null }];
+  h.search.byIdCalls.length = 0;
+  const reply = await h.handle('¿de qué meses hay?');
+  assert.doesNotMatch(reply?.text ?? '', /FACTURA|factura|marzo|FACTURA_B/);
+  assert.deepEqual(h.search.byIdCalls, ['cached-B']);
+  assert.deepEqual(h.search.monthLookups, []);
+  assert.deepEqual(h.search.searches, []);
+  assert.deepEqual(h.delivered, []);
+  assert.deepEqual(h.audits.at(-1) && {
+    decision: (h.audits.at(-1) as { decision: string }).decision,
+    documentId: (h.audits.at(-1) as { documentId: string }).documentId,
+  }, { decision: 'DENY_SAVED_ID', documentId: 'cached-B' });
+});
+
+test('corrección con datos no guarda categoría de última entrega revocada', async () => {
+  const { h } = savedThreeOptions([{ ...orgScope, windows: [{ category: 'CONTRATO', periodFrom: null, periodTo: null }] }]);
+  h.requests.state = emptyRequest();
+  h.requests.delivery = {
+    documentId: 'cached-B', name: 'FACTURA_B.pdf', category: 'FACTURA',
+    period: '2026-03-01T00:00:00.000Z', at: new Date().toISOString(),
+  };
+  const reply = await h.handle('esa no es de marzo, pásame la de abril');
+  assert.doesNotMatch(reply?.text ?? '', /FACTURA|factura|marzo|A100|FACTURA_B/);
+  assert.equal(h.requests.state.category, null);
+  assert.deepEqual(h.search.searches, []);
+  assert.deepEqual(h.delivered, []);
+  assert.deepEqual(h.audits.map((audit) => ({
+    decision: (audit as { decision: string }).decision,
+    documentId: (audit as { documentId: string }).documentId,
+  })), [{ decision: 'DENY_SAVED_ID', documentId: 'cached-B' }]);
+});
 
 test('la charla puede usar redacción sin tocar la solicitud documental', async () => {
   const h = makeHarness({ llmResponse: adversarialIntent, draftResponse: 'Te leo. Aquí sigo para ayudarte.' });
