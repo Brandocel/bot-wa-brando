@@ -299,8 +299,8 @@ for (const previous of ['vacia', 'factura-pendiente'] as const) {
       assert.deepEqual(h.state, closes ? empty() : before);
       assert.equal(h.events.includes('close'), closes);
       const pauseWithoutRequest = text === 'Espera' && previous === 'vacia';
-      assert.equal(h.extractionResults.length, pauseWithoutRequest ? 1 : 0);
-      assert.deepEqual(h.llmCalls, pauseWithoutRequest ? ['extract', 'draft'] : []);
+      assert.deepEqual(h.extractionResults, []);
+      assert.deepEqual(h.llmCalls, pauseWithoutRequest ? ['draft'] : []);
       assert.equal(reply.awaiting, previous === 'factura-pendiente' && !closes ? 'CLIENTE' : 'NADIE');
       if (text === 'Hola') assert.match(reply.text, /Hola/);
       if (text === 'Gracias') assert.match(reply.text, /Con gusto/);
