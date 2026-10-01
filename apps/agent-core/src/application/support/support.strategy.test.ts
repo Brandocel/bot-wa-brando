@@ -231,7 +231,7 @@ class ObservedSlotExtractor extends SlotExtractorService {
   }
 }
 
-function makeHarness(options: { senderName?: string | null; scopes?: OrgScope[]; history?: Array<{ role: 'cliente' | 'bot'; text: string; at: Date }> } = {}) {
+function makeHarness(options: { senderName?: string | null; scopes?: OrgScope[]; history?: Array<{ role: 'cliente' | 'bot'; text: string; at: Date }>; llmResponse?: Record<string, unknown>; draftResponse?: string } = {}) {
   const requests = new MemoryRequests();
   const search = new MemorySearch();
   const escalations: unknown[] = [];
@@ -243,11 +243,11 @@ function makeHarness(options: { senderName?: string | null; scopes?: OrgScope[];
   const llm: LlmPort = {
     extract: async (input) => {
       llmCalls.push(input.user);
-      return input.validate(llmForTurn(input.user));
+      return input.validate(options.llmResponse ?? llmForTurn(input.user));
     },
     draft: async (input) => {
       draftCalls.push(input.user);
-      return null;
+      return options.draftResponse ?? null;
     },
   };
   const replyWriter = new ReplyWriterService(llm);
@@ -956,8 +956,7 @@ test('De febrero después de cerrar no retoma la Solicitud anterior', async (t) 
   assert.ok(reply);
   assert.equal(reply.awaiting, 'CLIENTE');
   assert.match(reply.text, /documento/i);
-  assert.equal(h.search.searches.length, searchesBefore + 1);
-  assert.notEqual(h.search.searches.at(-1)?.query.category, 'FACTURA');
+  assert.equal(h.search.searches.length, searchesBefore, 'un mes aislado pide tipo sin consultar el índice');
   assert.equal(h.requests.state.category, null);
   assert.equal(h.requests.state.period, '2026-02-01T00:00:00.000Z');
   assert.equal(h.requests.state.ultimaPregunta, 'categoria');
@@ -1967,4 +1966,201 @@ test('"la 2 no" no entrega la 2', async () => {
 
   assert.deepEqual(h.delivered, []);
   assert.equal(reply?.awaiting, 'CLIENTE');
+});
+
+const adversarialIntent = {
+  categoria: 'FACTURA', periodo: '2026-03', folio: 'NINGUNO', empresa: 'NINGUNA',
+  no_es_documento: false, tipo_mensaje: 'SOLICITUD',
+};
+
+for (const message of [
+  'qué calor hace', 'jajaja', 'te voy a demandar', 'no me puedes hablar así',
+  'qué bot corriente', 'eres un pendejo', 'mañana hablamos', 'me equivoqué de chat',
+  'Roberto está haciendo un contrato', 'en marzo me voy a Cancún',
+  'la cotización estuvo carísima', 'mi póliza venció', 'se fue la luz',
+  'Oxxo me cobró doble', 'mi amigo perdió el reporte',
+  'el contrato de mi casa es un desastre',
+  'quiero viajar en marzo y hablar del contrato',
+  'busco trabajo con Roberto que hace contratos',
+]) {
+  test(`charla sin efectos documentales: ${message}`, async () => {
+    const h = makeHarness({ llmResponse: adversarialIntent });
+    h.requests.state = {
+      ...emptyRequest(), category: 'FACTURA', period: '2026-03-01T00:00:00.000Z',
+      opciones: [{ n: 1, tipo: 'documento', id: 'previous-invoice', nombre: 'FACTURA_MARZO.pdf' }],
+      preguntas: 1, preguntado: { detalle: true }, ultimaPregunta: 'detalle',
+      updatedAt: '2026-03-10T12:00:00.000Z',
+    };
+    const before = structuredClone(h.requests.state);
+    await h.handle(message);
+    assert.deepEqual(h.search.searches, [], 'sin búsqueda');
+    assert.deepEqual(h.delivered, [], 'sin entrega');
+    assert.deepEqual(h.requests.state, before, 'sin mutación ni renovación de vigencia');
+    assert.deepEqual(h.requests.saveCalls, []);
+    assert.equal(h.requests.closeCalls, 0);
+    assert.deepEqual(h.llmCalls, [], 'la charla clara no usa extracción');
+    assert.equal(h.draftCalls.length, h.writerCalls.length);
+  });
+}
+
+test('la charla puede usar redacción sin tocar la solicitud documental', async () => {
+  const h = makeHarness({ llmResponse: adversarialIntent, draftResponse: 'Te leo. Aquí sigo para ayudarte.' });
+  h.requests.state = {
+    ...emptyRequest(), category: 'FACTURA', period: '2026-03-01T00:00:00.000Z',
+    opciones: [{ n: 1, tipo: 'documento', id: 'previous-invoice', nombre: 'FACTURA_MARZO.pdf' }],
+    preguntas: 1, preguntado: { detalle: true }, ultimaPregunta: 'detalle',
+    updatedAt: '2026-03-10T12:00:00.000Z',
+  };
+  const before = structuredClone(h.requests.state);
+  const reply = await h.handle('jajaja mi amigo está loco');
+  assert.equal(reply?.text, 'Te leo. Aquí sigo para ayudarte.');
+  assert.equal(h.writerCalls.length, 1);
+  assert.equal(h.draftCalls.length, 1);
+  assert.deepEqual(h.llmCalls, [], 'el extractor no interpreta charla');
+  assert.deepEqual(h.search.searches, []);
+  assert.deepEqual(h.delivered, []);
+  assert.deepEqual(h.requests.state, before);
+  assert.deepEqual(h.requests.saveCalls, []);
+});
+
+test('charla intermedia conserva factura y marzo hasta recibir el folio', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-04-15T12:00:00.000Z') });
+  const h = makeHarness({ llmResponse: adversarialIntent });
+  await h.handle('Necesito la factura de marzo');
+  const afterRequest = structuredClone(h.requests.state);
+  const searches = h.search.searches.length;
+  const deliveries = h.delivered.length;
+  const saves = h.requests.saveCalls.length;
+  await h.handle('jajaja mi amigo está loco');
+  assert.deepEqual(h.requests.state, afterRequest);
+  assert.equal(h.search.searches.length, searches);
+  assert.equal(h.delivered.length, deliveries);
+  assert.equal(h.requests.saveCalls.length, saves);
+  await h.handle('A100');
+  assert.equal(h.search.searches[searches]?.query.category, 'FACTURA');
+  assert.equal(h.search.searches[searches]?.query.folio, 'A100');
+  assert.deepEqual(h.search.searches[searches]?.query.period, new Date('2026-03-01T00:00:00.000Z'));
+});
+
+for (const [message, category, month, keyword] of [
+  ['qué bot tan malo, pero pásame la factura de marzo', 'FACTURA', '03', null],
+  ['jajaja ahora necesito un contrato', 'CONTRATO', null, null],
+  ['te voy a demandar, pero primero mándame mi factura', 'FACTURA', null, null],
+  ['perdón me equivoqué de chat, ahora sí pásame la cotización', 'COTIZACION', null, null],
+  ['no manches, pásame el contrato de Roberto', 'CONTRATO', null, 'roberto'],
+  ['mi jefe está loco, pero envíame el reporte de ventas', 'REPORTE', null, 'ventas'],
+] as const) {
+  test(`petición mixta busca solo su cláusula: ${message}`, async (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-04-15T12:00:00.000Z') });
+    const h = makeHarness();
+    await h.handle(message);
+    assert.ok(h.search.searches.length > 0);
+    const query = h.search.searches[0]!.query;
+    assert.equal(query.category, category);
+    assert.equal(query.period instanceof Date ? query.period.getUTCMonth() + 1 : null, month ? Number(month) : null);
+    assert.equal(query.text, keyword);
+  });
+}
+
+test('petición indirecta de luz conserva interpretación del modelo', async () => {
+  const h = makeHarness({ llmResponse: adversarialIntent });
+  await h.handle('pásame lo de la luz');
+  assert.ok(h.llmCalls.length > 0);
+  assert.equal(h.search.searches[0]?.query.category, 'FACTURA');
+  assert.equal(h.search.searches[0]?.query.text, 'luz');
+});
+
+test('petición indirecta de energía conserva interpretación del modelo', async () => {
+  const h = makeHarness({ llmResponse: adversarialIntent });
+  await h.handle('necesito lo de la energía');
+  assert.ok(h.llmCalls.length > 0);
+  assert.equal(h.search.searches[0]?.query.category, 'FACTURA');
+  assert.equal(h.search.searches[0]?.query.text, 'energia');
+});
+
+for (const [message, category, keyword] of [
+  ['necesito la factura de Oxxo', 'FACTURA', 'oxxo'],
+  ['busco el contrato de Roberto', 'CONTRATO', 'roberto'],
+  ['quiero la cotización del proyecto Cancún', 'COTIZACION', 'proyecto cancun'],
+  ['necesito el reporte de ventas', 'REPORTE', 'ventas'],
+  ['busco el archivo BrandoCelSanchez_2026', null, 'BrandoCelSanchez_2026'],
+  ['pásame el documento de Juan Pérez', null, 'juan perez'],
+] as const) {
+  test(`texto documental libre sigue buscable: ${message}`, async () => {
+    const h = makeHarness();
+    await h.handle(message);
+    assert.equal(h.search.searches[0]?.query.category, category);
+    assert.equal(h.search.searches[0]?.query.text, keyword);
+  });
+}
+
+for (const message of ['pásame lo de marzo', 'lo de Roberto', 'la de ayer', 'pásame eso']) {
+  test(`referencia sin contexto pide aclaración sin búsqueda: ${message}`, async () => {
+    const h = makeHarness({ llmResponse: adversarialIntent });
+    const reply = await h.handle(message);
+    assert.equal(reply?.awaiting, 'CLIENTE');
+    assert.match(reply?.text ?? '', /documento|tipo/i);
+    assert.deepEqual(h.search.searches, []);
+    assert.deepEqual(h.delivered, []);
+  });
+}
+
+test('respuesta de empresa corta usa la pregunta pendiente', async () => {
+  const oxxo: OrgScope = { ...orgScope, organizationId: 'org-oxxo', organizationName: 'Oxxo' };
+  const h = makeHarness({ scopes: [orgScope, oxxo], llmResponse: adversarialIntent });
+  h.requests.state = {
+    ...emptyRequest(), category: 'FACTURA', ultimaPregunta: 'empresa',
+    preguntas: 1, preguntado: { empresa: true }, updatedAt: new Date().toISOString(),
+  };
+  await h.handle('Oxxo');
+  assert.equal(h.requests.state.organizationId, 'org-oxxo');
+  assert.equal(h.search.searches[0]?.query.organizationId, 'org-oxxo');
+});
+
+test('selección guardada no repite búsqueda ni extracción', async () => {
+  const { h, documentB } = pendingDocumentOptions();
+  const before = h.search.searches.length;
+  await h.handle('la 2');
+  assert.equal(h.search.searches.length, before);
+  assert.deepEqual(h.extractCalls, []);
+  assert.deepEqual(h.search.byIdCalls, [documentB.id]);
+});
+
+test('erratas documentales siguen pasando por reglas', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-04-15T12:00:00.000Z') });
+  const h = makeHarness();
+  await h.handle('pásame la fatcura de marso');
+  assert.equal(h.search.searches[0]?.query.category, 'FACTURA');
+  assert.deepEqual(h.search.searches[0]?.query.period, new Date('2026-03-01T00:00:00.000Z'));
+  assert.deepEqual(h.llmCalls, []);
+});
+
+for (const message of ['marzo tengo fiesta', 'A100 está en mi libreta']) {
+  test(`dato casual corto no responde a la solicitud pendiente: ${message}`, async () => {
+    const h = makeHarness({ llmResponse: adversarialIntent });
+    h.requests.state = {
+      ...emptyRequest(), category: 'FACTURA', period: '2026-03-01T00:00:00.000Z',
+      ultimaPregunta: 'detalle', preguntas: 1, preguntado: { detalle: true },
+      updatedAt: '2026-03-10T12:00:00.000Z',
+    };
+    const before = structuredClone(h.requests.state);
+    await h.handle(message);
+    assert.deepEqual(h.requests.state, before);
+    assert.deepEqual(h.search.searches, []);
+    assert.deepEqual(h.delivered, []);
+  });
+}
+
+test('mencionar una empresa autorizada en una queja no contesta la pregunta de empresa', async () => {
+  const oxxo: OrgScope = { ...orgScope, organizationId: 'org-oxxo', organizationName: 'Oxxo' };
+  const h = makeHarness({ scopes: [orgScope, oxxo], llmResponse: adversarialIntent });
+  h.requests.state = {
+    ...emptyRequest(), category: 'FACTURA', ultimaPregunta: 'empresa',
+    preguntas: 1, preguntado: { empresa: true }, updatedAt: '2026-03-10T12:00:00.000Z',
+  };
+  const before = structuredClone(h.requests.state);
+  await h.handle('Oxxo me cobró doble');
+  assert.deepEqual(h.requests.state, before);
+  assert.deepEqual(h.search.searches, []);
+  assert.deepEqual(h.delivered, []);
 });

@@ -10,7 +10,7 @@ import { DocumentDeliveryService } from './document-delivery.service';
 import { DocumentSearchService, type InventoryLine } from './document-search.service';
 import type { SearchQuery } from './document-search.service';
 import { ReplyWriterService } from './reply-writer.service';
-import { nombreDeArchivo, parseQuery } from './query-parser';
+import { nombreDeArchivo, palabrasClave, parseQuery } from './query-parser';
 import { parseDocumentName } from './document-name.parser';
 import { parseDocumentContent } from './document-content.parser';
 import { SlotExtractorService, type SlotPendiente } from './slot-extractor.service';
@@ -43,6 +43,7 @@ import {
   type Clasificacion,
 } from './message-classifier';
 import { dividirPedidos, leerVariasOpciones, type SeleccionOpciones, type VariosPedidos } from './pedidos';
+import { documentIntent } from './document-intent';
 import * as voz from './voz';
 
 /**
@@ -303,7 +304,9 @@ export class SupportStrategy {
      * buscar nada: contestarle a una queja con otra búsqueda es lo que la
      * convierte en dos quejas.
      */
-    if (quejaParaPersona(clas) || clas.tipo === 'SEGUIMIENTO') {
+    const errorDocumentalExplicito = clas.motivo !== 'error_en_documento' ||
+      /\b(?:factura|cfdi|documento|archivo|contrato|cotizacion|reporte|poliza|rfc|iva|subtotal|importe|monto|datos fiscales)\b/.test(normalizar(message.body));
+    if ((quejaParaPersona(clas) && errorDocumentalExplicito) || clas.tipo === 'SEGUIMIENTO') {
       const atendida = await this.atenderQueja(turn, sol, clas);
       if (atendida) return atendida;
     }
@@ -416,6 +419,23 @@ export class SupportStrategy {
     // con erratas también cuenta, y si se reconoce aquí el extractor puede
     // ahorrarse la llamada al modelo.
     const empresaEnTexto = this.resolveCompany(message.body, scope.scopes);
+    const intent = documentIntent(message.body, {
+      enCurso,
+      pendiente,
+      companyName: scope.scopes.find((s) => s.organizationId === empresaEnTexto)?.organizationName ?? null,
+    });
+    if (intent.kind === 'other') {
+      if (clas.tipo === 'SOLICITUD') clas.tipo = 'OTRO';
+      return { text: await this.smallTalk(turn, conocido, clas), awaiting: 'NADIE' };
+    }
+    if (intent.kind === 'ambiguous') {
+      const candidate = parseQuery(message.body);
+      if (candidate.period && !contexto.category) {
+        await this.solicitudes.guardar(ctx.conversationId, { period: candidate.period.toISOString() });
+      }
+      const slot = contexto.category ? 'detalle' : 'categoria';
+      return this.ask(turn, readAsked(sol), slot, voz.PREGUNTA_PENDIENTE[slot]);
+    }
 
     /**
      * Varios documentos en un mensaje: "la factura de octubre y noviembre
@@ -423,18 +443,27 @@ export class SupportStrategy {
      * leía como una sola búsqueda y se entregaba solo una parte, callando
      * el resto. Va antes del modelo: partir la lista es por reglas.
      */
-    const varios = dividirPedidos(message.body);
+    const varios = dividirPedidos(intent.request);
     if (varios) {
-      return this.atenderVarios(turn, sol, contexto, varios, empresaEnTexto);
+      return this.atenderVarios(turn, sol, contexto, varios, empresaEnTexto, intent.request);
     }
 
-    const extraction = await this.slots.extract(message.body, {
+    const extraction = await this.slots.extract(intent.request, {
       pendiente,
       history: turn.history,
       known: conocido,
       enCurso,
       companyKnown: empresaEnTexto !== null,
     });
+
+    // “Pásame el documento de Juan Pérez” expresa un objeto documental y un
+    // nombre aunque el modelo niegue la petición. La evidencia de intención
+    // viene del verbo y del objeto, no del texto residual por sí mismo.
+    if (!extraction.query.text && !extraction.query.category && !extraction.query.folio &&
+        /\b(?:documento|archivo|pdf|papel|copia)\b/.test(normalizar(intent.request))) {
+      const keys = palabrasClave(intent.request);
+      if (keys.length > 0) extraction.query.text = keys.join(' ');
+    }
 
     const empresaMencionada =
       empresaEnTexto ??
@@ -470,8 +499,15 @@ export class SupportStrategy {
      * que diga el modelo. Un mensaje que no aporta nada no puede cambiar
      * la búsqueda; lo único que haría es repetir la anterior.
      */
-    if (!aporta) {
-      return { text: await this.smallTalk(turn, conocido, clas), awaiting: 'NADIE' };
+    if (!aporta) return this.ask(turn, readAsked(sol), 'categoria', voz.preguntaTipo());
+
+    // Una descripción sin tipo puede ser útil, pero “lo de Roberto” aún no
+    // identifica qué documento buscar. Un archivo con nombre o un pedido
+    // explícito de “documento/archivo” sí autorizan buscar por texto.
+    if (extraction.query.text && !extraction.query.category && !extraction.query.folio &&
+        !contexto.category && !nombreDeArchivo(extraction.query.text) &&
+        !/\b(?:documento|archivo|pdf|papel|copia)\b/.test(normalizar(intent.request))) {
+      return this.ask(turn, readAsked(sol), 'categoria', voz.preguntaTipo());
     }
 
     /**
@@ -568,6 +604,12 @@ export class SupportStrategy {
         voz.preguntaEmpresa(),
         scopes.map((s, i) => `*${i + 1}.* ${s.organizationName}`),
       );
+    }
+
+    // Un mes sin tipo ni folio no identifica un documento, aunque solo haya
+    // una coincidencia visible. La aclaración va antes de consultar el índice.
+    if (!query.category && !query.folio && query.period && !query.text) {
+      return this.ask(turn, asked, 'categoria', voz.preguntaTipoConMes(mesEnPalabras(query.period)));
     }
 
     /**
@@ -1005,6 +1047,7 @@ export class SupportStrategy {
     contexto: Solicitud,
     varios: VariosPedidos,
     empresaEnTexto: string | null,
+    requestText: string,
   ): Promise<StrategyReply> {
     const { scopes } = turn;
     const comun =
@@ -1026,7 +1069,7 @@ export class SupportStrategy {
 
     if (scopes.length > 1 && pedidos.some((p) => !p.organizationId)) {
       await this.solicitudes.guardar(turn.ctx.conversationId, {
-        lote: turn.message.body,
+        lote: requestText,
         opciones: scopes.map((s, i) => ({
           n: i + 1,
           tipo: 'empresa' as const,
@@ -1238,7 +1281,7 @@ export class SupportStrategy {
       // empresa ya elegida, el lote sigue donde se quedó.
       const lote = sol.lote ? dividirPedidos(sol.lote) : null;
       if (lote) {
-        return this.atenderVarios(turn, actualizada, actualizada, lote, elegida.id);
+        return this.atenderVarios(turn, actualizada, actualizada, lote, elegida.id, sol.lote!);
       }
 
       return this.avanzar(turn, mergeSlots(actualizada, VACIA), actualizada);
@@ -1906,7 +1949,7 @@ function mergeSlots(stored: unknown, fresh: SearchQuery): SearchQuery {
     folio = fresh.folio;
   }
   if (cambiaMes) folio = fresh.folio;
-  if (fresh.folio !== null && fresh.folio !== storedFolio) {
+  if (fresh.folio !== null && storedFolio !== null && fresh.folio !== storedFolio) {
     category = fresh.category;
     period = fresh.period;
   }
