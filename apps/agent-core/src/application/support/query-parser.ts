@@ -28,6 +28,8 @@ const MONTHS: Record<string, number> = {
   diciembre: 12,
 };
 
+const MONTH_FUZZY_WORDS = Object.entries(MONTHS).filter(([word]) => word.length >= 5);
+
 const CATEGORY_WORDS: Record<string, DocCategory> = {
   // Primero lo de varias palabras y lo contable: gana la primera entrada
   // que case, y "el reporte contable" no es un reporte cualquiera.
@@ -68,6 +70,8 @@ const CATEGORY_WORDS: Record<string, DocCategory> = {
   informes: 'REPORTE',
 };
 
+const CATEGORY_FUZZY_WORDS = Object.entries(CATEGORY_WORDS).filter(([word]) => /^[a-z]{6,}$/.test(word));
+
 /** Sin acentos y en minúsculas: "Póliza" y "poliza" son la misma palabra. */
 function normalize(text: string): string {
   return text
@@ -87,6 +91,7 @@ function period(year: number, month: number): Date {
 
 export function parseQuery(raw: string): SearchQuery {
   const text = normalize(raw.trim());
+  const nameHint = nombreDeArchivo(raw);
 
   let category: DocCategory | null = null;
   for (const [word, value] of Object.entries(CATEGORY_WORDS)) {
@@ -95,11 +100,13 @@ export function parseQuery(raw: string): SearchQuery {
       break;
     }
   }
-  // "cotizcion", "fatcura": una letra comida no debería costar una llamada
+  // "cotizcion", "fatcura": una errata obvia no debería costar una llamada
   // al modelo ni un "¿qué documento?".
-  if (!category) category = categoriaConErrata(text);
+  const categoryCorrection = !category && !nameHint ? categoriaConErrata(text, raw.trim()) : null;
+  category ??= categoryCorrection?.category ?? null;
 
-  const parsedPeriod = parsePeriod(text);
+  const parsed = parsePeriod(text, !nameHint, raw.trim());
+  const parsedPeriod = parsed.value;
 
   // Folio: patrón alfanumérico con dígito, tipo "A1234" o "F-2026-88".
   // "del0901" no es un folio: es "del" pegado a un número. Las palabras
@@ -119,7 +126,6 @@ export function parseQuery(raw: string): SearchQuery {
    * Antes, con categoría detectada, el nombre se tiraba y la búsqueda se
    * hacía por tipo y mes heredado — y no encontraba nada.
    */
-  const nameHint = nombreDeArchivo(raw);
   if (nameHint) {
     return {
       category,
@@ -137,12 +143,16 @@ export function parseQuery(raw: string): SearchQuery {
    * Sin ningún metadato, el texto completo se conserva para el modelo.
    */
   const hasMetadata = category !== null || parsedPeriod !== null || folio !== null;
-  const textoDeBusqueda = textoSinMarcadoresConversacionales(text, {
+  const sinCorrecciones = quitarSpans(text, [
+    ...(categoryCorrection?.spans ?? []),
+    ...(parsed.fuzzySpan ? [parsed.fuzzySpan] : []),
+  ]);
+  const textoDeBusqueda = textoSinMarcadoresConversacionales(sinCorrecciones, {
     category,
     period: parsedPeriod,
     folio,
   });
-  const claves = palabrasClave(textoDeBusqueda);
+  const claves = palabrasClave(textoDeBusqueda, { skipFuzzy: true });
 
   return {
     category,
@@ -210,8 +220,17 @@ const RUIDO = new Set([
 // como "acuerdo" que pueden formar parte del nombre de un documento.
 const FALTA_DE_IDENTIFICADOR = /\bno\s+(?:me\s+acuerdo(?:\s+de)?|recuerdo|se|tengo|conozco)\s+(?:(?:el|la|su|del|un)\s+)?(?:nombre|folio|archivo|documento|dato|identificador)\b/;
 
-export function palabrasClave(raw: string): string[] {
-  const text = normalize(raw).replace(new RegExp(FALTA_DE_IDENTIFICADOR, 'g'), ' ');
+export function palabrasClave(
+  raw: string,
+  options: { skipFuzzy?: boolean } = {},
+): string[] {
+  const normalized = normalize(raw);
+  const categorySpans = options.skipFuzzy ? [] : categoriaConErrata(normalized, raw)?.spans ?? [];
+  const monthSpan = options.skipFuzzy ? null : mesConErrata(normalized, raw)?.span ?? null;
+  const text = quitarSpans(normalized, [
+    ...categorySpans,
+    ...(monthSpan ? [monthSpan] : []),
+  ]).replace(new RegExp(FALTA_DE_IDENTIFICADOR, 'g'), ' ');
   const meses = new Set(Object.keys(MONTHS));
   const tipos = new Set(Object.keys(CATEGORY_WORDS));
 
@@ -222,7 +241,6 @@ export function palabrasClave(raw: string): string[] {
         .filter((t) => t.length >= 3)
         .filter((t) => !RUIDO.has(t))
         .filter((t) => !meses.has(t) && !tipos.has(t))
-        .filter((t) => categoriaConErrata(t) === null)
         // Números: son folios o años, y esos ya se leyeron aparte.
         .filter((t) => !/^\d+$/.test(t)),
     ),
@@ -234,31 +252,86 @@ function indicaFaltaDeIdentificador(text: string): boolean {
   return FALTA_DE_IDENTIFICADOR.test(text);
 }
 
-/** "cotizcion" → COTIZACION: una letra de diferencia en una palabra larga. */
-function categoriaConErrata(text: string): DocCategory | null {
-  for (const token of text.split(/[^a-z]+/)) {
-    if (token.length < 6) continue;
-    for (const [word, value] of Object.entries(CATEGORY_WORDS)) {
-      if (word.length < 6) continue;
-      if (Math.abs(word.length - token.length) > 1) continue;
-      if (distancia(token, word) <= 1) return value;
-    }
+type Span = { start: number; end: number };
+
+/** Borra solo las ocurrencias reconocidas, conservando índices y otros homónimos. */
+function quitarSpans(text: string, spans: Span[]): string {
+  let result = text;
+  for (const { start, end } of [...spans].sort((a, b) => b.start - a.start)) {
+    result = result.slice(0, start) + ' '.repeat(end - start) + result.slice(end);
   }
-  return null;
+  return result;
 }
 
-function distancia(a: string, b: string): number {
-  const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
-  for (let i = 1; i <= a.length; i++) {
-    let diag = prev[0]!;
-    prev[0] = i;
-    for (let j = 1; j <= b.length; j++) {
-      const temp = prev[j]!;
-      prev[j] = Math.min(prev[j]! + 1, prev[j - 1]! + 1, diag + (a[i - 1] === b[j - 1] ? 0 : 1));
-      diag = temp;
+/** Solo nombres documentales en posición de tipo, nunca un token del nombre de archivo. */
+function categoriaConErrata(text: string, raw = text): { category: DocCategory; spans: Span[] } | null {
+  const candidatos = new Set<DocCategory>();
+  const spans: Span[] = [];
+  for (const match of text.matchAll(/\b[a-z]+\b/g)) {
+    const token = match[0];
+    if (token.length < 6) continue;
+    if (esNombrePropio(raw, match.index)) continue;
+    const before = text.slice(0, match.index).trimEnd();
+    if (before && !/\b(?:el|la|los|las|un|una|unos|unas|mi|mis|su|sus|necesito|quiero|busco|dame|mandame|pasame|enviame)\s*$/.test(before)) continue;
+    const category = coincidenciaUnica(token, CATEGORY_FUZZY_WORDS, 2);
+    if (category) {
+      candidatos.add(category);
+      spans.push({ start: match.index, end: match.index + token.length });
     }
   }
-  return prev[b.length]!;
+  return candidatos.size === 1 ? { category: [...candidatos][0]!, spans } : null;
+}
+
+/** Una mayúscula interior suele ser un nombre, no un tipo o mes a corregir. */
+function esNombrePropio(raw: string, index: number): boolean {
+  return index > 0 && /^[A-ZÁÉÍÓÚÜÑ]/.test(raw.slice(index));
+}
+
+/** OSA: inserción, borrado, sustitución o intercambio de dos letras vecinas. */
+function distancia(a: string, b: string): number {
+  const rows = Array.from({ length: a.length + 1 }, (_, i) =>
+    Array.from({ length: b.length + 1 }, (_, j) => i === 0 ? j : j === 0 ? i : 0),
+  );
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      rows[i]![j] = Math.min(
+        rows[i - 1]![j]! + 1,
+        rows[i]![j - 1]! + 1,
+        rows[i - 1]![j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        rows[i]![j] = Math.min(rows[i]![j]!, rows[i - 2]![j - 2]! + 1);
+      }
+    }
+  }
+  return rows[a.length]![b.length]!;
+}
+
+/** Empates entre valores distintos no se resuelven por orden de diccionario. */
+function coincidenciaUnica<T>(token: string, words: [string, T][], minPrefix = 0): T | null {
+  const values = new Set<T>();
+  for (const [word, value] of words) {
+    if (token.slice(0, minPrefix) !== word.slice(0, minPrefix)) continue;
+    if (Math.abs(word.length - token.length) <= 1 && distancia(token, word) <= 1) {
+      values.add(value);
+    }
+  }
+  return values.size === 1 ? [...values][0]! : null;
+}
+
+/** Meses solo después de un marcador temporal, junto a un tipo o solos. */
+function mesConErrata(text: string, raw = text): { month: number; span: Span } | null {
+  const found: { month: number; span: Span }[] = [];
+  for (const match of text.matchAll(/\b[a-z]+\b/g)) {
+    const token = match[0];
+    if (token.length < 5 || MONTHS[token]) continue;
+    if (esNombrePropio(raw, match.index)) continue;
+    const before = text.slice(0, match.index).trimEnd();
+    if (before && !/\b(?:de|del|d|mes)\s*$/.test(before) && !/\b(?:factura|contrato|cotizacion|reporte|poliza)\s*$/.test(before)) continue;
+    const month = coincidenciaUnica(token, MONTH_FUZZY_WORDS);
+    if (month) found.push({ month, span: { start: match.index, end: match.index + token.length } });
+  }
+  return found.length === 1 ? found[0]! : null;
 }
 
 /**
@@ -286,7 +359,8 @@ export function nombreDeArchivo(raw: string): string | null {
   return candidatos.sort((a, b) => b.length - a.length)[0] ?? null;
 }
 
-function parsePeriod(text: string): Date | null {
+function parsePeriod(text: string, allowFuzzy: boolean, raw: string): { value: Date | null; fuzzySpan: Span | null } {
+  const exact = (value: Date) => ({ value, fuzzySpan: null });
   // En una corrección explícita gana el dato que sigue a "era":
   // "no era febrero, era marzo". Fuera de esta forma se conserva el parseo
   // habitual y no se cambia globalmente a "usar siempre el último mes".
@@ -297,11 +371,11 @@ function parsePeriod(text: string): Date | null {
   if (correccion) {
     const month = MONTHS[correccion[3]!];
     const yearText = correccion[4] ?? correccion[2];
-    if (yearText) return period(Number(yearText), month!);
+    if (yearText) return exact(period(Number(yearText), month!));
     const now = new Date();
     const currentYear = now.getUTCFullYear();
     const guessed = month! <= now.getUTCMonth() + 1 ? currentYear : currentYear - 1;
-    return period(guessed, month!);
+    return exact(period(guessed, month!));
   }
 
   // "este mes", "mes pasado", "mes anterior": no hace falta modelo para esto.
@@ -309,40 +383,51 @@ function parsePeriod(text: string): Date | null {
   // Con un mes escrito ("del mes de junio"), ese manda; lo relativo solo
   // cuenta cuando no hay ninguno.
   const mesEscrito = new RegExp(`\\b(${Object.keys(MONTHS).join('|')})\\b`).test(text);
-  if (!mesEscrito) {
+  const mesCorregido = allowFuzzy && !mesEscrito ? mesConErrata(text, raw) : null;
+  if (!mesEscrito && !mesCorregido) {
     if (/\b(mes pasado|mes anterior|el pasado)\b/.test(text)) {
       const anterior = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
-      return period(anterior.getUTCFullYear(), anterior.getUTCMonth() + 1);
+      return exact(period(anterior.getUTCFullYear(), anterior.getUTCMonth() + 1));
     }
     if (/\b(este mes|mes actual|del mes|mes en curso)\b/.test(text)) {
-      return period(now.getUTCFullYear(), now.getUTCMonth() + 1);
+      return exact(period(now.getUTCFullYear(), now.getUTCMonth() + 1));
     }
   }
 
   // 2026-02 o 2026/02
   const iso = /\b(20\d{2})[-/](0?[1-9]|1[0-2])\b/.exec(text);
-  if (iso) return period(Number(iso[1]), Number(iso[2]));
+  if (iso) return exact(period(Number(iso[1]), Number(iso[2])));
 
   // 02/2026
   const slash = /\b(0?[1-9]|1[0-2])[-/](20\d{2})\b/.exec(text);
-  if (slash) return period(Number(slash[2]), Number(slash[1]));
+  if (slash) return exact(period(Number(slash[2]), Number(slash[1])));
 
   // "febrero 2026", "febrero de 2026", o "febrero" a secas
   for (const [name, month] of Object.entries(MONTHS)) {
     if (!new RegExp(`\\b${name}\\b`).test(text)) continue;
 
     const year = /\b(20\d{2})\b/.exec(text);
-    if (year) return period(Number(year[1]), month);
+    if (year) return exact(period(Number(year[1]), month));
 
     // Sin año: el mes más reciente que ya ocurrió. Pedir "la factura de
     // febrero" en marzo de 2026 nunca significa febrero de 2027.
     const now = new Date();
     const currentYear = now.getUTCFullYear();
     const guessed = month <= now.getUTCMonth() + 1 ? currentYear : currentYear - 1;
-    return period(guessed, month);
+    return exact(period(guessed, month));
   }
 
-  return null;
+  if (mesCorregido) {
+    const year = /\b(20\d{2})\b/.exec(text);
+    if (year) return { value: period(Number(year[1]), mesCorregido.month), fuzzySpan: mesCorregido.span };
+    const currentYear = now.getUTCFullYear();
+    return {
+      value: period(mesCorregido.month <= now.getUTCMonth() + 1 ? currentYear : currentYear - 1, mesCorregido.month),
+      fuzzySpan: mesCorregido.span,
+    };
+  }
+
+  return { value: null, fuzzySpan: null };
 }
 
 /** Quita marcadores solo cuando acompañan slots documentales reconocidos. */

@@ -1426,6 +1426,34 @@ for (const frase of ['Mándamelo de nuevo', 'Mándamela otra vez', 'Reenvíamelo
   });
 }
 
+test('un mes sin categoría ni contexto pide aclaración aunque exista un único archivo', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-15T12:00:00.000Z') });
+  const h = makeHarness();
+  h.search.periodResults.set('2026-03', [document('only-invoice', 'FACTURA_MARZO.pdf', 'FACTURA', '2026-03')]);
+  const reply = await h.handle('Pásame lo de marzo');
+  assert.equal(reply?.awaiting, 'CLIENTE');
+  assert.match(reply?.text ?? '', /documento|tipo|factura/i);
+  assert.equal(h.delivered.length, 0);
+  assert.equal(h.requests.state.category, null);
+});
+
+test('la de marso conserva FACTURA pendiente y busca solo dentro del alcance autorizado', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-15T12:00:00.000Z') });
+  const h = makeHarness();
+  h.requests.state = { ...emptyRequest(), category: 'FACTURA', updatedAt: new Date().toISOString() };
+  h.search.catalog = [
+    document('allowed', 'FACTURA_MARZO.pdf', 'FACTURA', '2026-03'),
+    { ...document('denied', 'FACTURA_MARZO_PRIVADA.pdf', 'FACTURA', '2026-03'), organizationId: 'org-denied' },
+  ];
+  await h.handle('la de marso');
+  assert.equal(h.llmCalls.length, 0);
+  assert.equal(h.search.searches[0]?.query.category, 'FACTURA');
+  assert.equal(h.search.searches[0]?.query.organizationId, orgScope.organizationId);
+  assert.deepEqual(h.search.searches[0]?.scopes, [orgScope]);
+  assert.equal(h.delivered.length, 1);
+  assert.equal(h.requests.delivery?.documentId, 'allowed');
+});
+
 test('preguntar por el origen de septiembre explica el nombre sin conceder una corrección ni reenviar', async () => {
   const h = makeHarness();
   const doc = document('sept-doc', 'FACTURA_2026-09.pdf', 'FACTURA', '2026-09');

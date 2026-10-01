@@ -132,6 +132,12 @@ export class SlotExtractorService {
     const hint = nombreDeArchivo(text);
     const clavesLista = palabrasClave(text);
     const claves = clavesLista.length > 0 ? clavesLista.join(' ') : null;
+    // Compara la misma forma sin acentos que usan las palabras clave, pero
+    // conserva la mayúscula original para no tomar nombres como Roberto.
+    const pistaNoPropia = (text.match(/[a-záéíóúüñ]+/gi) ?? []).some((word) =>
+      /^[a-záéíóúüñ]/.test(word) &&
+      clavesLista.includes(word.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')),
+    );
 
     const resueltoPorReglas =
       hint !== null ||
@@ -197,11 +203,11 @@ export class SlotExtractorService {
 
     return {
       query: {
-        // Con una solicitud en curso, el tipo solo vale si el mensaje lo
-        // menciona: "no es esa" no trae tipo, y el modelo lo sacaba del
-        // contexto y hacía repetir la misma búsqueda.
+        // Sin una pista documental concreta, "lo de marzo" no permite
+        // inferir FACTURA aunque el modelo la devuelva. En una solicitud en
+        // curso, además, el tipo solo vale si el mensaje lo menciona.
         category:
-          (!enCurso || mencionaTipo(text) ? toCategory(extracted.categoria) : null) ??
+          (pistaNoPropia && (!enCurso || mencionaTipo(text)) ? toCategory(extracted.categoria) : null) ??
           byRules.category,
         period: periodo ?? byRules.period,
         folio: folio ?? byRules.folio,

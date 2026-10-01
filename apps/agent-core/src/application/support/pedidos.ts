@@ -34,7 +34,7 @@ const MESES: Record<string, number> = {
 const MES = `(${Object.keys(MESES).join('|')})`;
 
 /** Conectores que separan un pedido de otro. */
-const SEPARADOR = /\s*(?:[,;]|\s+y\s+|\s+e\s+|\s+con\s+|\s+tambien\s+|\s+ademas\s+|\s+mas\s+)\s*/;
+const SEPARADOR = /\s*(?:[,;]|\s+y\s+|\s+e\s+|\s+con\s+|\s+tambi[eé]n\s+|\s+adem[aá]s\s+|\s+m[aá]s\s+)\s*/i;
 
 /** Palabras que acompañan una lista sin ser parte de lo que se busca. */
 const SIN_VALOR = new Set([
@@ -60,6 +60,7 @@ function anioProbable(month: number, hoy = new Date()): number {
  */
 export function dividirPedidos(raw: string, hoy = new Date()): VariosPedidos | null {
   let texto = normalizar(raw);
+  let original = raw.trim().replace(/\s+/g, ' ');
   if (texto.length === 0 || texto.length > 400) return null;
 
   // Separa el prefijo ANTES de partir por comas/conectores: "espera,
@@ -70,6 +71,7 @@ export function dividirPedidos(raw: string, hoy = new Date()): VariosPedidos | n
     const slots = parseQuery(mixta.peticion);
     if (slots.category !== null || slots.period !== null || slots.folio !== null) {
       texto = normalizar(mixta.peticion);
+      original = mixta.peticion.trim().replace(/\s+/g, ' ');
     }
   }
 
@@ -93,7 +95,8 @@ export function dividirPedidos(raw: string, hoy = new Date()): VariosPedidos | n
     return pedidos.length >= 2 ? { pedidos, todas } : null;
   }
 
-  const trozos = texto.split(SEPARADOR).filter((t) => t.trim() !== '');
+  // Cada fragmento conserva sus mayúsculas: Marco no es una errata de marzo.
+  const trozos = original.split(SEPARADOR).filter((t) => t.trim() !== '');
   if (trozos.length < 2) return null;
 
   const leidos = trozos.map((trozo) => {
@@ -117,7 +120,9 @@ export function dividirPedidos(raw: string, hoy = new Date()): VariosPedidos | n
     new Set(leidos.map((l) => valor(l[campo])).filter((v) => v !== null)).size;
 
   const variaAlgo =
-    distintos('period') >= 2 || distintos('folio') >= 2 || distintos('text') >= 2 || distintos('category') >= 2;
+    distintos('period') >= 2 || distintos('folio') >= 2 || distintos('text') >= 2 || distintos('category') >= 2 ||
+    (leidos.some((l) => l.text !== null && l.period === null) &&
+      leidos.some((l) => l.period !== null && l.text === null));
   if (!variaAlgo) return null;
 
   // Lo que se dijo en un trozo se hereda hacia adelante: "la factura de
@@ -149,7 +154,7 @@ export function dividirPedidos(raw: string, hoy = new Date()): VariosPedidos | n
   const periodo = unico('period');
   for (const p of pedidos) {
     if (!p.category && !p.folio && categoria) p.category = categoria;
-    if (!p.period && !p.folio && periodo) p.period = periodo;
+    if (!p.period && !p.folio && !p.text && periodo) p.period = periodo;
   }
 
   const sinRepetir = [...new Map(pedidos.map((p) => [clave(p), p])).values()];

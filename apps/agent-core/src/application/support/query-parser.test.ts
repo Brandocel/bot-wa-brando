@@ -185,3 +185,138 @@ for (const text of [
     assert.equal(esCierre(text), false);
   });
 }
+
+for (const [written, category] of [
+  ['factra', 'FACTURA'], ['fatcura', 'FACTURA'], ['contrto', 'CONTRATO'],
+  ['cotizcion', 'COTIZACION'], ['cotisacion', 'COTIZACION'],
+  ['repote', 'REPORTE'], ['polisa', 'POLIZA'],
+] as const) {
+  test(`categoría con errata ${written} → ${category}`, () => {
+    assert.equal(parseQuery(`Necesito la ${written}`).category, category);
+  });
+}
+
+for (const [written, month] of [
+  ['marso', '03'], ['fbrero', '02'], ['septimbre', '09'], ['novimbre', '11'],
+] as const) {
+  test(`mes con errata ${written} → ${month}`, () => {
+    assert.equal(parseQuery(`La factura de ${written} de 2026`).period?.toISOString().slice(0, 7), `2026-${month}`);
+  });
+}
+
+for (const [message, category, month] of [
+  ['nesesito la factra de marso', 'FACTURA', '03'],
+  ['me pasas la cotisacion de abril', 'COTIZACION', '04'],
+  ['quiero el contrto de junio', 'CONTRATO', '06'],
+  ['mandame la polisa de enero', 'POLIZA', '01'],
+  ['tienes las faturas de septiembre?', 'FACTURA', '09'],
+  ['necesito el repote de julio', 'REPORTE', '07'],
+  ['busco una cotizacion de marso', 'COTIZACION', '03'],
+  ['me mandas el contrato d febrero', 'CONTRATO', '02'],
+  ['la factura d marzo', 'FACTURA', '03'],
+  ['pásame la factura marzo', 'FACTURA', '03'],
+] as const) {
+  test(`frase humana: ${message}`, () => {
+    const query = parseQuery(`${message} de 2026`);
+    assert.equal(query.category, category);
+    assert.equal(query.period?.toISOString().slice(0, 7), `2026-${month}`);
+  });
+}
+
+test('un mes con errata no se conserva como palabra clave de archivo', () => {
+  assert.equal(parseQuery('la factura de marso de 2026').text, null);
+});
+
+test('sin contexto, "la de marso" aporta mes pero no inventa categoría', () => {
+  const query = parseQuery('la de marso de 2026');
+  assert.equal(query.category, null);
+  assert.equal(query.period?.toISOString().slice(0, 7), '2026-03');
+});
+
+test('"la de marso" sin año usa el año reciente sin inventar categoría', (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-15T12:00:00.000Z') });
+  const query = parseQuery('la de marso');
+  assert.equal(query.category, null);
+  assert.equal(query.period?.toISOString().slice(0, 7), '2026-03');
+});
+
+for (const message of [
+  'Pásame lo de Roberto', 'Necesito el documento que vimos',
+  'Pásame aquello de la obra', 'quiero la de mas',
+]) {
+  test(`no se inventa tipo ni mes: ${message}`, () => {
+    const query = parseQuery(message);
+    assert.equal(query.category, null);
+    assert.equal(query.period, null);
+  });
+}
+
+test('folios y nombres de archivo no pasan por corrección difusa', () => {
+  const folio = parseQuery('folio F-2026-888');
+  assert.equal(folio.category, null);
+  assert.equal(folio.period, null);
+  const filename = parseQuery('Factra_Marso_2026.pdf');
+  assert.equal(filename.text, 'Factra_Marso_2026');
+  assert.equal(filename.category, null);
+  assert.equal(filename.period, null);
+});
+
+test('un nombre propio parecido a una categoría sigue siendo texto libre', () => {
+  const query = parseQuery('Necesito el archivo de Factra');
+  assert.equal(query.category, null);
+  assert.equal(query.text, 'factra');
+  assert.equal(parseQuery('Necesito la Factra').category, null);
+  const monthName = parseQuery('Necesito la factura de Marso');
+  assert.equal(monthName.period, null);
+  assert.equal(monthName.text, 'marso');
+  assert.equal(parseQuery('Necesito la factura de Factra').text, 'factra');
+});
+
+test('un empate entre junio y julio no inventa mes', () => {
+  assert.equal(parseQuery('la factura de judio').period, null);
+});
+
+test('una palabra corta no se corrige como mes', () => {
+  assert.equal(parseQuery('la factura de maio').period, null);
+});
+
+test('fractura es una palabra distinta, no una errata de factura', () => {
+  assert.equal(parseQuery('necesito la fractura de marzo').category, null);
+});
+
+for (const [message, category, name] of [
+  ['necesito la factra de Factra', 'FACTURA', 'factra'],
+  ['necesito la polisa de Polisa', 'POLIZA', 'polisa'],
+] as const) {
+  test(`conserva el nombre repetido después de corregir solo el tipo: ${message}`, () => {
+    const query = parseQuery(message);
+    assert.equal(query.category, category);
+    assert.equal(query.text, name);
+  });
+}
+
+test('conserva un nombre igual al mes corregido después de la ocurrencia usada', () => {
+  const query = parseQuery('necesito la factura de marso de Marso de 2026');
+  assert.equal(query.category, 'FACTURA');
+  assert.equal(query.period?.toISOString().slice(0, 7), '2026-03');
+  assert.equal(query.text, 'marso');
+});
+
+test('pedido múltiple conserva Marco como nombre y no fabrica marzo', (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-15T12:00:00.000Z') });
+  const varios = dividirPedidos('la factura de Marco y la de abril');
+  assert.ok(varios);
+  assert.equal(varios.pedidos.length, 2);
+  assert.equal(varios.pedidos[0]?.category, 'FACTURA');
+  assert.match(varios.pedidos[0]?.text ?? '', /marco/i);
+  assert.equal(varios.pedidos[0]?.period, null);
+  assert.equal(varios.pedidos[1]?.period?.toISOString().slice(0, 7), '2026-04');
+  assert.equal(varios.pedidos.some((p) => p.period?.toISOString().slice(0, 7) === '2026-03'), false);
+});
+
+test('un mes corregido sigue funcionando en pedidos múltiples', () => {
+  const varios = dividirPedidos('las facturas de marso y abril de 2026');
+  assert.deepEqual(varios?.pedidos.map((p) => [p.category, p.period?.toISOString().slice(0, 7)]), [
+    ['FACTURA', '2026-03'], ['FACTURA', '2026-04'],
+  ]);
+});
