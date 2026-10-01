@@ -1480,12 +1480,12 @@ test('si el mes solo está en el registro, la explicación no lo atribuye al nom
   assert.equal(h.delivered.length, 0);
 });
 
-test('saludo inicial presenta a JARVIS con nombre y empresa del alcance', async () => {
+test('saludo inicial presenta a Jarvis con nombre y empresa del alcance', async () => {
   const h = makeHarness({ senderName: 'Ana López' });
   const reply = await h.handle('Hola');
   assert.ok(reply);
   assert.match(reply.text, /Ana/);
-  assert.match(reply.text, /JARVIS/);
+  assert.match(reply.text, /Jarvis/);
   assert.match(reply.text, /Constructora Vega/);
   assert.match(reply.text, /documentos?/i);
   assert.equal(h.search.searches.length, 0);
@@ -1496,7 +1496,7 @@ test('saludo inicial de buenos días conserva esa cortesía al presentarse', asy
   const reply = await h.handle('Buenos días');
   assert.ok(reply);
   assert.match(reply.text, /^¡Buenos días, Ana!/);
-  assert.match(reply.text, /JARVIS/);
+  assert.match(reply.text, /Jarvis/);
 });
 
 test('saludo sin nombre válido omite apelativo y usa la empresa correcta de cada línea', async () => {
@@ -1504,7 +1504,7 @@ test('saludo sin nombre válido omite apelativo y usa la empresa correcta de cad
     const h = makeHarness({ senderName: '🌸🌸', scopes: [{ ...orgScope, organizationId: organizationName, organizationName }] });
     const reply = await h.handle('Hola');
     assert.ok(reply);
-    assert.match(reply.text, /JARVIS/);
+    assert.match(reply.text, /Jarvis/);
     assert.ok(reply.text.includes(organizationName));
     assert.doesNotMatch(reply.text, /🌸|Prueba|Ana/);
   }
@@ -1515,27 +1515,27 @@ test('un nombre de perfil empresarial no se usa como nombre de pila', async () =
   const reply = await h.handle('Hola');
   assert.ok(reply);
   assert.doesNotMatch(reply.text, /¡Hola, Constructora!/);
-  assert.match(reply.text, /JARVIS/);
+  assert.match(reply.text, /Jarvis/);
 });
 
 test('saludo repetido usa nombre y no repite la presentación', async () => {
-  const h = makeHarness({ senderName: 'Ana López', history: [{ role: 'bot', text: '¡Hola! Soy JARVIS.', at: new Date() }] });
+  const h = makeHarness({ senderName: 'Ana López', history: [{ role: 'bot', text: '¡Hola! Soy Jarvis.', at: new Date() }] });
   const reply = await h.handle('Buenos días');
   assert.ok(reply);
   assert.match(reply.text, /Ana/);
   assert.match(reply.text, /Buenos días/);
-  assert.doesNotMatch(reply.text, /soy JARVIS/i);
+  assert.doesNotMatch(reply.text, /soy Jarvis/i);
 });
 
-test('saludo repetido tras una presentación de buenos días tampoco vuelve a presentar a JARVIS', async () => {
-  const h = makeHarness({ senderName: 'Ana López', history: [{ role: 'bot', text: '¡Buenos días, Ana! Soy JARVIS.', at: new Date() }] });
+test('saludo repetido tras una presentación de buenos días tampoco vuelve a presentar a Jarvis', async () => {
+  const h = makeHarness({ senderName: 'Ana López', history: [{ role: 'bot', text: '¡Buenos días, Ana! Soy Jarvis.', at: new Date() }] });
   const reply = await h.handle('Buenas tardes');
   assert.ok(reply);
   assert.match(reply.text, /^¡Buenas tardes, Ana!/);
-  assert.doesNotMatch(reply.text, /soy JARVIS/i);
+  assert.doesNotMatch(reply.text, /soy Jarvis/i);
 });
 
-test('una solicitud directa se entrega sin detenerla para presentar a JARVIS', async (t) => {
+test('una solicitud directa se entrega sin detenerla para presentar a Jarvis', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-06-15T12:00:00.000Z') });
   const h = makeHarness({ senderName: 'Ana López' });
   h.search.periodResults.set('2026-03', [document('march-direct', 'FACTURA_2026-03.pdf', 'FACTURA', '2026-03')]);
@@ -1543,7 +1543,7 @@ test('una solicitud directa se entrega sin detenerla para presentar a JARVIS', a
   assert.ok(reply);
   assert.equal(h.requests.delivery?.documentId, 'march-direct');
   assert.equal(h.delivered.length, 1);
-  assert.doesNotMatch(String((h.delivered[0] as unknown[])[2]), /soy JARVIS/i);
+  assert.doesNotMatch(String((h.delivered[0] as unknown[])[2]), /soy Jarvis/i);
 });
 
 test('saludo con solicitud en el mismo mensaje conserva la entrega', async (t) => {
@@ -1555,14 +1555,15 @@ test('saludo con solicitud en el mismo mensaje conserva la entrega', async (t) =
   assert.equal(h.requests.delivery?.documentId, 'march-hello');
   assert.equal(h.delivered.length, 1);
   assert.match(String((h.delivered[0] as unknown[])[2]), /^¡Hola, Ana!/);
-  assert.doesNotMatch(String((h.delivered[0] as unknown[])[2]), /soy JARVIS/i);
+  assert.doesNotMatch(reply.text ?? '', /¡Hola/, 'el saludo va una sola vez, en la entrega');
+  assert.doesNotMatch(String((h.delivered[0] as unknown[])[2]), /soy Jarvis/i);
 });
 
-test('saludo inicial sin alcance de empresa única presenta a JARVIS sin atribuir una empresa', async () => {
+test('saludo inicial sin alcance de empresa única presenta a Jarvis sin atribuir una empresa', async () => {
   const h = makeHarness({ senderName: null, scopes: [orgScope, { ...orgScope, organizationId: 'org-sol', organizationName: 'Grupo Sol' }] });
   const reply = await h.handle('Hola');
   assert.ok(reply);
-  assert.match(reply.text, /JARVIS/);
+  assert.match(reply.text, /Jarvis/);
   assert.doesNotMatch(reply.text, /Constructora Vega|Grupo Sol/);
 });
 

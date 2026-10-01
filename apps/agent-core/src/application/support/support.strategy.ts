@@ -626,7 +626,7 @@ export class SupportStrategy {
 
       // Un mes solo no identifica qué documento pidió la persona. Incluso
       // con un único resultado visible se aclara el tipo antes de entregarlo.
-      if (!query.category && query.period && !query.text) {
+      if (!query.category && !query.folio && query.period && !query.text) {
         return this.ask(turn, asked, 'categoria', voz.preguntaTipo());
       }
 

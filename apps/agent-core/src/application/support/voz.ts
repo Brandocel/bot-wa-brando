@@ -53,8 +53,8 @@ export function saludoInicial(empresa: string | null, nombre: string | null = nu
   // entre "¡Hola!" de contestador y "¡Hola, Mariana!" de alguien del equipo.
   const hola = saludoBreve(mensaje, nombre);
   const presentacion = empresa
-    ? `Soy JARVIS, el asistente documental de ${n(empresa)}. Puedo ayudarte a encontrar y recibir documentos por aquí.`
-    : 'Soy JARVIS, tu asistente documental. Puedo ayudarte a encontrar y recibir documentos por aquí.';
+    ? `Soy Jarvis, el asistente documental de ${n(empresa)}. Puedo ayudarte a encontrar y recibir documentos por aquí.`
+    : 'Soy Jarvis, tu asistente documental. Puedo ayudarte a encontrar y recibir documentos por aquí.';
   return `${hola} Qué gusto saludarte. ${presentacion}\n¿En qué te puedo ayudar hoy?`;
 }
 
@@ -479,7 +479,7 @@ export function mesDesconocido(nombre: string): string {
 }
 
 export function mesPorIndice(nombre: string, mes: string): string {
-  return `El registro de ${n(nombre)} indica ${n(mes)}, pero no puedo confirmar de dónde salió ese dato.`;
+  return `Según nuestro registro, ${n(nombre)} es de ${n(mes)}.\nSi sabes que es de otro mes, dime cuál y busco el correcto.`;
 }
 
 export function mesPorContenidoCorrigiendo(nombre: string, mesDentro: string, mesNombre: string): string {

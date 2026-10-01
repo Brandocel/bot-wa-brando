@@ -72,6 +72,13 @@ const CATEGORY_WORDS: Record<string, DocCategory> = {
 
 const CATEGORY_FUZZY_WORDS = Object.entries(CATEGORY_WORDS).filter(([word]) => /^[a-z]{6,}$/.test(word));
 
+/**
+ * Palabras reales a una letra de un tipo de documento: no son erratas.
+ * Van en lista y no con un prefijo obligatorio porque las erratas de
+ * verdad también caen en la segunda letra ("fctura", "fatcura").
+ */
+const NO_SON_ERRATA = new Set(['fractura', 'fracturas']);
+
 /** Sin acentos y en minúsculas: "Póliza" y "poliza" son la misma palabra. */
 function normalize(text: string): string {
   return text
@@ -269,11 +276,11 @@ function categoriaConErrata(text: string, raw = text): { category: DocCategory; 
   const spans: Span[] = [];
   for (const match of text.matchAll(/\b[a-z]+\b/g)) {
     const token = match[0];
-    if (token.length < 6) continue;
+    if (token.length < 6 || NO_SON_ERRATA.has(token)) continue;
     if (esNombrePropio(raw, match.index)) continue;
     const before = text.slice(0, match.index).trimEnd();
     if (before && !/\b(?:el|la|los|las|un|una|unos|unas|mi|mis|su|sus|necesito|quiero|busco|dame|mandame|pasame|enviame)\s*$/.test(before)) continue;
-    const category = coincidenciaUnica(token, CATEGORY_FUZZY_WORDS, 2);
+    const category = coincidenciaUnica(token, CATEGORY_FUZZY_WORDS, 1);
     if (category) {
       candidatos.add(category);
       spans.push({ start: match.index, end: match.index + token.length });

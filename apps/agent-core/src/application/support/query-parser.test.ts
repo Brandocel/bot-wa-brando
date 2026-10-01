@@ -320,3 +320,18 @@ test('un mes corregido sigue funcionando en pedidos múltiples', () => {
     ['FACTURA', '2026-03'], ['FACTURA', '2026-04'],
   ]);
 });
+
+test('"Oxxo y Walmart de marzo": el mes dicho junto a un nombre vale para los dos', (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-15T12:00:00.000Z') });
+  const varios = dividirPedidos('las facturas de Oxxo y Walmart de marzo');
+  assert.deepEqual(
+    varios?.pedidos.map((p) => [p.text, p.period?.toISOString().slice(0, 7)]),
+    [['oxxo', '2026-03'], ['walmart', '2026-03']],
+  );
+});
+
+for (const [written, category] of [['fctura', 'FACTURA'], ['kontrato', null]] as const) {
+  test(`una errata en la segunda letra también se corrige: ${written}`, () => {
+    assert.equal(parseQuery(`la ${written} de marzo`).category, category === null ? null : category);
+  });
+}

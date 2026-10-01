@@ -134,9 +134,11 @@ export class SlotExtractorService {
     const claves = clavesLista.length > 0 ? clavesLista.join(' ') : null;
     // Compara la misma forma sin acentos que usan las palabras clave, pero
     // conserva la mayúscula original para no tomar nombres como Roberto.
-    const pistaNoPropia = (text.match(/[a-záéíóúüñ]+/gi) ?? []).some((word) =>
-      /^[a-záéíóúüñ]/.test(word) &&
-      clavesLista.includes(word.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')),
+    // La primera palabra no cuenta como nombre: el teléfono la pone en
+    // mayúscula sola ("Recibo de nómina").
+    const pistaNoPropia = [...text.matchAll(/[a-záéíóúüñ]+/gi)].some((m) =>
+      (/^[a-záéíóúüñ]/.test(m[0]) || !/[a-záéíóúüñ]/i.test(text.slice(0, m.index))) &&
+      clavesLista.includes(m[0].toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')),
     );
 
     const resueltoPorReglas =

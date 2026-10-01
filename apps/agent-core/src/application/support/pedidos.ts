@@ -152,9 +152,13 @@ export function dividirPedidos(raw: string, hoy = new Date()): VariosPedidos | n
   };
   const categoria = unico('category');
   const periodo = unico('period');
+  // El mes dicho junto a un nombre ("Oxxo y Walmart de marzo") es de todos.
+  // El de un trozo que solo trae el mes ("la de Marco y la de abril") es
+  // otro pedido: no se le pega al nombre de antes.
+  const mesCompartido = leidos.filter((l) => l.period).every((l) => l.text);
   for (const p of pedidos) {
     if (!p.category && !p.folio && categoria) p.category = categoria;
-    if (!p.period && !p.folio && !p.text && periodo) p.period = periodo;
+    if (!p.period && !p.folio && (!p.text || mesCompartido) && periodo) p.period = periodo;
   }
 
   const sinRepetir = [...new Map(pedidos.map((p) => [clave(p), p])).values()];
