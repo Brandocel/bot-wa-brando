@@ -186,15 +186,13 @@ export class DocumentSearchService {
     return grupos.map((g) => ({ period: g.period, count: g._count._all }));
   }
 
-  /**
-   * Un documento por su id. Solo para reenviar algo YA entregado a esta
-   * misma conversación: el permiso se comprobó cuando se entregó, y quien
-   * llama pasa un id que salió de su propia bitácora, no del usuario.
-   */
-  async byId(id: string): Promise<Document | null> {
-    return this.prisma.document.findFirst({
-      where: { id, status: 'INDEXED' },
+  /** Revalida un ID guardado contra el mismo alcance y estado de search(). */
+  async byId(id: string, scopes: readonly OrgScope[]): Promise<Document | null> {
+    const where = this.searchWhere(scopes, {
+      category: null, period: null, folio: null, text: null,
     });
+    if (!where) return null;
+    return this.prisma.document.findFirst({ where: { ...where, id } });
   }
 
   /**

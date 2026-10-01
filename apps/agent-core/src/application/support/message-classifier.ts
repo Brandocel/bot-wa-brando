@@ -262,6 +262,11 @@ function esPregunta(texto: string, limpio: string): boolean {
  * "¿Cómo sabes que es de este mes?", "¿de qué fecha es?", "¿seguro que
  * es esa?", "¿por qué esa?": pregunta sobre lo que se acaba de mandar.
  */
+export function preguntaNombreEntregado(texto: string): boolean {
+  const limpio = normalizar(texto);
+  return /\b(?:que|cual) (?:archivo|documento|pdf) (?:me )?(?:mandaste|enviaste|pasaste)\b|\b(?:que|cual) me (?:mandaste|enviaste|pasaste)\b|\b(?:que|cual) (?:fue|era) (?:el|la) (?:archivo|documento|pdf)(?: que me (?:mandaste|enviaste|pasaste))?\b|\b(?:como se llama|cual es el nombre de) (?:el|la|ese|esa)? ?(?:archivo|documento|pdf)\b/.test(limpio);
+}
+
 export function preguntaSobreEntregado(texto: string): boolean {
   const limpio = texto
     .toLowerCase()
@@ -276,9 +281,14 @@ export function preguntaSobreEntregado(texto: string): boolean {
   const conMes = new RegExp(
     `\\b(es de ${M} o (de )?${M}|(esta|esa|la) (factura|cotizacion|contrato|reporte|poliza|documento)( que (me )?mandaste)? es de ${M}|dice que es de ${M}|es de ${M},? no (de|la de) ${M}|(yo )?te (pedi|habia pedido|dije) la de ${M})\\b`,
   );
+  const origenDelMes = new RegExp(
+    `\\b(?:como sabes|como supiste|de donde (?:sacaste|sacas|sale|obtuviste)|por que (?:dices|crees)) que (?:(?:esta|esa|este|ese|la|el) (?:factura|cotizacion|contrato|reporte|poliza|documento|archivo) )?(?:es|era) de (?:${M}|este mes|ese mes)\\b`,
+  );
 
   return (
-    /\b(como sabes|como supiste|por que (esa|ese|esta|este|dices|crees|me mandas|me mandaste)|de que (mes|fecha|ano|anio) es|que (mes|fecha) (es|tiene|trae)|de cuando es|(estas|esta) segur[oa]|es (la|el) correct[oa]|es (la|el) de este mes)\b|^segur[oa]( que)?\s*\?|(?<!no )\bes de (este|ese) mes\??$|\bsi es de (este|ese) mes\b/.test(
+    preguntaNombreEntregado(texto) ||
+    origenDelMes.test(limpio) ||
+    /\b(por que (esa|ese|esta|este|me mandas|me mandaste)|de que (mes|fecha|ano|anio) es|que (mes|fecha) (es|tiene|trae)|de cuando es|(estas|esta) segur[oa]|es (la|el) correct[oa]|es (la|el) de este mes)\b|^segur[oa]( que)?\s*\?|(?<!no )\bes de (este|ese) mes\??$|\bsi es de (este|ese) mes\b/.test(
       limpio,
     ) || conMes.test(limpio)
   );
