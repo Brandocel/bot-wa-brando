@@ -34,6 +34,13 @@ test('"de noviembre a febrero" cruza el cambio de año', () => {
 });
 
 test('varias opciones de una lista', () => {
+  // Rectificaciones: lo de después del "no," es lo que quiere.
+  // "No, la 3" es elegir una: sigue por leerNumero(), no se lee como exclusión.
+  assert.equal(leerVariasOpciones('No, la 3'), null);
+  assert.deepEqual(leerVariasOpciones('la 2 no, la 3'), { incluir: [3], excluir: [2] });
+  assert.deepEqual(leerVariasOpciones('No, las dos'), { incluir: [1, 2], excluir: [] });
+  assert.deepEqual(leerVariasOpciones('la 2 no'), { incluir: [], excluir: [2] });
+  assert.equal(leerVariasOpciones('no, gracias'), null);
   assert.deepEqual(leerVariasOpciones('la 1 y la 3'), [1, 3]);
   assert.deepEqual(leerVariasOpciones('las dos'), [1, 2]);
   assert.equal(leerVariasOpciones('todas'), 'todas');

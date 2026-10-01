@@ -252,6 +252,23 @@ export class SupportStrategy {
      * numerada es la forma que sí llega a todos los teléfonos.
      */
     // También "la 1, no la 3" y "todas menos la 2", antes de leerNumero().
+    /**
+     * Respuesta a "¿te mando la 1 y la 3?". Un "sí" manda lo entendido; un
+     * "no" lo descarta y se vuelve a preguntar; cualquier otra cosa se
+     * atiende como mensaje nuevo (la confirmación se olvida).
+     */
+    if (sol.porConfirmar?.length) {
+      const opciones = (sol.opciones ?? []).filter((o) => o.tipo === 'documento');
+      await this.solicitudes.guardar(ctx.conversationId, { porConfirmar: null });
+      if (esAfirmacion(message.body)) {
+        const elegidas = opciones.filter((o) => sol.porConfirmar!.includes(o.n));
+        if (elegidas.length > 0) return this.mandarOpciones(turn, elegidas, opciones);
+      } else if (esRechazo(message.body) || /^\s*no\b/i.test(message.body.trim()) && leerVariasOpciones(message.body) === null && leerNumero(message.body) === null) {
+        return { text: voz.corregirSeleccion(), awaiting: 'CLIENTE' };
+      }
+      sol = await this.solicitudes.actual(ctx.conversationId);
+    }
+
     const varias = leerVariasOpciones(message.body);
     if (varias !== null && sol.opciones?.some((o) => o.tipo === 'documento')) {
       return this.entregarVariasOpciones(varias, turn, sol);
@@ -1094,6 +1111,27 @@ export class SupportStrategy {
       };
     }
 
+    // Con negaciones ("la 2 no, la 3", "todas menos la 2") se confirma
+    // antes de mandar: son las frases que, mal escritas, se leen al revés.
+    if (conExclusiones) {
+      await this.solicitudes.guardar(turn.ctx.conversationId, {
+        porConfirmar: elegidas.map((o) => o.n),
+      });
+      return {
+        text: voz.confirmarSeleccion(elegidas.map((o) => `*${o.n}.* ${o.nombre}`)),
+        awaiting: 'CLIENTE',
+      };
+    }
+
+    return this.mandarOpciones(turn, elegidas, opciones);
+  }
+
+  /** Entrega opciones ya decididas de la lista, conservándola en pantalla. */
+  private async mandarOpciones(
+    turn: Turn,
+    elegidas: readonly Opcion[],
+    opciones: Opcion[],
+  ): Promise<StrategyReply> {
     const docs: Document[] = [];
     for (const o of elegidas) {
       const doc = await this.search.byId(o.id);

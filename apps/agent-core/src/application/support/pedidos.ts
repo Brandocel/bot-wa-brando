@@ -252,6 +252,37 @@ export function leerVariasOpciones(raw: string): SeleccionOpciones | null {
   if (new RegExp(`\\b(factura|contrato|cotizacion|reporte|poliza|${MES.slice(1, -1)}|20\\d\\d)\\b`).test(texto)) return null;
   if (/\b[a-z]{1,3}\d{3,}\b/.test(texto)) return null;
 
+  const ordinal = `(?:\\d+|${Object.keys(ORDINALES_OPCION).join('|')})`;
+
+  /**
+   * "No, la 3" y "la 2 no, la 3" son una RECTIFICACIÓN, no una exclusión:
+   * lo que va antes del "no," se descarta y lo que va después es lo que
+   * quiere. Leídas como exclusión, la primera no entregaba nada y la
+   * segunda entregaba justo la opción rechazada.
+   */
+  const conSignos = normalizar(raw);
+  const rectifica = /\bno\s*[,.;:]/.exec(conSignos);
+  if (rectifica) {
+    const limpiar = (s: string) => s.replace(/[^a-z0-9ñ\s]/g, ' ').replace(/\s+/g, ' ').trim();
+    const antes = numerosDeOpciones(limpiar(conSignos.slice(0, rectifica.index)), true);
+    const despues = limpiar(conSignos.slice(rectifica.index + rectifica[0].length))
+      .replace(/^(?:(?:mejor|pero|sino|mas bien)\s+)+/, '');
+    const quiere = despues ? leerVariasOpciones(despues) : null;
+    if (quiere !== null && typeof quiere === 'object' && !Array.isArray(quiere)) {
+      return { incluir: quiere.incluir, excluir: [...new Set([...antes, ...quiere.excluir])] };
+    }
+    const incluir = quiere ?? numerosDeOpciones(despues, true);
+    // "No, la 3" sin nada que descartar es elegir UNA: sigue por leerNumero().
+    if (antes.length === 0 && Array.isArray(incluir) && incluir.length === 1) return null;
+    if (incluir === 'todas' || incluir.length > 0) return { incluir, excluir: antes };
+  }
+
+  // "La 2 no": un "no" al final descarta esa opción. Antes caía en
+  // leerNumero() y entregaba justo la 2.
+  if (new RegExp(`^(?:(?:la|el|las|los|opcion|numero)\\s+)*${ordinal}(?:\\s+(?:y|e|ni)\\s+(?:(?:la|el)\\s+)?${ordinal})*\\s+no$`).test(texto)) {
+    return { incluir: [], excluir: numerosDeOpciones(texto, true) };
+  }
+
   // "No, mejor la 2" no niega la opción 2. Solo hay exclusión cuando el
   // marcador precede a una referencia numérica, no a una rectificación.
   const exclusion = new RegExp(
