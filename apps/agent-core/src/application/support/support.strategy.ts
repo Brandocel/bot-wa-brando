@@ -1062,7 +1062,7 @@ export class SupportStrategy {
       `${nombreConArticulo(doc.category)}${doc.period ? ` de ${mesEnPalabras(doc.period)}` : ''}`;
 
     const sent = await this.delivery.deliver(
-      { chatId: turn.message.chatId, waId: turn.message.senderId },
+      { chatId: turn.message.chatId, waId: turn.message.senderId, origen: turn.message.id },
       doc,
       voz.entrega(
         que,
@@ -1407,7 +1407,7 @@ export class SupportStrategy {
     });
 
     const sent = await this.delivery.deliver(
-      { chatId: turn.message.chatId, waId: turn.message.senderId },
+      { chatId: turn.message.chatId, waId: turn.message.senderId, origen: turn.message.id },
       documento,
       voz.reenvio(documento.name, nombreConArticulo(documento.category)),
       'Si tampoco lo ves, escríbeme y lo pasamos con una persona del equipo.',

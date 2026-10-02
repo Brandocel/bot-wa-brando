@@ -78,13 +78,29 @@ export class DocumentDeliveryService {
    * respaldo hasta que lo necesita.
    */
   async deliver(
-    destino: { chatId: string; waId: string },
+    destino: { chatId: string; waId: string; origen?: string },
     document: Document,
     caption: string,
     fallbackText?: string,
   ): Promise<DeliveryResult> {
     if (document.status !== 'INDEXED') {
       return { ok: false, reason: 'not_available' };
+    }
+
+    // Un turno que falló después de encolar el archivo se reintenta entero.
+    // Si este mensaje ya encoló este documento, no se encola otra vez.
+    if (destino.origen) {
+      const yaEncolado = await this.prisma.outboxMessage.findFirst({
+        where: {
+          chatId: destino.chatId,
+          AND: [
+            { payload: { path: ['origen'], equals: destino.origen } },
+            { payload: { path: ['documentId'], equals: document.id } },
+          ],
+        },
+        select: { id: true },
+      });
+      if (yaEncolado) return { ok: true };
     }
 
     // El tope se revisa ANTES de descargar: no tiene sentido bajar 40 MB de
@@ -122,6 +138,7 @@ export class DocumentDeliveryService {
           caption,
           documentId: document.id,
           waId: destino.waId,
+          ...(destino.origen ? { origen: destino.origen } : {}),
           // Si el adjunto no sale, el despachador manda un enlace firmado
           // (open-wa no logra mandar archivos a los hilos direccionados por
           // LID) seguido de este texto.
