@@ -570,7 +570,11 @@ export class SupportStrategy {
       extraction.query.period.toISOString() !== sol.period;
     const cambioFolio =
       extraction.query.folio !== null && sol.folio !== null && extraction.query.folio !== sol.folio;
-    const invalidaBusquedaAnterior = cambioCategoria || cambioPeriodo || cambioFolio;
+    // "Mejor de Vega" después de "la factura de Acme": las opciones, los
+    // rechazos y las preguntas eran de documentos de Acme.
+    const cambioEmpresa =
+      empresaMencionada !== null && sol.organizationId !== null && empresaMencionada !== sol.organizationId;
+    const invalidaBusquedaAnterior = cambioCategoria || cambioPeriodo || cambioFolio || cambioEmpresa;
 
     const patch: Partial<Solicitud> = {
       category: query.category,
@@ -1619,11 +1623,7 @@ export class SupportStrategy {
       return this.savedIdUnavailable(turn, [entregada.documentId]);
     }
 
-    const ids = tieneOpciones
-      ? (sol.opciones ?? []).filter((o) => o.tipo === 'documento').map((o) => o.id)
-      : documentoEntregado
-        ? [documentoEntregado.id]
-        : [];
+    const ids = idsRechazados(sol, entregada, documentoEntregado);
 
     if (ids.length === 0) return null;
 
@@ -1676,11 +1676,7 @@ export class SupportStrategy {
       return this.savedIdUnavailable(turn, [entregada.documentId]);
     }
 
-    const ids = tieneOpciones
-      ? (sol.opciones ?? []).filter((o) => o.tipo === 'documento').map((o) => o.id)
-      : documentoEntregado
-        ? [documentoEntregado.id]
-        : [];
+    const ids = idsRechazados(sol, entregada, documentoEntregado);
     if (ids.length === 0) return null;
 
     await this.solicitudes.guardar(turn.ctx.conversationId, {
@@ -1706,7 +1702,7 @@ export class SupportStrategy {
     if (!doc) return this.savedIdUnavailable(turn, [entregada.documentId]);
 
     if (preguntaNombreEntregado(turn.message.body)) {
-      await this.guardarOpciones(turn, [doc]);
+      // Sin guardarlo como opción: un "ok" después no debe reenviarlo.
       return { text: `El archivo que te mandé es *${doc.name}*.`, awaiting: 'CLIENTE', topic: doc.category };
     }
 
@@ -1762,8 +1758,15 @@ export class SupportStrategy {
           MAX_OPCIONES + 1,
         );
         if (deEseMes.length === 1) {
+          // Discutía lo que recibió; mandar otro archivo sin preguntar es
+          // adivinar. Se ofrece y se espera el sí.
           await this.solicitudes.guardar(turn.ctx.conversationId, { category: doc.category, period: mesPreguntado.toISOString() });
-          return this.entregar(turn, deEseMes[0]!);
+          await this.guardarOpciones(turn, [deEseMes[0]!]);
+          return {
+            text: `${text}\n${voz.ofrecerDeEseMes(deEseMes[0]!.name, pedido)}`,
+            awaiting: 'CLIENTE',
+            topic: doc.category,
+          };
         }
         if (deEseMes.length > 1 && deEseMes.length <= MAX_OPCIONES) {
           await this.guardarOpciones(turn, deEseMes);
@@ -2310,6 +2313,26 @@ function empresaGuardada(
   if (typeof guardado !== 'string') return null;
 
   return scopes.some((s) => s.organizationId === guardado) ? guardado : null;
+}
+
+/**
+ * Qué descarta un "no es esa".
+ *
+ * Si de la lista ya se eligió y se mandó una, "no es esa" habla de la que
+ * recibió, no de toda la lista: antes se descartaban todas y la correcta
+ * ya no se volvía a ofrecer.
+ */
+function idsRechazados(
+  sol: Solicitud,
+  entregada: { documentId: string } | null,
+  documentoEntregado: Document | null,
+): string[] {
+  const opciones = (sol.opciones ?? []).filter((o) => o.tipo === 'documento');
+  if (opciones.length > 0) {
+    if (entregada && opciones.some((o) => o.id === entregada.documentId)) return [entregada.documentId];
+    return opciones.map((o) => o.id);
+  }
+  return documentoEntregado ? [documentoEntregado.id] : [];
 }
 
 /**

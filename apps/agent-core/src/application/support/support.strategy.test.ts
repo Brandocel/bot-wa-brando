@@ -2700,3 +2700,13 @@ test('una amenaza de demanda no es charla: la ve una persona', async () => {
   assert.equal(h.escalations.length, 1);
   assert.deepEqual(h.delivered, []);
 });
+
+test('"no es esa" después de elegir de la lista descarta solo la que recibió', async () => {
+  const { h, documentA, documentB } = pendingDocumentOptions();
+  await h.handle('la 1');
+  assert.deepEqual(entregados(h), [documentA.name]);
+
+  await h.handle('no es esa');
+  assert.deepEqual(h.requests.state.rechazados, [String(documentA.id)]);
+  assert.equal(h.requests.state.rechazados.includes(String(documentB.id)), false);
+});
