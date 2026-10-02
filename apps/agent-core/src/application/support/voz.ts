@@ -212,6 +212,11 @@ export function encabezadoVariasDe(que: string): string {
   return `De ${n(que)} encontré varias:`;
 }
 
+/** Lo hallado no es exactamente lo pedido (otro tipo u otro mes): se ofrece. */
+export function encabezadoParecidasA(que: string): string {
+  return `De ${n(que)} no encontré uno exacto. Lo más cercano, por si es ese:`;
+}
+
 export function noEncontreVarios(pedidos: readonly string[]): string {
   return pedidos.length === 1
     ? `No encontré ${n(pedidos[0]!)}.`

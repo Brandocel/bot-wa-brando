@@ -1155,7 +1155,7 @@ export class SupportStrategy {
 
     const limite = varios.todas ? MAX_ENTREGAS + 1 : MAX_OPCIONES + 1;
     const aEntregar: Document[] = [];
-    const listas: { que: string; docs: Document[] }[] = [];
+    const listas: { que: string; docs: Document[]; dudosas?: boolean }[] = [];
     const faltan: string[] = [];
 
     for (const p of pedidos) {
@@ -1178,8 +1178,21 @@ export class SupportStrategy {
       }
 
       if (docs.length === 1 || varios.todas) {
+        // Lo mismo que en el pedido de uno (entregarSiCoincide): con folio
+        // la búsqueda no filtra por tipo, así que "factura folio C3001" puede
+        // dar con un contrato C3001. Eso se ofrece en la lista, no se manda.
+        const exactos = docs.filter((d) => coincidePedido(d, p));
+        const dudosos = docs.filter((d) => !coincidePedido(d, p));
+
         // "Todas", del mes más viejo al más nuevo.
-        aEntregar.push(...[...docs].sort(porMes));
+        aEntregar.push(...exactos.sort(porMes));
+        if (dudosos.length > 0) {
+          listas.push({
+            que: describirPedidoVarios(p),
+            docs: dudosos.slice(0, MAX_OPCIONES),
+            dudosas: true,
+          });
+        }
         continue;
       }
 
@@ -1280,7 +1293,7 @@ export class SupportStrategy {
     docs: readonly Document[],
     opts: {
       faltan: readonly string[];
-      listas: readonly { que: string; docs: Document[] }[];
+      listas: readonly { que: string; docs: Document[]; dudosas?: boolean }[];
       forzar: boolean;
       conservar?: Opcion[];
     },
@@ -1308,8 +1321,9 @@ export class SupportStrategy {
       paraElegir.push(...lista.docs);
       partes.push(
         [
-          voz.encabezadoVariasDe(lista.que),
-          ...lista.docs.map((doc, i) => `*${inicio + i + 1}.* ${describe(doc)}`),
+          lista.dudosas ? voz.encabezadoParecidasA(lista.que) : voz.encabezadoVariasDe(lista.que),
+          ...lista.docs.map((doc, i) =>
+            `*${inicio + i + 1}.* ${lista.dudosas ? describeConTipo(doc) : describe(doc)}`),
         ].join('\n'),
       );
     }
@@ -2205,6 +2219,12 @@ function coincideMes(
   return doc.period.getTime() === query.period.getTime() ? 'coincide' : 'contradice';
 }
 
+/** ¿Es del tipo y del mes pedidos? Solo así sale en un lote sin preguntar. */
+function coincidePedido(doc: Document, query: SearchQuery): boolean {
+  if (query.category && doc.category !== query.category) return false;
+  return coincideMes(doc, query) === 'coincide';
+}
+
 /**
  * Quita de las palabras clave las que son nombre de alguna empresa del
  * alcance. Devuelve null si no queda nada.
@@ -2474,6 +2494,12 @@ function readAsked(slots: unknown): AskedState {
 function describe(doc: Document): string {
   const period = doc.period ? mesEnPalabras(doc.period) : 'sin mes';
   return `*${doc.name}* — ${period}${doc.folio ? `, folio ${doc.folio}` : ''}`;
+}
+
+/** Como describe(), pero dice el tipo: para lo que no es exactamente lo pedido. */
+function describeConTipo(doc: Document): string {
+  const period = doc.period ? mesEnPalabras(doc.period) : 'sin mes';
+  return `*${doc.name}* — ${nombreConArticulo(doc.category)}, ${period}${doc.folio ? `, folio ${doc.folio}` : ''}`;
 }
 
 /** ¿Hay una solicitud a medias: tipo, mes o folio ya dichos? */

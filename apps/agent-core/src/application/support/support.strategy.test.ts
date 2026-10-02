@@ -90,6 +90,9 @@ class MemorySearch {
   /** Resultados por palabra clave exacta ("oxxo"). */
   textResults = new Map<string, unknown[]>();
 
+  /** Resultados por folio: como la búsqueda real, sin filtrar por tipo. */
+  folioResults = new Map<string, unknown[]>();
+
   private catalogMatches(scopes: readonly unknown[], query: Record<string, unknown>): Array<Record<string, unknown>> {
     return (this.catalog ?? []).filter((doc) =>
       doc.status === 'INDEXED' &&
@@ -110,6 +113,9 @@ class MemorySearch {
     if (this.catalog) {
       return this.catalogMatches(scopes, query).sort((a, b) => (b.period as Date).getTime() - (a.period as Date).getTime() ||
         String(a.name).localeCompare(String(b.name))).slice(0, limit);
+    }
+    if (typeof query.folio === 'string' && this.folioResults.has(query.folio)) {
+      return this.folioResults.get(query.folio)!;
     }
     if (typeof query.text === 'string' && this.textResults.has(query.text)) {
       return this.textResults.get(query.text)!;
@@ -181,7 +187,7 @@ class MemorySearch {
       return doc && (!scopes || this.catalogMatches(scopes, {}).some((allowed) => allowed.id === id)) ? doc : null;
     }
     if (id === 'previous-invoice') return document(id, 'FACTURA_2026-02_V3001.pdf');
-    const custom = [...this.periodResults.values(), ...this.textResults.values()].flat();
+    const custom = [...this.periodResults.values(), ...this.textResults.values(), ...this.folioResults.values()].flat();
     return custom.find((doc) => (doc as { id?: string }).id === id) ??
       this.sixInvoices.find((doc) => doc.id === id) ?? null;
   }
@@ -2667,6 +2673,22 @@ test('si lo único que aparece es de otro tipo, se ofrece y no se manda solo', a
 
   await h.handle('sí');
   assert.deepEqual(entregados(h), ['Contrato_marzo.pdf']);
+});
+
+test('en un lote, un folio que resulta ser de otro tipo se ofrece y no se manda', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-06-15T12:00:00.000Z') });
+  const h = makeHarness();
+  // La búsqueda por folio no filtra por tipo: C3001 es un contrato.
+  h.search.folioResults.set('C3001', [document('contrato-c3001', 'Contrato_C3001.pdf', 'CONTRATO', '2026-03')]);
+  h.search.folioResults.set('A100', [document('factura-a100', 'Factura_A100.pdf', 'FACTURA', '2026-04')]);
+
+  const reply = await h.handle('pásame la factura folio C3001 y la factura folio A100');
+  assert.deepEqual(entregados(h), ['Factura_A100.pdf']);
+  assert.match(reply?.text ?? '', /no encontré uno exacto/);
+  assert.match(reply?.text ?? '', /Contrato_C3001\.pdf\* — el contrato/);
+
+  await h.handle('la 1');
+  assert.deepEqual(entregados(h), ['Factura_A100.pdf', 'Contrato_C3001.pdf']);
 });
 
 // ── Queja y petición en el mismo mensaje: ninguna se pierde ─────────────
