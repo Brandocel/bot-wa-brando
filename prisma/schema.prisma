@@ -123,8 +123,8 @@ enum MessageIntent {
 }
 
 model Message {
-  // El id ES el messageId de WhatsApp. Esa es toda la idempotencia:
-  // si open-wa reentrega, el insert choca con la PK y lo descartamos.
+  // El id ES el messageId de WhatsApp. Si open-wa reentrega, el insert
+  // choca con la PK; se descarta solo si ya quedó atendido (handledAt).
   id             String      @id
   conversationId String
   direction      Direction
@@ -132,6 +132,13 @@ model Message {
   body           String      @db.Text
   raw            Json? // payload original, para depurar el ACL
   createdAt      DateTime    @default(now())
+
+  /// Solo entrantes: cuándo WhatsApp dice que se mandó. Es el orden en
+  /// que se atienden los mensajes de un mismo chat.
+  waTimestamp DateTime?
+  /// Solo entrantes: cuándo quedó contestado (o decidido no contestar).
+  /// null = registrado pero sin atender: un reintento lo vuelve a tomar.
+  handledAt   DateTime?
 
   /// Solo entrantes. null = no se clasificó (un comando, un mensaje previo
   /// a la clasificación).

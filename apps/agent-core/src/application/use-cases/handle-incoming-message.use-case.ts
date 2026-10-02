@@ -17,6 +17,22 @@ import type { TransactionClient } from '../../infrastructure/persistence/prisma.
 import { SourceFilter } from '../pipeline/filters/source.filter';
 import { runPipeline, type MessageFilter, type PipelineContext } from '../pipeline/pipeline';
 
+/** Cuánto espera un mensaje a que se atiendan los anteriores del mismo chat. */
+const ESPERA_TURNO_MS = 15_000;
+/**
+ * Un anterior sin atender más viejo que esto ya no se espera: su trabajo
+ * murió o agotó reintentos, y no puede dejar al chat entero sin respuesta.
+ */
+const ANTERIOR_VIGENTE_MS = 60 * 1000;
+const PAUSA_TURNO_MS = 250;
+/**
+ * Margen antes de la primera revisión: dos mensajes mandados casi juntos
+ * llegan a trabajadores distintos con milisegundos de diferencia, y el
+ * anterior puede no haberse registrado todavía. Frente a lo que tarda un
+ * turno (modelo, Drive), un cuarto de segundo no se nota.
+ */
+const GRACIA_TURNO_MS = 250;
+
 @Injectable()
 export class HandleIncomingMessageUseCase {
   private readonly logger = new Logger(HandleIncomingMessageUseCase.name);
@@ -70,6 +86,12 @@ export class HandleIncomingMessageUseCase {
 
     if (ctx.stoppedBy) {
       this.logger.debug(`${message.id} cortado por ${ctx.stoppedBy}: ${ctx.stopReason}`);
+      // Un reintento que ahora corta un filtro (pausa, tope) ya no se va a
+      // contestar: queda atendido para no hacer esperar a los siguientes.
+      await this.prisma.message.updateMany({
+        where: { id: message.id, direction: 'IN', handledAt: null },
+        data: { handledAt: new Date() },
+      });
     }
   }
 
@@ -90,18 +112,23 @@ export class HandleIncomingMessageUseCase {
    * turno entero moría. El síntoma era que el bot no contestaba justo a los
    * números recién dados de alta.
    *
-   * Las dos fases siguen bajo el mismo lock por chat, así que dos mensajes
-   * de la misma conversación se siguen atendiendo en orden. Lo que se pierde
-   * es la atomicidad entre "mensaje registrado" y "respuesta encolada": si
-   * el proceso muere entre ambas, queda el entrante sin contestar. Eso es
-   * visible y recuperable; lo otro era una caída silenciosa.
+   * Cada fase toma el lock por chat por separado, así que entre las dos
+   * puede colarse otro mensaje del mismo chat. Dos cosas lo compensan:
+   *
+   * - Orden: antes de la FASE 2, un mensaje espera a que se atiendan los
+   *   anteriores del mismo chat (por la hora de WhatsApp). "factura" y "de
+   *   marzo" mandados seguidos se contestan en ese orden aunque los tomen
+   *   trabajadores distintos.
+   * - Reintento: el entrante queda "atendido" (handledAt) en la misma
+   *   transacción que encola la respuesta. Si la FASE 2 falla, no se marca,
+   *   y el reintento de la cola lo vuelve a tomar en vez de descartarlo.
    */
   private async handle(ctx: PipelineContext): Promise<void> {
     const { message, role } = ctx;
     const ahora = new Date();
 
     // ── FASE 1: registrar lo que llegó ──────────────────────────────────
-    const { contactId, conversationId, enManosDePersona } = await this.prisma.withChatLock(
+    const { contactId, conversationId, enManosDePersona, registradoEn } = await this.prisma.withChatLock(
       message.chatId,
       async (tx) => {
         const contact = await tx.contact.upsert({
@@ -126,15 +153,20 @@ export class HandleIncomingMessageUseCase {
           update: { awaiting: 'BOT', lastInboundAt: ahora, seenAt: ahora },
         });
 
-        await tx.message.create({
-          data: {
+        // upsert y no create: en un reintento el entrante ya está registrado.
+        const registrado = await tx.message.upsert({
+          where: { id: message.id },
+          create: {
             id: message.id,
             conversationId: conversation.id,
             direction: 'IN',
             kind: message.kind,
             body: message.body,
             raw: message.raw as object,
+            waTimestamp: message.timestamp,
           },
+          update: {},
+          select: { createdAt: true },
         });
 
         return {
@@ -143,6 +175,7 @@ export class HandleIncomingMessageUseCase {
           enManosDePersona:
             conversation.handoffUntil !== null &&
             conversation.handoffUntil.getTime() > Date.now(),
+          registradoEn: registrado.createdAt,
         };
       },
     );
@@ -150,8 +183,24 @@ export class HandleIncomingMessageUseCase {
     // Acuse de recibo en WhatsApp. Fuera de toda transacción: es red.
     await this.conversations.onInbound({ chatId: message.chatId });
 
+    await this.esperarTurno(conversationId, message.id, message.timestamp, registradoEn);
+
     // ── FASE 2: decidir y responder ─────────────────────────────────────
     await this.prisma.withChatLock(message.chatId, async (tx) => {
+      // Una reentrega del mismo mensaje pudo atenderlo mientras este
+      // esperaba el lock. Marcarlo aquí es seguro: si algo de abajo falla,
+      // la transacción entera se deshace y la marca con ella.
+      const yaAtendido = await tx.message.findUnique({
+        where: { id: message.id },
+        select: { handledAt: true },
+      });
+      if (yaAtendido?.handledAt) return;
+      await tx.message.update({
+        where: { id: message.id },
+        data: { handledAt: new Date() },
+        select: { id: true },
+      });
+
       // Los comandos del dueño ganan, para que /pausa siga funcionando
       // aunque ese número también tenga membresías.
       const ownerReply =
@@ -245,6 +294,44 @@ export class HandleIncomingMessageUseCase {
 
     // Fuera de la transacción: la red no va dentro de un lock.
     await this.outbox.drain();
+  }
+
+  /**
+   * Espera a que se atiendan los entrantes anteriores de este chat.
+   *
+   * Sin lock tomado: el anterior necesita el lock para terminar. Si tarda
+   * demasiado (su trabajo murió y espera reintento), este sigue: mejor una
+   * respuesta fuera de orden que ninguna.
+   */
+  private async esperarTurno(
+    conversationId: string,
+    messageId: string,
+    enviadoEn: Date,
+    registradoEn: Date,
+  ): Promise<void> {
+    const limite = Date.now() + ESPERA_TURNO_MS;
+    await new Promise((r) => setTimeout(r, GRACIA_TURNO_MS));
+
+    while (Date.now() < limite) {
+      const anteriores = await this.prisma.message.count({
+        where: {
+          conversationId,
+          direction: 'IN',
+          handledAt: null,
+          id: { not: messageId },
+          createdAt: { gte: new Date(Date.now() - ANTERIOR_VIGENTE_MS) },
+          OR: [
+            { waTimestamp: { lt: enviadoEn } },
+            // Mismo segundo de WhatsApp: decide el orden en que se registraron.
+            { waTimestamp: enviadoEn, createdAt: { lt: registradoEn } },
+          ],
+        },
+      });
+      if (anteriores === 0) return;
+      await new Promise((r) => setTimeout(r, PAUSA_TURNO_MS));
+    }
+
+    this.logger.warn(`${messageId}: los anteriores del chat no terminaron; se atiende sin esperar más`);
   }
 }
 

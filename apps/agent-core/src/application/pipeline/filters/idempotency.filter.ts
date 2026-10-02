@@ -8,6 +8,11 @@ import { type MessageFilter, type Next, type PipelineContext, stop } from '../pi
  *
  * La llave de idempotencia es el messageId de WhatsApp, que además es la PK
  * de la tabla Message: la base es la fuente de verdad, no un caché en RAM.
+ *
+ * "Ya procesado" es que quedó ATENDIDO (handledAt), no que exista: el
+ * entrante se registra antes de contestar, y si contestar falla, el
+ * reintento tiene que pasar. Antes se descartaba y la persona se quedaba
+ * sin respuesta.
  */
 @Injectable()
 export class IdempotencyFilter implements MessageFilter {
@@ -18,10 +23,11 @@ export class IdempotencyFilter implements MessageFilter {
   async handle(ctx: PipelineContext, next: Next): Promise<void> {
     const seen = await this.prisma.message.findUnique({
       where: { id: ctx.message.id },
-      select: { id: true },
+      select: { direction: true, handledAt: true },
     });
 
-    if (seen) {
+    // Lo que no es entrante (el eco de algo que mandó el bot) nunca se atiende.
+    if (seen && (seen.direction !== 'IN' || seen.handledAt !== null)) {
       return stop(ctx, this.name, 'mensaje ya procesado');
     }
 
