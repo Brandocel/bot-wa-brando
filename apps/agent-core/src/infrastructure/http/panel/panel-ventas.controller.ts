@@ -128,7 +128,7 @@ export class PanelVentasController {
     @Req() req: PanelRequest,
     @Body() body: {
       organizationId?: string; id?: string; name?: string; description?: string; section?: string;
-      price?: number; active?: boolean;
+      price?: number; active?: boolean; availableDays?: string[];
     },
   ) {
     const { id: organizationId } = this.empresa(req, body.organizationId, true);
@@ -143,6 +143,11 @@ export class PanelVentasController {
       section: (body.section ?? '').trim().slice(0, 60),
       priceCents: Math.round(price * 100),
       active: body.active !== false,
+      // Todos los días marcados es lo mismo que ninguno: se vende siempre.
+      availableDays: (() => {
+        const dias = [...new Set((body.availableDays ?? []).filter((d) => (DIAS as readonly string[]).includes(d)))];
+        return dias.length === DIAS.length ? [] : dias;
+      })(),
     };
 
     if (body.id) {

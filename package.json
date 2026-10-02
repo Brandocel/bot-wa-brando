@@ -29,6 +29,7 @@
     "verify:drive": "tsx --tsconfig tsconfig.base.json scripts/dev/verify-drive.ts",
     "verify:strategy": "tsx --tsconfig tsconfig.base.json scripts/dev/verify-strategy.ts",
     "panel:user": "tsx --tsconfig tsconfig.base.json scripts/dev/create-panel-user.ts",
+    "ventas:catalogo": "tsx --tsconfig tsconfig.base.json scripts/ventas/cargar-catalogo.ts",
     "verify:phone": "tsx --tsconfig tsconfig.base.json scripts/dev/verify-phone.ts",
     "verify:delivery": "tsx --tsconfig tsconfig.base.json scripts/dev/verify-delivery.ts",
     "verify:entrega": "tsx --tsconfig tsconfig.base.json scripts/dev/verify-entrega-real.ts",

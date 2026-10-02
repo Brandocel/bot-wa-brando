@@ -19,7 +19,9 @@ import {
 import { avanceDelPedido, leerLectura, mezclar, type LecturaModelo } from './lectura';
 import {
   aplicar,
+  diasEnPalabras,
   faltantes,
+  fueraDeDia,
   inventaMontos,
   montosPermitidos,
   pedidoVacio,
@@ -97,7 +99,7 @@ export class SalesStrategy {
           where: { active: true },
           orderBy: [{ section: 'asc' }, { sortOrder: 'asc' }, { name: 'asc' }],
           take: 200,
-          select: { id: true, name: true, description: true, section: true, priceCents: true },
+          select: { id: true, name: true, description: true, section: true, priceCents: true, availableDays: true },
         },
       },
     });
@@ -191,7 +193,7 @@ export class SalesStrategy {
       : null;
 
     if (r.listo) {
-      const falta = faltantes(pedido, negocio.reglas, ahora);
+      const falta = faltantes(pedido, negocio.reglas, ahora, negocio.catalogo);
       if (falta.length === 0 && guardado) {
         await this.prisma.order.update({ where: { id: guardado.id }, data: { confirmPending: true } });
         await this.guardarLectura(message.id, guardado.id, modelo.lectura, pedido, true, { cancelo: false, enviado: false });
@@ -219,7 +221,7 @@ export class SalesStrategy {
     ahora: Date,
   ): Promise<StrategyReply> {
     // Entre el resumen y el sí pudo cerrar el negocio o cambiar algo.
-    const falta = faltantes(pedido, negocio.reglas, ahora);
+    const falta = faltantes(pedido, negocio.reglas, ahora, negocio.catalogo);
     if (falta.length > 0) {
       await this.prisma.order.update({ where: { id: orden.id }, data: { confirmPending: false } });
       return { text: preguntaPor(falta[0]!, pedido, negocio, ahora), awaiting: 'CLIENTE' };
@@ -384,7 +386,9 @@ function contexto(
   const abre = abierto ? null : siguienteApertura(reglas.horario, ahora, reglas.timezone);
 
   const carta = n.catalogo.map((c) =>
-    `- [${c.id}] ${c.section ? c.section + ' · ' : ''}${c.name} — ${pesos(c.priceCents)}${c.description ? ' · ' + c.description : ''}`);
+    `- [${c.id}] ${c.section ? c.section + ' · ' : ''}${c.name} — ${pesos(c.priceCents)}` +
+    (c.availableDays?.length ? ` · SOLO ${diasEnPalabras(c.availableDays).toUpperCase()}` : '') +
+    (c.description ? ' · ' + c.description : ''));
 
   const lleva = p.items.length
     ? p.items.map((i) => `${i.cantidad} × ${i.nombre} [${i.productId}]${i.nota ? ` (${i.nota})` : ''}`).join('; ')
@@ -440,6 +444,11 @@ function preguntaPor(f: Faltante, p: Pedido, n: Negocio, ahora: Date): string {
   const { reglas } = n;
   switch (f) {
     case 'productos': return '¿Qué se te antoja? Te puedo recomendar según para cuántos sea.';
+    case 'dia': {
+      const fuera = fueraDeDia(p, n.catalogo, reglas, ahora);
+      return fuera.map((c) => `${c.name} solo se vende ${diasEnPalabras(c.availableDays ?? [])}.`).join(' ') +
+        ' ¿Lo cambiamos por otra opción o te lo programo para ese día?';
+    }
     case 'entrega': {
       const modos = reglas.deliveryModes.map((m) => NOMBRE_ENTREGA[m]);
       return modos.length > 1 ? `¿Lo quieres ${modos.slice(0, -1).join(', ')} o ${modos[modos.length - 1]}?` : `Sería ${modos[0] ?? 'para recoger'}, ¿va?`;

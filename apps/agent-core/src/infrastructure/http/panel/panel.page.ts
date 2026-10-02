@@ -1299,13 +1299,18 @@ async function vtCatalogo() {
         '</div>' +
         '<label class="campo">Descripción <span class="muted">(el bot la usa para recomendar: para cuántos rinde, qué lleva)</span>' +
           '<input id="vt-p-desc" value="' + escAttr(p.description) + '" placeholder="Rinde para 4 personas, incluye salsa"></label>' +
+        '<fieldset class="tipo"><legend>Qué días se vende <span class="muted">(sin marcar = todos)</span></legend><div class="permisos-lista">' +
+          DIAS_VT.map(([d, n]) => '<label class="permiso"><input type="checkbox" name="vt-p-dia" value="' + d + '"' +
+            ((p.availableDays ?? []).includes(d) ? ' checked' : '') + '> ' + n + '</label>').join('') + '</div></fieldset>' +
         '<label class="check"><input type="checkbox" id="vt-p-activo"' + (p.active ? ' checked' : '') + '> Disponible para vender</label>' +
         '<div class="fila-botones"><button type="submit">Guardar</button><button type="button" class="ghost" data-vt-producto-cerrar>Cancelar</button></div>' +
       '</form>'
     : '';
 
   const filas = productos.map((x) => '<tr' + (x.active ? '' : ' class="apagado"') + '>' +
-    '<td><strong>' + esc(x.name) + '</strong>' + (x.description ? '<div class="muted small">' + esc(x.description) + '</div>' : '') + '</td>' +
+    '<td><strong>' + esc(x.name) + '</strong>' + ((x.availableDays ?? []).length ? ' <span class="pill warn">solo ' +
+      x.availableDays.map((d) => (DIAS_VT.find(([k]) => k === d) ?? [d, d])[1].toLowerCase()).join(', ') + '</span>' : '') +
+      (x.description ? '<div class="muted small">' + esc(x.description) + '</div>' : '') + '</td>' +
     '<td>' + esc(x.section || '—') + '</td>' +
     '<td>' + dinero(x.priceCents) + '</td>' +
     '<td>' + (x.active ? '<span class="pill ok">disponible</span>' : '<span class="pill">no disponible</span>') + '</td>' +
@@ -1428,6 +1433,7 @@ document.addEventListener('submit', async (e) => {
         price: Number(document.getElementById('vt-p-precio').value),
         description: document.getElementById('vt-p-desc').value,
         active: document.getElementById('vt-p-activo').checked,
+        availableDays: [...document.querySelectorAll('input[name="vt-p-dia"]:checked')].map((c) => c.value),
       });
       aviso('Producto guardado');
       vtProducto = null;

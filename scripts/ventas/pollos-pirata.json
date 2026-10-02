@@ -1,0 +1,205 @@
+{
+  "empresa": "Pollos Pirata",
+  "config": {
+    "businessType": "Pollos asados con sabores y paquetes familiares",
+    "pitch": "Pollos asados con sabor a elegir: Tamarindo, Axiote, BBQ, Talla, Pimienta o Pastor.\n- Los pollos (1/4, 1/2, 1) y todos los paquetes llevan sabor: pregunta siempre cuál y anótalo en la nota del renglón (por ejemplo \"BBQ\"). Si pide varios, puede ser un sabor distinto en cada uno.\n- Las especialidades Veracruz y Peninsular ya vienen preparadas: no llevan sabor.\n- El Paquete Pirata trae a elegir puré de papa o espagueti: pregunta cuál y anótalo en la nota.\n- Súper Miércoles: solo se vende los miércoles.\n- Los paquetes traen arroz, frijol, tortillas y salsa; recomiéndalos sobre armar todo suelto.\nSugerencia según cuántos son (revísala la empresa): 1 persona, Paquete Acompañes; 2, Paquete Amigo; 3 a 4, Paquete Sorpresa, Primavera, Pirata o Taquitos; 5 a 6, Paquete Apollo; 7 u 8, Paquete Especial o Tesoro.\nComplementos que suelen pedirse: tortillas extra, salsa, tacos dorados y agua fresca.",
+    "timezone": "America/Cancun",
+    "deliveryModes": [
+      "RECOGER"
+    ],
+    "prepMinutes": 25,
+    "minOrder": 0
+  },
+  "productos": [
+    {
+      "nombre": "1/4 pollo",
+      "seccion": "Pollos",
+      "precio": 82,
+      "descripcion": "Lleva sabor."
+    },
+    {
+      "nombre": "1/2 pollo",
+      "seccion": "Pollos",
+      "precio": 140,
+      "descripcion": "Lleva sabor."
+    },
+    {
+      "nombre": "1 pollo",
+      "seccion": "Pollos",
+      "precio": 255,
+      "descripcion": "Lleva sabor."
+    },
+    {
+      "nombre": "Veracruz 1 pollo",
+      "seccion": "Especialidades",
+      "precio": 270,
+      "descripcion": "Especialidad, no lleva sabor. Incluye 1 pollo, arroz, frijol, tortillas y salsa."
+    },
+    {
+      "nombre": "Veracruz 1/2 pollo",
+      "seccion": "Especialidades",
+      "precio": 155,
+      "descripcion": "Especialidad, no lleva sabor. Incluye 1/2 pollo, arroz, frijol, tortillas y salsa."
+    },
+    {
+      "nombre": "Peninsular 1 pollo",
+      "seccion": "Especialidades",
+      "precio": 270,
+      "descripcion": "Especialidad, no lleva sabor. Incluye 1 pollo, arroz, frijol, tortillas y salsa."
+    },
+    {
+      "nombre": "Peninsular 1/2 pollo",
+      "seccion": "Especialidades",
+      "precio": 155,
+      "descripcion": "Especialidad, no lleva sabor. Incluye 1/2 pollo, arroz, frijol, tortillas y salsa."
+    },
+    {
+      "nombre": "Paquete Acompañes",
+      "seccion": "Paquetes",
+      "precio": 99,
+      "descripcion": "Lleva sabor. Incluye 1/4 pollo, arroz, frijol, tortillas y salsa."
+    },
+    {
+      "nombre": "Paquete Amigo",
+      "seccion": "Paquetes",
+      "precio": 199,
+      "descripcion": "Lleva sabor. Incluye 1/2 pollo, arroz, frijol, tortillas y salsa y postre."
+    },
+    {
+      "nombre": "Paquete Sorpresa",
+      "seccion": "Paquetes",
+      "precio": 290,
+      "descripcion": "Lleva sabor. Incluye 1 pollo, papa al horno, arroz, frijol, tortillas y salsa."
+    },
+    {
+      "nombre": "Paquete Primavera",
+      "seccion": "Paquetes",
+      "precio": 295,
+      "descripcion": "Lleva sabor. Incluye 1 pollo, ensalada de coditos, arroz, frijol, tortillas y salsa."
+    },
+    {
+      "nombre": "Paquete Pirata",
+      "seccion": "Paquetes",
+      "precio": 315,
+      "descripcion": "Lleva sabor. Incluye 1 pollo, arroz, frijol, tortillas y salsa, postre y a elegir puré de papa o espagueti."
+    },
+    {
+      "nombre": "Paquete Taquitos",
+      "seccion": "Paquetes",
+      "precio": 320,
+      "descripcion": "Lleva sabor. Incluye 1 pollo, 4 tacos dorados, arroz, frijol, tortillas y salsa."
+    },
+    {
+      "nombre": "Paquete Apollo",
+      "seccion": "Paquetes",
+      "precio": 360,
+      "descripcion": "Lleva sabor. Incluye 1 pollo y 1/2 pollo, arroz, frijol, tortillas y salsa."
+    },
+    {
+      "nombre": "Paquete Especial",
+      "seccion": "Paquetes",
+      "precio": 399,
+      "descripcion": "Lleva sabor. Incluye 2 pollos, arroz, frijol, tortillas y salsa."
+    },
+    {
+      "nombre": "Paquete Tesoro",
+      "seccion": "Paquetes",
+      "precio": 595,
+      "descripcion": "Lleva sabor. Incluye 2 pollos, puré de papa, arroz, frijol, tortillas y salsa y postre."
+    },
+    {
+      "nombre": "Súper Miércoles",
+      "seccion": "Miércoles",
+      "precio": 220,
+      "descripcion": "Lleva sabor. Incluye 1 pollo, frijol, tortillas y salsa.",
+      "dias": [
+        "mie"
+      ]
+    },
+    {
+      "nombre": "Spaghetti",
+      "seccion": "Extras",
+      "precio": 45,
+      "descripcion": ""
+    },
+    {
+      "nombre": "Ensalada de coditos",
+      "seccion": "Extras",
+      "precio": 45,
+      "descripcion": ""
+    },
+    {
+      "nombre": "Arroz",
+      "seccion": "Extras",
+      "precio": 30,
+      "descripcion": ""
+    },
+    {
+      "nombre": "Frijol",
+      "seccion": "Extras",
+      "precio": 25,
+      "descripcion": ""
+    },
+    {
+      "nombre": "Puré de papa",
+      "seccion": "Extras",
+      "precio": 48,
+      "descripcion": ""
+    },
+    {
+      "nombre": "Papa al horno",
+      "seccion": "Extras",
+      "precio": 30,
+      "descripcion": ""
+    },
+    {
+      "nombre": "Postre",
+      "seccion": "Extras",
+      "precio": 30,
+      "descripcion": ""
+    },
+    {
+      "nombre": "Tortillas",
+      "seccion": "Extras",
+      "precio": 30,
+      "descripcion": ""
+    },
+    {
+      "nombre": "1/2 Tortillas",
+      "seccion": "Extras",
+      "precio": 13,
+      "descripcion": ""
+    },
+    {
+      "nombre": "Salsa",
+      "seccion": "Extras",
+      "precio": 20,
+      "descripcion": ""
+    },
+    {
+      "nombre": "Tacos dorados (4 pzas)",
+      "seccion": "Extras",
+      "precio": 70,
+      "descripcion": ""
+    },
+    {
+      "nombre": "Desechable",
+      "seccion": "Extras",
+      "precio": 5,
+      "descripcion": ""
+    },
+    {
+      "nombre": "Agua fresca 1 L",
+      "seccion": "Bebidas",
+      "precio": 50,
+      "descripcion": ""
+    },
+    {
+      "nombre": "Agua fresca 500 ml",
+      "seccion": "Bebidas",
+      "precio": 35,
+      "descripcion": ""
+    }
+  ],
+  "_fuente": "pos-desktop/electron/db/schema.ts (precios iniciales del POS; confirmar contra la caja)"
+}

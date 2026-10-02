@@ -725,6 +725,8 @@ model Product {
   section        String  @default("")
   /// Centavos: sin decimales flotantes en los totales.
   priceCents     Int
+  /// Días en que se vende ("lun".."dom"). Vacío = todos. "Súper Miércoles" = ["mie"].
+  availableDays  String[] @default([])
   active         Boolean @default(true)
   sortOrder      Int     @default(0)
   createdAt      DateTime @default(now())

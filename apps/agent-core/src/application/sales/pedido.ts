@@ -1,5 +1,5 @@
 import type { DeliveryMode } from '@prisma/client';
-import { abiertoEn, desdeLocal, type Horario } from './horario';
+import { abiertoEn, desdeLocal, enZona, type Horario } from './horario';
 
 /**
  * El pedido en curso y lo que se le puede hacer.
@@ -35,6 +35,8 @@ export interface ProductoVenta {
   description: string;
   section: string;
   priceCents: number;
+  /** Días en que se vende ("lun".."dom"); vacío = todos. */
+  availableDays?: string[];
 }
 
 export interface Zona {
@@ -124,6 +126,9 @@ export function aplicar(
       case 'agregar': {
         const prod = producto(a.productoId);
         if (!prod) { r.avisos.push('Eso no lo tengo en la carta.'); break; }
+        if (!seVendeEl(prod, p.scheduledFor ?? ahora, reglas.timezone)) {
+          r.avisos.push(`${prod.name} solo se vende ${diasEnPalabras(prod.availableDays!)}.`);
+        }
         const cantidad = Math.min(MAX_CANTIDAD, Math.max(1, Math.trunc(a.cantidad) || 1));
         const nota = a.texto.trim().slice(0, 120) || null;
         const igual = p.items.find((i) => i.productId === prod.id && i.nota === nota);
@@ -208,12 +213,18 @@ export function aplicar(
   return r;
 }
 
-export type Faltante = 'productos' | 'entrega' | 'direccion' | 'zona' | 'nombre' | 'minimo' | 'horario';
+export type Faltante = 'productos' | 'dia' | 'entrega' | 'direccion' | 'zona' | 'nombre' | 'minimo' | 'horario';
 
 /** Lo que falta para poder mandarlo a la empresa, en orden de prioridad. */
-export function faltantes(p: Pedido, reglas: ReglasVenta, ahora: Date): Faltante[] {
+export function faltantes(
+  p: Pedido,
+  reglas: ReglasVenta,
+  ahora: Date,
+  catalogo: readonly ProductoVenta[] = [],
+): Faltante[] {
   const f: Faltante[] = [];
   if (p.items.length === 0) f.push('productos');
+  if (fueraDeDia(p, catalogo, reglas, ahora).length > 0) f.push('dia');
   if (!p.deliveryMode) f.push('entrega');
   if ((p.deliveryMode === 'DOMICILIO' || p.deliveryMode === 'PAQUETERIA') && !p.address) f.push('direccion');
   if (p.deliveryMode === 'DOMICILIO' && reglas.zonas.length > 0 && !p.zone) f.push('zona');
@@ -256,6 +267,34 @@ export function inventaMontos(texto: string, permitidos: Set<number>): boolean {
     if (!permitidos.has(cents)) return true;
   }
   return false;
+}
+
+const NOMBRE_DIA: Record<string, string> = {
+  lun: 'lunes', mar: 'martes', mie: 'miércoles', jue: 'jueves', vie: 'viernes', sab: 'sábados', dom: 'domingos',
+};
+
+/** "los miércoles", "los lunes y martes". */
+export function diasEnPalabras(dias: readonly string[]): string {
+  const nombres = dias.map((d) => NOMBRE_DIA[d] ?? d);
+  return 'los ' + (nombres.length > 1 ? `${nombres.slice(0, -1).join(', ')} y ${nombres[nombres.length - 1]}` : nombres[0]);
+}
+
+export function seVendeEl(prod: ProductoVenta, instante: Date, timezone: string): boolean {
+  if (!prod.availableDays?.length) return true;
+  return prod.availableDays.includes(enZona(instante, timezone).dia);
+}
+
+/** Lo que lleva y no se vende el día en que se prepararía el pedido. */
+export function fueraDeDia(
+  p: Pedido,
+  catalogo: readonly ProductoVenta[],
+  reglas: ReglasVenta,
+  ahora: Date,
+): ProductoVenta[] {
+  const cuando = p.scheduledFor ?? ahora;
+  return p.items
+    .map((i) => catalogo.find((c) => c.id === i.productId))
+    .filter((c): c is ProductoVenta => !!c && !seVendeEl(c, cuando, reglas.timezone));
 }
 
 function normal(t: string): string {

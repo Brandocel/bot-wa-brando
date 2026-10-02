@@ -195,3 +195,17 @@ test('si el modelo inventa un precio, ese texto no sale', async (t) => {
     { contactId: 'c', conversationId: 'v' }, negocio);
   assert.doesNotMatch(r!.text, /\$150/);
 });
+
+test('un producto de solo miércoles no se cierra otro día, pero sí programado para el miércoles', () => {
+  const conMiercoles = [...carta, { id: 'super', name: 'Súper Miércoles', description: '', section: 'Miércoles', priceCents: 22000, availableDays: ['mie'] }];
+  const r = aplicar(pedidoVacio(), [
+    accion({ tipo: 'agregar', productoId: 'super', cantidad: 1, texto: 'BBQ' }),
+    accion({ tipo: 'entrega', modo: 'RECOGER' }),
+    accion({ tipo: 'nombre', texto: 'Ana' }),
+  ], conMiercoles, reglas, viernesMediodia);
+  assert.ok(r.avisos.some((a) => /solo se vende los miércoles/.test(a)));
+  assert.deepEqual(faltantes(r.pedido, reglas, viernesMediodia, conMiercoles), ['dia']);
+
+  const miercoles = aplicar(r.pedido, [accion({ tipo: 'programar', texto: '2026-10-07T13:00' })], conMiercoles, reglas, viernesMediodia);
+  assert.deepEqual(faltantes(miercoles.pedido, reglas, viernesMediodia, conMiercoles), []);
+});
