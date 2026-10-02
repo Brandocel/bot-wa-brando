@@ -485,7 +485,7 @@ export class PanelApiController {
         nameConfirmedAt: true,
         validUntil: true,
         contact: { select: { waId: true, displayName: true } },
-        organization: { select: { name: true } },
+        organization: { select: { id: true, name: true } },
         grants: {
           where: { revokedAt: null },
           select: { category: true, periodFrom: true, periodTo: true },
@@ -694,6 +694,7 @@ export class PanelApiController {
         intent: true,
         motivo: true,
         molesto: true,
+        sentBy: true,
       },
     });
 
@@ -743,7 +744,7 @@ export class PanelApiController {
         .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()),
       messages: messages.reverse(),
       pendientes: pendientes.map((p) => {
-        const payload = p.payload as { kind?: string; text?: string; filename?: string; caption?: string };
+        const payload = p.payload as { kind?: string; text?: string; filename?: string; caption?: string; autor?: string };
         return {
           id: p.id,
           body: payload.kind === 'file'
@@ -752,6 +753,7 @@ export class PanelApiController {
           status: p.status,
           error: p.lastError,
           createdAt: p.createdAt,
+          sentBy: payload.autor ?? 'bot',
         };
       }),
     };
@@ -963,6 +965,21 @@ export class PanelApiController {
     return { ok: true };
   }
 
+  /** Confirmar el nombre a mano, sin esperar a que lo escriba por WhatsApp. */
+  @UseGuards(PanelGuard)
+  @Post('numeros/confirmar-nombre')
+  async confirmFullName(@Req() req: PanelRequest, @Body() body: { id?: string }) {
+    this.requireAdmin(req);
+    if (!body.id) throw new BadRequestException('falta el id');
+
+    try {
+      await this.directory.confirmFullName(body.id);
+    } catch (err) {
+      throw new BadRequestException(err instanceof Error ? err.message : String(err));
+    }
+    return { ok: true };
+  }
+
   @UseGuards(PanelGuard)
   @Post('numeros/revocar')
   async revokeNumber(@Req() req: PanelRequest, @Body() body: { id?: string }) {
@@ -1092,7 +1109,8 @@ export class PanelApiController {
     await this.prisma.outboxMessage.create({
       data: {
         chatId: body.chatId,
-        payload: { kind: 'text', text: body.text.trim() },
+        // Para que el hilo distinga a una persona del bot.
+        payload: { kind: 'text', text: body.text.trim(), autor: `persona:${req.panelUser?.email ?? 'panel'}` },
       },
     });
 

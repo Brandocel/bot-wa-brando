@@ -186,6 +186,19 @@ export class DirectoryService {
   }
 
   /**
+   * Una persona del equipo da el nombre por confirmado (la conoce, habló
+   * con ella). Es una decisión humana, como verificar el número; sin un
+   * nombre registrado no hay qué confirmar.
+   */
+  async confirmFullName(membershipId: string): Promise<void> {
+    const { count } = await this.prisma.membership.updateMany({
+      where: { id: membershipId, fullName: { not: null } },
+      data: { nameConfirmedAt: new Date() },
+    });
+    if (count === 0) throw new Error('primero registra su nombre completo');
+  }
+
+  /**
    * Revocar no borra: marca. La auditoría de ayer tiene que seguir siendo
    * legible, y para eso la membresía debe seguir existiendo.
    */

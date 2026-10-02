@@ -133,6 +133,10 @@ model Message {
   raw            Json? // payload original, para depurar el ACL
   createdAt      DateTime    @default(now())
 
+  /// Solo salientes: quién lo escribió. "bot" o "persona:<email del panel>".
+  /// null = anterior a este registro: no se sabe.
+  sentBy String?
+
   /// Solo entrantes: cuándo WhatsApp dice que se mandó. Es el orden en
   /// que se atienden los mensajes de un mismo chat.
   waTimestamp DateTime?

@@ -26,6 +26,8 @@ const SWEEP_MS = 15_000;
 interface OutboxTextPayload {
   kind: 'text';
   text: string;
+  /** Quién lo escribió: "persona:<email>" desde el panel. Sin esto, el bot. */
+  autor?: string;
 }
 
 interface OutboxFilePayload {
@@ -224,7 +226,8 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
         data: { status: 'SENT', sentAt: new Date(), payload: sinArchivo(payload) },
       });
 
-      await this.recordOutbound(row.chatId, sent.id, sent.body, sent.kind);
+      const autor = payload.kind === 'text' && payload.autor ? payload.autor : 'bot';
+      await this.recordOutbound(row.chatId, sent.id, sent.body, sent.kind, autor);
       return true;
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
@@ -342,6 +345,7 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
     messageId: string,
     body: string,
     kind: 'TEXT' | 'DOCUMENT',
+    sentBy: string,
   ): Promise<void> {
     try {
       const conversation = await this.prisma.conversation.findUnique({
@@ -357,6 +361,7 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
           direction: 'OUT',
           kind,
           body,
+          sentBy,
         },
       });
     } catch (err) {

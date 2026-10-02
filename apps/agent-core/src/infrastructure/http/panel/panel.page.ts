@@ -375,6 +375,19 @@ function nombreDia(iso) {
   return d.toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long' });
 }
 
+/**
+ * Quién escribió un saliente. Una persona del equipo y el bot se ven
+ * distintos: color y firma. Lo viejo (sin registro) no se firma: no se sabe.
+ */
+function autorSaliente(m) {
+  if (!m.sentBy) return { clase: '', firma: '' };
+  if (m.sentBy.startsWith('persona:')) {
+    const quien = m.sentBy.slice('persona:'.length);
+    return { clase: ' persona', firma: '<span class="firma">Soporte · ' + esc(quien.split('@')[0]) + '</span>' };
+  }
+  return { clase: ' bot', firma: '<span class="firma">Jarvis · bot</span>' };
+}
+
 function pintarMensajes(datos) {
   const caja = document.getElementById('hilo-mensajes');
   const abajo = caja.scrollHeight - caja.scrollTop - caja.clientHeight < 40;
@@ -384,8 +397,10 @@ function pintarMensajes(datos) {
     const dia = new Date(m.createdAt).toDateString();
     const separador = dia !== diaAnterior ? '<div class="dia">' + esc(nombreDia(m.createdAt)) + '</div>' : '';
     diaAnterior = dia;
+    const autor = m.direction === 'IN' ? { clase: '', firma: '' } : autorSaliente(m);
     return separador +
-      '<div class="burbuja ' + (m.direction === 'IN' ? 'entra' : 'sale') + '">' +
+      '<div class="burbuja ' + (m.direction === 'IN' ? 'entra' : 'sale') + autor.clase + '">' +
+        autor.firma +
         etiqueta(m) +
         cuerpoMensaje(m.body) +
         '<span class="hora">' + hora(m.createdAt) + '</span>' +
@@ -393,7 +408,8 @@ function pintarMensajes(datos) {
   });
 
   const pendientes = (datos.pendientes ?? []).map((p) =>
-    '<div class="burbuja sale pendiente' + (p.status === 'FAILED' ? ' fallo' : '') + '">' +
+    '<div class="burbuja sale pendiente' + autorSaliente(p).clase + (p.status === 'FAILED' ? ' fallo' : '') + '">' +
+      autorSaliente(p).firma +
       cuerpoMensaje(p.body) +
       '<span class="hora">' + (p.status === 'FAILED'
         ? 'no salió: ' + esc(p.error ?? 'error')
@@ -822,32 +838,57 @@ const VISTAS = {
         <button type="submit">Agregar al directorio</button>
       </form>\` : '';
 
-    return formulario + tabla(
-      ['Número', 'Nombre', 'Nombre completo', 'Empresa', 'Rol', 'Verificado', 'Puede consultar', ''],
-      filas.map((m) => '<tr>' +
-        '<td class="mono">' + esc(numeroBonito(m.contact.waId)) + '</td>' +
-        '<td>' + esc(m.contact.displayName ?? '—') + '</td>' +
-        '<td>' + (m.fullName
-          ? esc(m.fullName) + ' ' + (m.nameConfirmedAt
-            ? '<span class="pill ok">confirmado</span>'
-            : '<span class="pill warn">sin confirmar</span>')
-          : '<span class="pill warn">falta</span>') + '</td>' +
-        '<td>' + esc(m.organization.name) + '</td>' +
-        '<td>' + m.role + '</td>' +
-        '<td>' + (m.verifiedAt
-          ? '<span class="pill ok">sí</span>'
-          : '<span class="pill warn">no</span>') + '</td>' +
-        '<td>' + (m.role === 'VIEWER'
-          ? (m.grants.map((g) => esc(g.category)).join(', ') || '<span class="muted">nada</span>')
-          : '<span class="muted">todo lo de su empresa</span>') + '</td>' +
-        '<td class="acciones">' + (esAdmin
-          ? '<button class="mini" data-nombre-completo="' + m.id + '" data-actual="' + escAttr(m.fullName ?? '') + '">Nombre</button> ' +
-            (m.verifiedAt ? '' : '<button class="mini" data-verificar="' + m.id + '">Verificar</button> ') +
-            '<button class="mini peligro" data-revocar="' + m.id + '">Revocar</button>'
-          : '') + '</td>' +
-      '</tr>'),
-      'No hay números autorizados todavía.',
-    );
+    if (!filas.length) return formulario + '<p class="vacio">No hay números autorizados todavía.</p>';
+
+    const nombreCompleto = (m) => {
+      if (!m.fullName) return '<span class="pill warn">falta</span>';
+      return esc(m.fullName) + ' ' + (m.nameConfirmedAt
+        ? '<span class="pill ok">confirmado</span>'
+        : '<span class="pill warn">sin confirmar</span>');
+    };
+
+    const acciones = (m) => !esAdmin ? '' :
+      '<button class="mini" data-nombre-completo="' + m.id + '" data-actual="' + escAttr(m.fullName ?? '') + '">Nombre</button> ' +
+      (m.fullName && !m.nameConfirmedAt
+        ? '<button class="mini" data-confirmar-nombre="' + m.id + '" data-actual="' + escAttr(m.fullName) + '">Confirmar</button> '
+        : '') +
+      (m.verifiedAt ? '' : '<button class="mini" data-verificar="' + m.id + '">Verificar</button> ') +
+      '<button class="mini peligro" data-revocar="' + m.id + '">Revocar</button>';
+
+    const fila = (m) => '<tr>' +
+      '<td class="mono">' + esc(numeroBonito(m.contact.waId)) + '</td>' +
+      '<td>' + esc(m.contact.displayName ?? '—') + '</td>' +
+      '<td>' + nombreCompleto(m) + '</td>' +
+      '<td>' + m.role + '</td>' +
+      '<td>' + (m.verifiedAt
+        ? '<span class="pill ok">sí</span>'
+        : '<span class="pill warn">no</span>') + '</td>' +
+      '<td>' + (m.role === 'VIEWER'
+        ? (m.grants.map((g) => esc(g.category)).join(', ') || '<span class="muted">nada</span>')
+        : '<span class="muted">todo lo de su empresa</span>') + '</td>' +
+      '<td class="acciones">' + acciones(m) + '</td>' +
+    '</tr>';
+
+    // Una tarjeta por empresa, con sus números: igual que Documentos.
+    const porEmpresa = new Map();
+    for (const m of filas) {
+      const id = m.organization.id;
+      if (!porEmpresa.has(id)) porEmpresa.set(id, { nombre: m.organization.name, miembros: [] });
+      porEmpresa.get(id).miembros.push(m);
+    }
+
+    const secciones = [...porEmpresa.values()]
+      .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
+      .map(({ nombre, miembros }) => {
+        const pendientes = miembros.filter((m) => !m.fullName || !m.nameConfirmedAt).length;
+        return '<section class="card docs-tipo"><h3>' + esc(nombre) +
+          ' <span class="muted small">' + miembros.length + ' número' + (miembros.length === 1 ? '' : 's') + '</span>' +
+          (pendientes ? ' <span class="pill warn">' + pendientes + ' sin nombre confirmado</span>' : '') + '</h3>' +
+          tabla(['Número', 'Nombre', 'Nombre completo', 'Rol', 'Verificado', 'Puede consultar', ''], miembros.map(fila), '') +
+        '</section>';
+      }).join('');
+
+    return formulario + '<div class="docs-grid">' + secciones + '</div>';
   },
 
   async empresas() {
@@ -1430,6 +1471,17 @@ document.addEventListener('click', async (e) => {
       await enviar('documentos/titular', { id: titular.dataset.titular, titular: nuevo });
       aviso(nuevo.trim() ? 'Titular guardado' : 'Titular borrado: ningún cliente lo recibirá');
       pintar('documentos');
+    } catch (err) { aviso(err.message, 'error'); }
+    return;
+  }
+
+  const confirmarNombre = e.target.closest('[data-confirmar-nombre]');
+  if (confirmarNombre) {
+    if (!confirm('¿Confirmas que este número es de ' + confirmarNombre.dataset.actual + '? Desde ahora recibe documentos sin que se le pregunte su nombre.')) return;
+    try {
+      await enviar('numeros/confirmar-nombre', { id: confirmarNombre.dataset.confirmarNombre });
+      aviso('Nombre confirmado');
+      pintar('directorio');
     } catch (err) { aviso(err.message, 'error'); }
     return;
   }
@@ -2140,6 +2192,16 @@ const STYLES = `<link rel="preconnect" href="https://fonts.googleapis.com">
     background: linear-gradient(160deg, #3a3280, #2d2766); align-self: flex-end;
     border-bottom-right-radius: 5px; color: #f1efff;
   }
+  .burbuja.sale.persona {
+    background: linear-gradient(160deg, #1f5c4a, #184a3c); color: #eafff7;
+    border: 1px solid rgba(52, 211, 153, .35);
+  }
+  .burbuja.sale.persona .hora { color: rgba(234, 255, 247, .65); }
+  .firma {
+    display: block; margin-bottom: 3px; font-size: 10.5px; font-weight: 700;
+    letter-spacing: .02em; color: rgba(241, 239, 255, .7);
+  }
+  .burbuja.sale.persona .firma { color: #6ee7b7; }
   .burbuja.pendiente { opacity: .6; }
   .burbuja.fallo { opacity: 1; background: var(--rojo-suave); border: 1px solid rgba(248, 113, 113, .35); }
   .burbuja .pill.tipo { display: table; margin-bottom: 6px; background: rgba(255, 255, 255, .07); color: var(--suave); }

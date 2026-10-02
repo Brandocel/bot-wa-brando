@@ -2756,10 +2756,13 @@ test('tres nombres equivocados: pasa al equipo y ya no se le vuelve a preguntar'
   assert.equal(h.escalations.length, 1);
   assert.match(String((h.escalations[0] as { subject: string }).subject), /^Confirmar identidad/);
 
-  const despues = await h.handle('Ana Ruiz Soto');
-  assert.match(despues?.text ?? '', /reviso con el equipo/);
+  assert.equal(await h.handle('hola'), null, 'no repite "lo reviso" a cada mensaje');
+  assert.match((await h.handle('pásame la factura de marzo'))?.text ?? '', /reviso con el equipo/);
   assert.equal(h.escalations.length, 1, 'un solo caso');
   assert.deepEqual(h.delivered, []);
+
+  // Con el nombre correcto, aunque ya esté con el equipo, queda confirmado.
+  assert.match((await h.handle('Ana Ruiz Soto'))?.text ?? '', /^Gracias, Ana, ya quedó/);
 });
 
 test('si el equipo no registró el nombre, el primer intento ya pasa a una persona', async () => {

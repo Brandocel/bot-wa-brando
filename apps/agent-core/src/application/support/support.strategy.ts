@@ -1137,7 +1137,14 @@ export class SupportStrategy {
       documentIntent(texto, { enCurso: false, pendiente: null, companyName: null }).kind === 'document';
 
     if (espera?.escalado) {
-      return conocido || pide ? { text: voz.nombreEnRevision(), awaiting: 'AGENTE' } : null;
+      // Ya lo ve una persona. Pero si el equipo registró o corrigió su
+      // nombre mientras tanto, el nombre correcto tiene que seguir sirviendo.
+      if (conocido && !pide && tokensNombre(texto).length >= 2) {
+        const confirmadas = await this.scope.confirmarNombre(scope.pendientesNombre ?? [], texto);
+        if (confirmadas.length > 0) return this.nombreConfirmado(message, ctx, espera, confirmadas);
+      }
+      // Un "hola" no merece repetir "lo reviso" cada vez: el caso ya existe.
+      return pide ? { text: voz.nombreEnRevision(), awaiting: 'AGENTE' } : null;
     }
 
     if (!espera) {
@@ -1180,25 +1187,7 @@ export class SupportStrategy {
     const pendientes = scope.pendientesNombre ?? [];
     const confirmadas = await this.scope.confirmarNombre(pendientes, texto);
 
-    if (confirmadas.length > 0) {
-      await this.scope.audit({
-        waId: message.senderId,
-        query: '(nombre completo)',
-        documentId: null,
-        decision: 'NAME_CONFIRMED',
-        decidedBy: `nombre confirmado en ${confirmadas.map((c) => c.organizationName).join(', ')}`,
-      });
-      await this.solicitudes.guardar(ctx.conversationId, { pideNombre: null });
-
-      const gracias = voz.nombreConfirmado(voz.nombreDePila(confirmadas[0]!.fullName), espera.pedido !== null);
-      if (!espera.pedido) return { text: gracias, awaiting: 'CLIENTE' };
-
-      // Lo que había pedido, como si lo acabara de escribir.
-      const reply = await this.atender({ ...message, body: espera.pedido }, ctx, clasificar(espera.pedido));
-      if (!reply) return { text: gracias, awaiting: 'CLIENTE' };
-      return { ...reply, text: reply.text ? `${gracias}
-${reply.text}` : gracias };
-    }
+    if (confirmadas.length > 0) return this.nombreConfirmado(message, ctx, espera, confirmadas);
 
     await this.scope.audit({
       waId: message.senderId,
@@ -1224,6 +1213,32 @@ ${reply.text}` : gracias };
 
     await this.solicitudes.guardar(ctx.conversationId, { pideNombre: { ...espera, intentos } });
     return { text: voz.nombreNoCoincide(), awaiting: 'CLIENTE' };
+  }
+
+  /** El nombre coincidió: queda confirmado y se atiende lo que había pedido. */
+  private async nombreConfirmado(
+    message: IncomingMessage,
+    ctx: StrategyContext,
+    espera: { pedido: string | null },
+    confirmadas: readonly { organizationName: string; fullName: string | null }[],
+  ): Promise<StrategyReply> {
+    await this.scope.audit({
+      waId: message.senderId,
+      query: '(nombre completo)',
+      documentId: null,
+      decision: 'NAME_CONFIRMED',
+      decidedBy: `nombre confirmado en ${confirmadas.map((c) => c.organizationName).join(', ')}`,
+    });
+    await this.solicitudes.guardar(ctx.conversationId, { pideNombre: null });
+
+    const gracias = voz.nombreConfirmado(voz.nombreDePila(confirmadas[0]!.fullName), espera.pedido !== null);
+    if (!espera.pedido) return { text: gracias, awaiting: 'CLIENTE' };
+
+    // Lo que había pedido, como si lo acabara de escribir.
+    const reply = await this.atender({ ...message, body: espera.pedido }, ctx, clasificar(espera.pedido));
+    if (!reply) return { text: gracias, awaiting: 'CLIENTE' };
+    return { ...reply, text: reply.text ? `${gracias}
+${reply.text}` : gracias };
   }
 
   /** Un caso para que una persona confirme quién es y, si toca, asocie el número. */
