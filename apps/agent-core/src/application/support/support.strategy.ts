@@ -519,13 +519,14 @@ export class SupportStrategy {
       known: conocido,
       enCurso,
       companyKnown: empresaEnTexto !== null,
+      pedidoExplicito: true,
     });
 
     // “Pásame el documento de Juan Pérez” expresa un objeto documental y un
     // nombre aunque el modelo niegue la petición. La evidencia de intención
     // viene del verbo y del objeto, no del texto residual por sí mismo.
     if (!extraction.query.text && !extraction.query.category && !extraction.query.folio &&
-        /\b(?:documento|archivo|pdf|papel|copia)\b/.test(normalizar(intent.request))) {
+        /\b(?:documentos?|docs?|archivo|pdf|papel|copia)\b/.test(normalizar(intent.request))) {
       const keys = palabrasClave(intent.request);
       if (keys.length > 0) extraction.query.text = keys.join(' ');
     }
@@ -571,7 +572,7 @@ export class SupportStrategy {
     // explícito de “documento/archivo” sí autorizan buscar por texto.
     if (extraction.query.text && !extraction.query.category && !extraction.query.folio &&
         !contexto.category && !nombreDeArchivo(extraction.query.text) &&
-        !/\b(?:documento|archivo|pdf|papel|copia)\b/.test(normalizar(intent.request))) {
+        !/\b(?:documentos?|docs?|archivo|pdf|papel|copia)\b/.test(normalizar(intent.request))) {
       return this.ask(turn, readAsked(sol), 'categoria', voz.preguntaTipo());
     }
 
@@ -1650,6 +1651,8 @@ ${reply.text}` : gracias };
   ): Promise<string> {
     const companies = turn.scopes.map((s) => s.organizationName).join(', ');
 
+    if (preguntaQueSoy(turn.message.body)) return voz.queSoy(companies);
+
     const brief =
       clas.tipo === 'QUEJA'
         ? {
@@ -1665,7 +1668,7 @@ ${reply.text}` : gracias };
               intent: 'consulta' as const,
               facts: [
                 'Es una pregunta que no pide ningún documento.',
-                'No inventes horarios, precios, trámites ni políticas. Si la respuesta no está en la conversación, di que eso no lo resuelves por aquí y ofrece pasarlo con alguien del equipo.',
+                'Si la respuesta no está en lo que sabes, dilo en pocas palabras y menciona qué sí puedes hacer; ofrece a alguien del equipo solo si no lo ofreciste ya.',
               ],
               fallback: voz.consultaSinModelo(companies),
             }
@@ -2200,6 +2203,17 @@ ${reply.text}` : gracias };
 }
 
 /** Solo instrucciones explícitas de reinicio; "mándamela de nuevo" no lo es. */
+/** "¿Qué eres?", "¿quién eres?", "¿eres un bot?", "¿qué resuelves?", "¿en qué me ayudas?". */
+export function preguntaQueSoy(texto: string): boolean {
+  const t = normalizar(texto);
+  return /^(?:y\s+)?(?:pues\s+)?(?:que|quien)\s+(?:eres|sos)\b/.test(t) ||
+    /^(?:que\s+)?(?:ia|inteligencia artificial)\s+eres\b/.test(t) ||
+    /\beres\s+(?:un\s+|una\s+)?(?:bot|robot|ia|maquina|persona|humano|real)\b/.test(t) ||
+    /^(?:y\s+)?(?:entonces\s+)?(?:que|en que)\s+(?:resuelves|haces|me ayudas|puedes hacer|me puedes ayudar|sirves)\b/.test(t) ||
+    /^(?:para que|pa que)\s+(?:sirves|eres)\b/.test(t) ||
+    /\bque\s+(?:resuelves|haces|puedes hacer)\s+entonces\b/.test(t);
+}
+
 function pideReinicio(texto: string): boolean {
   const limpio = normalizar(texto);
   return /^(?:por favor )?(?:(?:empecemos|comencemos|(?:quiero|vamos a) (?:empezar|comenzar)) (?:de nuevo|desde cero)|(?:reinicia|reiniciemos) (?:la|mi|esta) solicitud|(?:ignora|olvida) (?:todo )?lo anterior)(?: (?:y )?(?:ignora|olvida) (?:todo )?lo anterior)?(?: por favor)?$/.test(limpio);

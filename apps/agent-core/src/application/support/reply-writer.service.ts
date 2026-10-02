@@ -54,15 +54,18 @@ export class ReplyWriterService {
   constructor(@Inject(LLM_PORT) private readonly llm: LlmPort) {}
 
   async write(brief: ReplyBrief, ctx: ReplyContext): Promise<string> {
+    // Reglas en el system; la plática y el mensaje en el turno del usuario.
+    // Al revés (como estaba), el modelo a veces "seguía" la conversación e
+    // inventaba una línea del cliente antes de contestar.
     const drafted = await this.llm.draft({
       tarea: 'redaccion',
-      system: persona(ctx),
-      user: instruction(brief),
+      system: persona(ctx, brief),
+      user: conversacion(ctx),
       maxTokens: 150,
     });
 
     const text = drafted?.trim() ?? '';
-    const problema = validar(text, brief);
+    const problema = validar(text, brief, ctx);
 
     if (problema) {
       if (drafted) this.logger.debug(`borrador descartado (${problema})`);
@@ -74,53 +77,67 @@ export class ReplyWriterService {
 }
 
 /**
- * Quién es el bot y cómo habla. Va con la conversación reciente para que
- * el modelo no salude dos veces ni pregunte lo que ya se dijo.
- *
- * Corto a propósito: se paga entero en cada turno que llega al modelo.
+ * Quién es el bot, cómo habla y qué sabe hacer. Corto a propósito: se paga
+ * entero en cada turno que llega al modelo.
  */
-function persona(ctx: ReplyContext): string {
+function persona(ctx: ReplyContext, brief: ReplyBrief): string {
   const empresas = ctx.scopes.map((s) => s.organizationName).join(', ');
   const yaSaludo = ctx.history.some(
     (t) => t.role === 'bot' && /\bhola\b/i.test(t.text),
   );
 
   return [
-    'Eres parte del equipo de una empresa y atiendes a sus clientes por WhatsApp; les buscas documentos. Español de México, tuteo, cálido y natural, como alguien que conoce a la persona y tiene tiempo para ella.',
-    'Una o dos frases, con ritmo de chat: contesta a lo que dijo antes de ofrecer nada. Sin emojis, sin fórmulas de call center ("con gusto le atiendo", "no dude en"), sin firma, sin enlaces.',
-    yaSaludo ? 'Ya se saludaron: no vuelvas a saludar; sigue la conversación.' : 'Si saluda, devuélvele el saludo con calidez y brevedad.',
-    'No repitas lo que la persona dijo. No pidas lo que ya se sabe. No inventes documentos, fechas ni folios. No prometas nada fuera de los hechos.',
-    `Puede consultar documentos de: ${empresas || 'ninguna empresa'}. Tipos: facturas, contratos, cotizaciones, reportes, pólizas.`,
-    ...(ctx.history.length > 0 ? ['', 'Conversación:', formatHistory(ctx.history)] : []),
-    `Cliente: ${ctx.incoming || '(sin texto)'}`,
-    ...(ctx.known && ctx.known.length > 0
-      ? ['', 'Ya se sabe de la solicitud:', ...ctx.known.map((k) => `- ${k}`)]
-      : []),
-  ].join('\n');
-}
-
-const TONO: Record<ReplyBrief['intent'], string> = {
-  charla: 'No pide documento. Contesta corto y, si viene al caso, ofrece buscar algo.',
-  consulta: 'Pregunta algo que no es un documento. Contesta solo lo que se sepa por la conversación; si no, dilo con honestidad.',
-  queja: 'Expresa una inconformidad. Reconócela primero, en una frase y sin excusas; luego di qué sí puedes hacer.',
-};
-
-function instruction(brief: ReplyBrief): string {
-  return [
+    `Eres el asistente automático de documentos de ${empresas || 'la empresa'} por WhatsApp. Español de México, de tú, cordial y claro.`,
+    'Registro: amable y profesional. Nada de apodos ni muletillas ("hermano", "bro", "jefe", "compa", "Ey", "oye", "la onda"). Sin emojis, sin fórmulas de call center ("con gusto le atiendo", "no dude en"), sin firma, sin enlaces.',
+    'Una o dos frases en UN solo párrafo. Contesta a lo que dijo antes de ofrecer nada. No escribas lo que dijo el cliente ni inventes preguntas suyas.',
+    yaSaludo ? 'Ya se saludaron: no vuelvas a saludar.' : 'Si saluda, devuélvele el saludo con calidez y brevedad.',
+    'Qué SÍ puedes hacer: buscar y mandar por aquí facturas, contratos, cotizaciones, reportes, pólizas, estados de cuenta y documentos contables; decir qué documentos hay de un mes o tipo; reenviar uno que ya se mandó; y pasar la conversación con una persona del equipo.',
+    'Si preguntan quién o qué eres, di con honestidad que eres el asistente automático de documentos; no inventes edad, nombre propio ni detalles técnicos.',
+    'No inventes horarios, precios, trámites, políticas, documentos, fechas ni folios. Si no sabes algo, dilo una vez y di qué sí puedes hacer.',
+    'No repitas una frase que ya dijiste en la conversación: si ya ofreciste pasarlo con alguien, no lo vuelvas a ofrecer igual.',
+    '',
     TONO[brief.intent],
     ...brief.facts.map((f) => `- ${f}`),
     ...(brief.mustInclude && brief.mustInclude.length > 0
       ? [`Incluye tal cual: ${brief.mustInclude.map((m) => `"${m}"`).join(', ')}`]
       : []),
-    'Responde solo con el texto del mensaje.',
+    ...(ctx.known && ctx.known.length > 0
+      ? ['', 'Ya se sabe de la solicitud:', ...ctx.known.map((k) => `- ${k}`)]
+      : []),
+    '',
+    'Responde solo con el texto de tu mensaje.',
   ].join('\n');
 }
 
+/** La plática reciente y el mensaje a contestar. */
+function conversacion(ctx: ReplyContext): string {
+  return [
+    ...(ctx.history.length > 0 ? ['Conversación reciente:', formatHistory(ctx.history), ''] : []),
+    `Mensaje del cliente que debes contestar: ${ctx.incoming || '(sin texto)'}`,
+  ].join('\n');
+}
+
+const TONO: Record<ReplyBrief['intent'], string> = {
+  charla: 'No pide documento. Contesta corto y, si viene al caso, ofrece buscar algo.',
+  consulta: 'Pregunta algo que no es pedir un documento. Contesta lo que sepas con lo de arriba; si no, dilo con honestidad.',
+  queja: 'Expresa una inconformidad. Reconócela primero, en una frase y sin excusas; luego di qué sí puedes hacer.',
+};
+
+/** Igual que lo que ya dijo el bot, sin contar mayúsculas, signos ni espacios. */
+function mismaFrase(a: string, b: string): boolean {
+  const n = (t: string) => t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+  return n(a) === n(b);
+}
+
 /** Por qué se descarta un borrador, o null si sirve. */
-function validar(text: string, brief: ReplyBrief): string | null {
+function validar(text: string, brief: ReplyBrief, ctx?: ReplyContext): string | null {
   if (!text) return 'vacío';
   if (text.length > (brief.maxChars ?? MAX_CHARS_DEFAULT)) return 'demasiado largo';
   if (/https?:\/\//i.test(text)) return 'trae enlace';
+  // Dos bloques o un "Cliente:" = el modelo escribió también lo del cliente.
+  if (/\n\s*\n/.test(text)) return 'más de un párrafo';
+  if (/^(?:cliente|usuario|bot|asistente)\s*:/im.test(text)) return 'trae diálogo';
+  if (ctx?.history.some((t) => t.role === 'bot' && mismaFrase(t.text, text))) return 'repite lo que ya dijo';
 
   for (const literal of brief.mustInclude ?? []) {
     if (!text.includes(literal)) return `falta "${literal}"`;

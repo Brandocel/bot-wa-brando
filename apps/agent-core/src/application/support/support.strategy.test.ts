@@ -2832,3 +2832,46 @@ test('"no es esa" después de elegir de la lista descarta solo la que recibió',
   assert.deepEqual(h.requests.state.rechazados, [String(documentA.id)]);
   assert.equal(h.requests.state.rechazados.includes(String(documentB.id)), false);
 });
+
+// ── Charla: lo que salió mal en WhatsApp (2 oct 2026) ───────────────────
+
+for (const pregunta of ['Que IA eres?', 'Que resuelves entonces?', '¿Eres un bot?', 'quien eres', 'en que me ayudas?']) {
+  test(`"${pregunta}" se contesta con qué es y qué hace, sin modelo`, async () => {
+    const h = makeHarness({ draftResponse: 'Ey, eso no lo resuelvo por aquí.' });
+    const reply = await h.handle(pregunta);
+    assert.match(reply?.text ?? '', /asistente automático de documentos/);
+    assert.match(reply?.text ?? '', /facturas/);
+    assert.deepEqual(h.draftCalls, []);
+  });
+}
+
+test('"¿Tienes el doc de pollo pirata?" es pedir un documento: se busca', async () => {
+  const h = makeHarness();
+  await h.handle('Tienes el doc de pollo pirata?');
+  assert.ok(h.search.searches.length > 0, 'buscó');
+});
+
+test('"¿tienes hambre?" no es pedir un documento', async () => {
+  const h = makeHarness({ draftResponse: 'Yo no como, pero te ayudo con documentos.' });
+  await h.handle('tienes hambre?');
+  assert.deepEqual(h.search.searches, []);
+});
+
+test('si el redactor inventa una pregunta del cliente en otro párrafo, ese texto no sale', async () => {
+  const h = makeHarness({
+    draftResponse: '¿Cuándo abren las oficinas de Constructora Vega?\n\nEsa info no la manejo por acá.',
+  });
+  const reply = await h.handle('Que show');
+  assert.doesNotMatch(reply?.text ?? '', /Cuándo abren/);
+  assert.match(h.draftCalls[0] ?? '', /Mensaje del cliente que debes contestar: Que show/);
+});
+
+test('el redactor no repite la misma frase que ya dijo el bot', async () => {
+  const repetida = 'Eso no lo tengo, pero te busco cualquier documento.';
+  const h = makeHarness({
+    draftResponse: repetida,
+    history: [{ role: 'bot', text: repetida, at: new Date() }],
+  });
+  const reply = await h.handle('Cuántos años tienes?');
+  assert.notEqual(reply?.text, repetida);
+});

@@ -39,7 +39,7 @@ export function documentIntent(
       ? words.slice(0, 3).join(' ')
       : words[0] ?? '';
     const directObject = !!parseQuery(categoryHead).category ||
-      /^(?:documento|archivo|pdf|papel|copia|folio)\b/.test(target) ||
+      /^(?:documentos?|docs?|archivo|pdf|papel|copia|folio)\b/.test(target) ||
       /^(?:[a-z]{1,3}-?\d{3,}[a-z0-9-]*)\b/.test(target);
     const indirectObject = /^(?:lo|la|las|los|todas|todos)\s+(?:de|del|en)\s+\S+/.test(objectPhrase) ||
       /^(?:lo|la|las|los|todas|todos)$/.test(objectPhrase);
@@ -51,7 +51,7 @@ export function documentIntent(
       continue;
     }
     const query = parseQuery(request);
-    const genericDocument = /\b(?:documento|archivo|pdf|papel|copia)\b/i.test(normalizar(request));
+    const genericDocument = /\b(?:documentos?|docs?|archivo|pdf|papel|copia)\b/i.test(normalizar(request));
     if (directObject && (query.category || query.folio || nombreDeArchivo(request) || genericDocument)) {
       return { kind: 'document', request };
     }
@@ -116,6 +116,14 @@ export function documentIntent(
     return { kind: 'document', request: text };
   }
   if (short && query.period && /^(?:de|del|la de|el de)\b/.test(clean)) return { kind: 'ambiguous' };
+
+  // "¿Tienes el doc de Pollo Pirata?", "¿hay facturas de marzo?": preguntar
+  // si existe un documento ES pedirlo. Solo con un sustantivo de documento
+  // justo después: "¿tienes hambre?" no cuenta.
+  const existe = /^(?:oye\s+)?(?:y\s+)?(?:me\s+)?(?:tienes|tienen|tendras|tendran|hay|habra|existe|existen)\s+(?:(?:el|la|los|las|un|una|unos|unas|algun|alguna|algunos|algunas|mi|mis)\s+)?(\S+(?:\s+de\s+cuenta)?)/.exec(clean);
+  if (existe && (/^(?:documentos?|docs?|archivos?|pdfs?|papeles|copias?)$/.test(existe[1]!) || parseQuery(existe[1]!).category)) {
+    return { kind: 'document', request: text };
+  }
 
   // Referencias deícticas sin una solicitud vigente no tienen objeto seguro.
   if (/^(?:(?:y|ahora)\s+)?(?:lo|la|el)\s+de\s+\S+|^(?:esa|ese|eso|la anterior|el anterior)$/.test(clean)) {

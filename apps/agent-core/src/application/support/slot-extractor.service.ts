@@ -100,6 +100,12 @@ export class SlotExtractorService {
       enCurso?: boolean;
       /** La empresa ya se reconoció en el texto por reglas (sin modelo). */
       companyKnown?: boolean;
+      /**
+       * Las reglas ya vieron un pedido explícito ("¿tienes el doc de…?",
+       * "pásame la factura…"). El modelo no lo puede vetar: si dice que no
+       * es un documento, las palabras clave se conservan igual.
+       */
+      pedidoExplicito?: boolean;
     } = {},
   ): Promise<ExtractionResult> {
     const today = options.today ?? new Date();
@@ -200,6 +206,7 @@ export class SlotExtractorService {
      * factura y no hay forma de anclarla.
      */
     const periodo = mencionaTiempo(text) ? toPeriod(extracted.periodo) : null;
+    const noEsDocumento = extracted.no_es_documento && !options.pedidoExplicito;
     const folioModelo = toValue(extracted.folio)?.toUpperCase() ?? null;
     const folio =
       folioModelo && contiene(text, folioModelo) ? folioModelo : null;
@@ -216,10 +223,10 @@ export class SlotExtractorService {
         folio: folio ?? byRules.folio,
         // Las palabras clave solo valen si el modelo vio una petición de
         // documento: "lo de la semana" no es un filtro sobre nada.
-        text: hint ?? (extracted.no_es_documento || folio || byRules.folio ? null : claves),
+        text: hint ?? (noEsDocumento || folio || byRules.folio ? null : claves),
       },
       companyHint: toValue(extracted.empresa),
-      notADocumentRequest: extracted.no_es_documento,
+      notADocumentRequest: noEsDocumento,
       tipoMensaje: extracted.tipo_mensaje === 'OTRO' ? null : extracted.tipo_mensaje,
       source: 'modelo',
     };

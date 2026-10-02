@@ -610,7 +610,16 @@ export function empatia(): string {
 
 /** Una pregunta que no es de documentos, sin modelo que la conteste. */
 export function consultaSinModelo(empresas: string): string {
-  return `Eso no lo puedo resolver por aquí; yo te ayudo con los documentos de ${n(empresas)}.\nSi necesitas a alguien del equipo, escribe *"quiero hablar con una persona"*.`;
+  return `Eso no lo tengo a la mano. Lo que sí puedo es buscarte y mandarte documentos de ${n(empresas)}: facturas, contratos, cotizaciones, reportes o pólizas.\nSi prefieres que te atienda alguien del equipo, escribe *"quiero hablar con una persona"*.`;
+}
+
+/**
+ * "¿Qué eres?", "¿qué resuelves?", "¿eres un bot?": se contesta con la
+ * verdad y con lo que sí hace, sin modelo. Es la pregunta en la que un
+ * "eso no lo resuelvo" suena peor.
+ */
+export function queSoy(empresas: string): string {
+  return `Soy el asistente automático de documentos de ${n(empresas)}. Te busco y te mando por aquí facturas, contratos, cotizaciones, reportes, pólizas o estados de cuenta; te digo qué hay de un mes, y si lo necesitas te paso con alguien del equipo.\n¿Qué documento te busco?`;
 }
 
 /** Una inconformidad que las reglas no ubicaron, sin modelo. */
