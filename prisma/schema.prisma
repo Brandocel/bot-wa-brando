@@ -329,6 +329,7 @@ model Organization {
   connectors  ConnectorDevice[]
   pairCodes   ConnectorPairCode[]
   storedFiles StoredFile[]
+  panelUsers  PanelUser[]
 }
 
 enum MemberRole {
@@ -351,7 +352,7 @@ model Membership {
 
   /// Nombre completo de la persona, como lo registró el equipo en el panel.
   /// Un VIEWER solo recibe documentos cuyo titular lleva este nombre.
-  fullName String?
+  fullName        String?
   /// Cuándo este número escribió ese nombre por WhatsApp. null = todavía
   /// no lo confirma: no se le entrega nada hasta que lo haga.
   nameConfirmedAt DateTime?
@@ -627,20 +628,26 @@ model AccessAudit {
 enum PanelRole {
   ADMIN // ve todo y, en la siguiente etapa, edita
   AGENTE // ve tickets y conversaciones, no toca permisos
+  EMPRESA // gente de UNA empresa: su directorio y sus documentos, nada más
 }
 
 model PanelUser {
-  id           String    @id @default(cuid())
-  email        String    @unique
-  name         String
-  passwordHash String // scrypt: sal y hash en la misma cadena
-  role         PanelRole @default(AGENTE)
-  active       Boolean   @default(true)
-  lastLoginAt  DateTime?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  id             String    @id @default(cuid())
+  email          String    @unique
+  name           String
+  passwordHash   String // scrypt: sal y hash en la misma cadena
+  role           PanelRole @default(AGENTE)
+  /// Solo con role EMPRESA: la única empresa que ve. null para el equipo.
+  organizationId String?
+  active         Boolean   @default(true)
+  lastLoginAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
-  sessions PanelSession[]
+  sessions     PanelSession[]
+  organization Organization?  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
 }
 
 /// Sesiones en base y no un JWT: así una cuenta se puede revocar de verdad.

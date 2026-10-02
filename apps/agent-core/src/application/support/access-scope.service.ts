@@ -16,7 +16,7 @@ import { mismoNombre, tokensNombre } from '../../domain/contact/nombre';
  */
 
 /** Categorías que exigen un número verificado. Fiscal y legal, básicamente. */
-const SENSITIVE: readonly DocCategory[] = [
+export const SENSITIVE: readonly DocCategory[] = [
   'FACTURA',
   'CONTRATO',
   'POLIZA',

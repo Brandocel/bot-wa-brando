@@ -69,6 +69,9 @@ export interface PanelIdentity {
   email: string;
   name: string;
   role: PanelRole;
+  /** Solo EMPRESA: la empresa a la que pertenece. null para el equipo. */
+  organizationId: string | null;
+  organizationName: string | null;
 }
 
 @Injectable()
@@ -147,11 +150,17 @@ export class PanelAuthService {
 
     const session = await this.prisma.panelSession.findUnique({
       where: { tokenHash: hashToken(token) },
-      include: { user: true },
+      include: { user: { include: { organization: { select: { name: true, active: true } } } } },
     });
 
     if (!session || session.expiresAt < new Date()) return null;
     if (!session.user.active) return null;
+    // Un usuario de empresa sin empresa (o con la empresa dada de baja) no
+    // entra: sin esto quedaría con un alcance vacío que alguien podría
+    // leer como "sin filtro".
+    if (session.user.role === 'EMPRESA' && (!session.user.organizationId || !session.user.organization?.active)) {
+      return null;
+    }
 
     return identityOf(session.user);
   }
@@ -169,14 +178,20 @@ export class PanelAuthService {
     name: string;
     password: string;
     role: PanelRole;
+    organizationId?: string | null;
   }): Promise<PanelIdentity> {
+    if ((input.role === 'EMPRESA') !== Boolean(input.organizationId)) {
+      throw new Error('un usuario de empresa necesita su empresa, y solo él');
+    }
     const user = await this.prisma.panelUser.create({
       data: {
         email: input.email.trim().toLowerCase(),
         name: input.name,
         passwordHash: await this.hashPassword(input.password),
         role: input.role,
+        organizationId: input.organizationId ?? null,
       },
+      include: { organization: { select: { name: true } } },
     });
 
     return identityOf(user);
@@ -194,11 +209,13 @@ function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
-function identityOf(user: PanelUser): PanelIdentity {
+function identityOf(user: PanelUser & { organization?: { name: string } | null }): PanelIdentity {
   return {
     id: user.id,
     email: user.email,
     name: user.name,
     role: user.role,
+    organizationId: user.organizationId,
+    organizationName: user.organization?.name ?? null,
   };
 }

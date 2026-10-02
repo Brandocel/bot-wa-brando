@@ -38,7 +38,9 @@ import {
 } from '../../persistence/modelos.service';
 import { OutboxDispatcher } from '../../persistence/outbox.dispatcher';
 import { PanelAuthService, SESSION_COOKIE } from './panel-auth.service';
-import { PanelGuard, readCookie, type PanelRequest } from './panel.guard';
+import { PanelGuard, ParaEmpresa, readCookie, type PanelRequest } from './panel.guard';
+import { SENSITIVE } from '../../../application/support/access-scope.service';
+import { randomBytes } from 'node:crypto';
 import { prefijoDeLinea, separarChat } from '../../../domain/message/linea';
 import { claveTitular } from '../../../domain/contact/nombre';
 
@@ -88,6 +90,59 @@ export class PanelApiController {
       throw new ForbiddenException('hace falta ser ADMIN');
     }
     return req.panelUser.email;
+  }
+
+  /**
+   * Quién gestiona el directorio, y de qué empresa.
+   *
+   * ADMIN del equipo: de cualquiera (organizationId null). EMPRESA: solo de
+   * la suya, y eso lo decide el servidor con su sesión, nunca lo que mande
+   * el navegador.
+   */
+  private gestor(req: PanelRequest): { email: string; organizationId: string | null } {
+    const u = req.panelUser;
+    if (u?.role === 'ADMIN') return { email: u.email, organizationId: null };
+    if (u?.role === 'EMPRESA' && u.organizationId) return { email: u.email, organizationId: u.organizationId };
+    throw new ForbiddenException('no puedes cambiar el directorio');
+  }
+
+  /** La empresa que ve quien pregunta: la suya si es EMPRESA; null = todas. */
+  private empresaVisible(req: PanelRequest): string | null {
+    return req.panelUser?.role === 'EMPRESA' ? req.panelUser.organizationId : null;
+  }
+
+  /**
+   * Una membresía que este gestor puede tocar. Si es de otra empresa se
+   * contesta igual que si no existiera: no se confirma que exista.
+   */
+  private async membresiaDe(gestor: { organizationId: string | null }, id: string | undefined) {
+    if (!id) throw new BadRequestException('falta el número');
+    const m = await this.prisma.membership.findUnique({
+      where: { id },
+      select: { id: true, organizationId: true, contact: { select: { waId: true } } },
+    });
+    if (!m || (gestor.organizationId && m.organizationId !== gestor.organizationId)) {
+      throw new BadRequestException('no existe ese número');
+    }
+    return m;
+  }
+
+  /**
+   * El doble paso de lo sensible: quien lo hace confirma por escrito que
+   * habló con la persona y anota cómo lo comprobó. Va a la auditoría.
+   */
+  private atestacion(body: { confirmo?: boolean; nota?: string }): string {
+    const nota = body.nota?.trim() ?? '';
+    if (body.confirmo !== true || nota.length < 8) {
+      throw new BadRequestException('confirma que hablaste con la persona y escribe cómo lo comprobaste');
+    }
+    return nota.slice(0, 300);
+  }
+
+  private async auditarPanel(waId: string, decision: string, email: string, nota: string): Promise<void> {
+    await this.prisma.accessAudit.create({
+      data: { waId, query: nota, documentId: null, decision, decidedBy: `panel: ${email}` },
+    });
   }
 
   /** El contacto detrás de un chatId, para tratar todos sus hilos como uno. */
@@ -144,6 +199,7 @@ export class PanelApiController {
   }
 
   @UseGuards(PanelGuard)
+  @ParaEmpresa()
   @Get('me')
   me(@Req() req: PanelRequest) {
     return req.panelUser;
@@ -345,11 +401,15 @@ export class PanelApiController {
    * panel. Sin el texto extraído: pesa y no hace falta para listar.
    */
   @UseGuards(PanelGuard)
+  @ParaEmpresa()
   @Get('documentos')
   async documents(
-    @Query('empresa') empresa?: string,
+    @Req() req: PanelRequest,
+    @Query('empresa') pedida?: string,
     @Query('estado') estado?: string,
   ) {
+    // Un usuario de empresa ve la suya, pida lo que pida.
+    const empresa = this.empresaVisible(req) ?? pedida;
     if (!empresa) throw new BadRequestException('falta la empresa');
 
     const status: Prisma.DocumentWhereInput['status'] =
@@ -413,10 +473,15 @@ export class PanelApiController {
    * barrido ya no lo pisa con lo que lea el clasificador.
    */
   @UseGuards(PanelGuard)
+  @ParaEmpresa()
   @Post('documentos/titular')
   async setHolder(@Req() req: PanelRequest, @Body() body: { id?: string; titular?: string }) {
-    this.requireAdmin(req);
+    const gestor = this.gestor(req);
     if (!body.id) throw new BadRequestException('falta el id');
+    const doc = await this.prisma.document.findUnique({ where: { id: body.id }, select: { organizationId: true } });
+    if (!doc || (gestor.organizationId && doc.organizationId !== gestor.organizationId)) {
+      throw new BadRequestException('no existe ese documento');
+    }
 
     const titular = body.titular?.trim().replace(/\s+/g, ' ').slice(0, 200) || null;
     await this.prisma.document.update({
@@ -443,9 +508,12 @@ export class PanelApiController {
 
   /** Empresas con sus conteos. Solo lectura por ahora. */
   @UseGuards(PanelGuard)
+  @ParaEmpresa()
   @Get('empresas')
-  async organizations() {
+  async organizations(@Req() req: PanelRequest) {
+    const propia = this.empresaVisible(req);
     return this.prisma.organization.findMany({
+      where: propia ? { id: propia } : {},
       orderBy: { name: 'asc' },
       select: {
         id: true,
@@ -471,10 +539,12 @@ export class PanelApiController {
 
   /** Números autorizados y qué puede ver cada uno. */
   @UseGuards(PanelGuard)
+  @ParaEmpresa()
   @Get('numeros')
-  async members() {
+  async members(@Req() req: PanelRequest) {
+    const propia = this.empresaVisible(req);
     return this.prisma.membership.findMany({
-      where: { revokedAt: null },
+      where: { revokedAt: null, ...(propia ? { organizationId: propia } : {}) },
       orderBy: { createdAt: 'desc' },
       take: 200,
       select: {
@@ -484,6 +554,7 @@ export class PanelApiController {
         fullName: true,
         nameConfirmedAt: true,
         validUntil: true,
+        createdAt: true,
         contact: { select: { waId: true, displayName: true } },
         organization: { select: { id: true, name: true } },
         grants: {
@@ -903,13 +974,16 @@ export class PanelApiController {
    * dice que no tengo acceso" y no apunta al formato por ningún lado.
    */
   @UseGuards(PanelGuard)
+  @ParaEmpresa()
   @Post('numeros/preview')
-  async previewNumber(@Body() body: { phone?: string }) {
+  async previewNumber(@Req() req: PanelRequest, @Body() body: { phone?: string }) {
+    this.gestor(req);
     if (!body.phone) throw new BadRequestException('falta el número');
     return this.directory.preview(body.phone);
   }
 
   @UseGuards(PanelGuard)
+  @ParaEmpresa()
   @Post('numeros')
   async addNumber(
     @Req() req: PanelRequest,
@@ -921,95 +995,188 @@ export class PanelApiController {
       fullName?: string;
       role?: MemberRole;
       categories?: DocCategory[];
+      confirmo?: boolean;
+      nota?: string;
     },
   ) {
-    const grantedBy = this.requireAdmin(req);
+    const gestor = this.gestor(req);
+    const organizationId = gestor.organizationId ?? body.organizationId;
+    const role = body.role ?? 'VIEWER';
 
-    if (!body.organizationId || !body.phone) {
+    if (!organizationId || !body.phone) {
       throw new BadRequestException('faltan la empresa o el número');
     }
+    // ADMIN de WhatsApp autoriza a otros: eso lo decide el equipo, no la empresa.
+    if (gestor.organizationId && role === 'ADMIN') {
+      throw new ForbiddenException('solo el equipo de Jarvis da el rol ADMIN');
+    }
+    if (!body.fullName || body.fullName.trim().split(/\s+/).length < 2) {
+      throw new BadRequestException('escribe el nombre completo, con apellidos');
+    }
+    const categories = role === 'VIEWER' ? body.categories ?? [] : [];
+    const sensibles = categories.some((c) => SENSITIVE.includes(c));
+    const nota = sensibles ? this.atestacion(body) : null;
 
-    return this.directory.addMember({
-      organizationId: body.organizationId,
+    const r = await this.directory.addMember({
+      organizationId,
       phone: body.phone,
       displayName: body.displayName,
       fullName: body.fullName,
-      role: body.role ?? 'VIEWER',
-      categories: body.categories ?? [],
-      grantedBy,
+      role,
+      categories,
+      grantedBy: gestor.email,
     });
+    await this.auditarPanel(r.waId, 'PANEL_ALTA', gestor.email, nota ?? `alta como ${role}`);
+    return r;
   }
 
   @UseGuards(PanelGuard)
+  @ParaEmpresa()
   @Post('numeros/verificar')
-  async verifyNumber(@Req() req: PanelRequest, @Body() body: { id?: string }) {
-    this.requireAdmin(req);
-    if (!body.id) throw new BadRequestException('falta el id');
+  async verifyNumber(
+    @Req() req: PanelRequest,
+    @Body() body: { id?: string; confirmo?: boolean; nota?: string },
+  ) {
+    const gestor = this.gestor(req);
+    const m = await this.membresiaDe(gestor, body.id);
+    const nota = this.atestacion(body);
 
-    await this.directory.verifyMember(body.id);
+    await this.directory.verifyMember(m.id);
+    await this.auditarPanel(m.contact.waId, 'PANEL_VERIFICAR', gestor.email, nota);
     return { ok: true };
   }
 
   /** Nombre completo registrado. Cambiarlo obliga al número a confirmarlo de nuevo. */
   @UseGuards(PanelGuard)
+  @ParaEmpresa()
   @Post('numeros/nombre')
   async setFullName(@Req() req: PanelRequest, @Body() body: { id?: string; fullName?: string }) {
-    this.requireAdmin(req);
-    if (!body.id) throw new BadRequestException('falta el id');
+    const gestor = this.gestor(req);
+    const m = await this.membresiaDe(gestor, body.id);
 
     try {
-      await this.directory.setFullName(body.id, body.fullName ?? '');
+      await this.directory.setFullName(m.id, body.fullName ?? '');
     } catch (err) {
       throw new BadRequestException(err instanceof Error ? err.message : String(err));
     }
+    await this.auditarPanel(m.contact.waId, 'PANEL_NOMBRE', gestor.email, 'nombre completo cambiado');
     return { ok: true };
   }
 
   /** Confirmar el nombre a mano, sin esperar a que lo escriba por WhatsApp. */
   @UseGuards(PanelGuard)
+  @ParaEmpresa()
   @Post('numeros/confirmar-nombre')
-  async confirmFullName(@Req() req: PanelRequest, @Body() body: { id?: string }) {
-    this.requireAdmin(req);
-    if (!body.id) throw new BadRequestException('falta el id');
+  async confirmFullName(
+    @Req() req: PanelRequest,
+    @Body() body: { id?: string; confirmo?: boolean; nota?: string },
+  ) {
+    const gestor = this.gestor(req);
+    const m = await this.membresiaDe(gestor, body.id);
+    const nota = this.atestacion(body);
 
     try {
-      await this.directory.confirmFullName(body.id);
+      await this.directory.confirmFullName(m.id);
     } catch (err) {
       throw new BadRequestException(err instanceof Error ? err.message : String(err));
     }
+    await this.auditarPanel(m.contact.waId, 'PANEL_CONFIRMAR_NOMBRE', gestor.email, nota);
     return { ok: true };
   }
 
   @UseGuards(PanelGuard)
+  @ParaEmpresa()
   @Post('numeros/revocar')
   async revokeNumber(@Req() req: PanelRequest, @Body() body: { id?: string }) {
-    this.requireAdmin(req);
-    if (!body.id) throw new BadRequestException('falta el id');
+    const gestor = this.gestor(req);
+    const m = await this.membresiaDe(gestor, body.id);
 
-    await this.directory.revokeMember(body.id);
+    await this.directory.revokeMember(m.id);
+    await this.auditarPanel(m.contact.waId, 'PANEL_REVOCAR', gestor.email, 'acceso retirado');
     return { ok: true };
   }
 
   @UseGuards(PanelGuard)
+  @ParaEmpresa()
   @Post('numeros/permiso')
   async setGrant(
     @Req() req: PanelRequest,
     @Body()
-    body: { membershipId?: string; category?: DocCategory; enabled?: boolean },
+    body: { membershipId?: string; category?: DocCategory; enabled?: boolean; confirmo?: boolean; nota?: string },
   ) {
-    const grantedBy = this.requireAdmin(req);
+    const gestor = this.gestor(req);
+    const m = await this.membresiaDe(gestor, body.membershipId);
+    if (!body.category) throw new BadRequestException('falta el tipo de documento');
 
-    if (!body.membershipId || !body.category) {
-      throw new BadRequestException('faltan datos del permiso');
-    }
+    const enabled = body.enabled === true;
+    // Dar lo sensible pide el doble paso; quitarlo, nunca.
+    const nota = enabled && SENSITIVE.includes(body.category) ? this.atestacion(body) : null;
 
     await this.directory.setGrant({
-      membershipId: body.membershipId,
+      membershipId: m.id,
       category: body.category,
-      enabled: body.enabled === true,
-      grantedBy,
+      enabled,
+      grantedBy: gestor.email,
     });
+    await this.auditarPanel(
+      m.contact.waId,
+      enabled ? 'PANEL_PERMISO_DAR' : 'PANEL_PERMISO_QUITAR',
+      gestor.email,
+      nota ? `${body.category}: ${nota}` : body.category,
+    );
+    return { ok: true };
+  }
 
+  /** Quién de una empresa entra a su propio panel. Solo el equipo. */
+  @UseGuards(PanelGuard)
+  @Get('empresas/usuarios')
+  async companyUsers(@Req() req: PanelRequest, @Query('empresa') empresa?: string) {
+    this.requireAdmin(req);
+    if (!empresa) throw new BadRequestException('falta la empresa');
+    return this.prisma.panelUser.findMany({
+      where: { organizationId: empresa, role: 'EMPRESA', active: true },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true, email: true, name: true, lastLoginAt: true },
+    });
+  }
+
+  /**
+   * Alta de un usuario de empresa. La contraseña se genera aquí y se
+   * devuelve UNA sola vez: el equipo se la pasa a la empresa por un canal
+   * seguro. No se guarda en claro en ningún lado.
+   */
+  @UseGuards(PanelGuard)
+  @Post('empresas/usuarios')
+  async addCompanyUser(
+    @Req() req: PanelRequest,
+    @Body() body: { organizationId?: string; email?: string; name?: string },
+  ) {
+    this.requireAdmin(req);
+    const email = body.email?.trim().toLowerCase() ?? '';
+    const name = body.name?.trim() ?? '';
+    if (!body.organizationId || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || name.length < 2) {
+      throw new BadRequestException('faltan la empresa, un correo válido o el nombre');
+    }
+    if (await this.prisma.panelUser.findUnique({ where: { email } })) {
+      throw new BadRequestException('ese correo ya tiene acceso al panel');
+    }
+
+    const password = randomBytes(9).toString('base64url');
+    await this.auth.createUser({ email, name, password, role: 'EMPRESA', organizationId: body.organizationId });
+    return { email, password };
+  }
+
+  /** Quitarle el panel a alguien de una empresa: se desactiva y se cierran sus sesiones. */
+  @UseGuards(PanelGuard)
+  @Post('empresas/usuarios/baja')
+  async removeCompanyUser(@Req() req: PanelRequest, @Body() body: { id?: string }) {
+    this.requireAdmin(req);
+    if (!body.id) throw new BadRequestException('falta el id');
+    await this.prisma.panelUser.updateMany({
+      where: { id: body.id, role: 'EMPRESA' },
+      data: { active: false },
+    });
+    await this.prisma.panelSession.deleteMany({ where: { userId: body.id } });
     return { ok: true };
   }
 

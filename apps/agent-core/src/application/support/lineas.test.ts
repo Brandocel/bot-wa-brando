@@ -236,3 +236,47 @@ test('los comandos de dueño no corren desde el número de una empresa', async (
   await filtro.handle(enLinea as never, async () => undefined);
   assert.equal(enLinea.role, 'PROSPECT');
 });
+
+// ── Panel de empresa: cerrado por defecto ───────────────────────────────
+
+async function guardPara(rol: string, paraEmpresa: boolean) {
+  const { PanelGuard } = await import('../../infrastructure/http/panel/panel.guard');
+  const identidad = { id: 'u', email: 'u@x.mx', name: 'U', role: rol, organizationId: rol === 'EMPRESA' ? 'vega' : null, organizationName: null };
+  const guard = new PanelGuard(
+    { resolve: async () => identidad } as never,
+    { getAllAndOverride: () => paraEmpresa } as never,
+  );
+  const req: Record<string, unknown> = { headers: { cookie: 'panel_session=t' } };
+  const ctx = { switchToHttp: () => ({ getRequest: () => req }), getHandler: () => null, getClass: () => null };
+  return guard.canActivate(ctx as never);
+}
+
+test('un usuario de empresa no entra a rutas que no están marcadas para empresas', async () => {
+  await assert.rejects(guardPara('EMPRESA', false), /no está disponible/);
+  assert.equal(await guardPara('EMPRESA', true), true);
+  assert.equal(await guardPara('ADMIN', false), true, 'el equipo sigue entrando a todo');
+});
+
+test('la empresa solo toca números suyos, y lo sensible pide el doble paso', async () => {
+  const { PanelApiController } = await import('../../infrastructure/http/panel/panel-api.controller');
+  const auditoria: unknown[] = [];
+  const verificados: string[] = [];
+  const prisma = {
+    membership: {
+      findUnique: async ({ where }: { where: { id: string } }) =>
+        ({ id: where.id, organizationId: where.id === 'de-vega' ? 'vega' : 'pollos', contact: { waId: '521@c.us' } }),
+    },
+    accessAudit: { create: async (a: unknown) => { auditoria.push(a); } },
+  };
+  const directory = { verifyMember: async (id: string) => { verificados.push(id); } };
+  const ctrl = new PanelApiController(prisma as never, {} as never, directory as never, {} as never, {} as never, {} as never, {} as never);
+  const req = { panelUser: { role: 'EMPRESA', organizationId: 'vega', email: 'paula@vega.mx' } };
+
+  await assert.rejects(ctrl.verifyNumber(req as never, { id: 'de-pollos', confirmo: true, nota: 'le llamé y confirmó' }), /no existe/);
+  await assert.rejects(ctrl.verifyNumber(req as never, { id: 'de-vega' }), /confirma que hablaste/);
+  assert.deepEqual(verificados, []);
+
+  await ctrl.verifyNumber(req as never, { id: 'de-vega', confirmo: true, nota: 'le llamé y confirmó' });
+  assert.deepEqual(verificados, ['de-vega']);
+  assert.match(JSON.stringify(auditoria[0]), /PANEL_VERIFICAR.*panel: paula@vega\.mx/);
+});

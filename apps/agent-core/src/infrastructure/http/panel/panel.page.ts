@@ -722,6 +722,465 @@ document.addEventListener('input', (e) => {
 
 // ── Vistas ──────────────────────────────────────────────────────────────
 
+// ── Directorio: la lista de clientes y la ficha de cada uno ─────────────
+//
+// Lo mismo para el equipo de Jarvis (elige la empresa) y para la gente de
+// una empresa (solo la suya; eso lo impone el servidor, aquí solo se
+// pinta). Lo sensible —verificar el número, confirmar el nombre a mano,
+// dar documentos fiscales— pide el doble paso: confirmar que se habló con
+// la persona y anotar cómo. Queda en la auditoría con quién lo hizo.
+
+let dirEmpresa = null;
+// Empresas: de cuál se ven los accesos al panel, y la contraseña recién
+// creada (se enseña una sola vez y se olvida al cerrar).
+let accesosEmpresa = null;
+let claveNueva = null;
+let dirFiltro = 'todos';
+let dirBusqueda = '';
+// id de la membresía abierta en la ficha, 'nuevo' para el alta, o null.
+let dirSeleccion = null;
+// Lo que espera el doble paso: { tipo: 'verificar'|'confirmar'|'permiso'|'nombre', id, category }.
+let dirAccion = null;
+
+const ROL_NOMBRE = { VIEWER: 'Cliente', MANAGER: 'Gerente', ADMIN: 'Administrador' };
+const SENSIBLES = ['FACTURA', 'CONTRATO', 'POLIZA', 'ESTADO_CUENTA', 'CONTABLE'];
+
+function puedeGestionar() {
+  return yo?.role === 'ADMIN' || yo?.role === 'EMPRESA';
+}
+
+function nombreVisible(m) {
+  return m.fullName || m.contact.displayName || numeroBonito(m.contact.waId);
+}
+
+/** Lo que le falta para poder recibir documentos, en una frase. */
+function estadoDe(m) {
+  if (!m.fullName) return { listo: false, texto: 'Falta su nombre completo' };
+  if (!m.nameConfirmedAt) return { listo: false, texto: 'Falta que confirme su nombre' };
+  const pideSensible = m.role !== 'VIEWER' || m.grants.some((g) => SENSIBLES.includes(g.category));
+  if (!m.verifiedAt && pideSensible) return { listo: false, texto: 'Falta verificar el número' };
+  return { listo: true, texto: 'Listo' };
+}
+
+function pasosDe(m) {
+  return [
+    {
+      clave: 'nombre', listo: !!m.fullName, titulo: 'Nombre completo registrado',
+      detalle: m.fullName ? esc(m.fullName) : 'Sin esto no recibe ningún documento.',
+    },
+    {
+      clave: 'confirmar', listo: !!m.nameConfirmedAt, titulo: 'Confirmó su nombre',
+      detalle: m.nameConfirmedAt
+        ? 'El ' + fecha(m.nameConfirmedAt)
+        : 'El bot se lo pide por WhatsApp la próxima vez que pida un documento.',
+    },
+    {
+      clave: 'verificar', listo: !!m.verifiedAt, titulo: 'Número verificado',
+      detalle: m.verifiedAt
+        ? 'El ' + fecha(m.verifiedAt)
+        : 'Hace falta para facturas, contratos, pólizas, estados de cuenta y contabilidad.',
+    },
+  ];
+}
+
+function formAtestacion(titulo, explicacion) {
+  return '<form class="atestacion" id="dir-atestacion">' +
+    '<strong>' + titulo + '</strong>' +
+    '<p class="muted small">' + explicacion + '</p>' +
+    '<label class="check"><input type="checkbox" id="dir-confirmo"> Hablé con esta persona y comprobé que el número es suyo.</label>' +
+    '<label class="campo">¿Cómo lo comprobaste?' +
+      '<textarea id="dir-nota" rows="2" placeholder="Ej.: le llamé al número registrado y confirmó sus datos"></textarea></label>' +
+    '<div class="fila-botones"><button type="submit">Confirmar</button>' +
+      '<button type="button" class="ghost" data-dir-cancelar>Cancelar</button></div>' +
+  '</form>';
+}
+
+function accionDePaso(m, paso) {
+  if (!puedeGestionar()) return '';
+  const abierta = dirAccion && dirAccion.id === m.id && dirAccion.tipo === paso.clave;
+
+  if (paso.clave === 'nombre') {
+    if (abierta) {
+      return '<form class="atestacion" id="dir-nombre-form">' +
+        '<label class="campo">Nombre completo, con apellidos' +
+          '<input id="dir-nombre" value="' + escAttr(m.fullName ?? '') + '" autocomplete="off" required></label>' +
+        (m.nameConfirmedAt ? '<p class="muted small">Si lo cambias, tendrá que confirmarlo otra vez.</p>' : '') +
+        '<div class="fila-botones"><button type="submit">Guardar</button>' +
+          '<button type="button" class="ghost" data-dir-cancelar>Cancelar</button></div>' +
+      '</form>';
+    }
+    return '<button class="mini" data-dir-accion="nombre">' + (m.fullName ? 'Cambiar' : 'Registrar') + '</button>';
+  }
+
+  if (paso.listo) return '';
+
+  if (paso.clave === 'confirmar') {
+    if (!m.fullName) return '';
+    return abierta
+      ? formAtestacion('Confirmar el nombre a mano',
+          'Desde ahora el bot no le preguntará su nombre: le entregará directamente lo que tenga permitido.')
+      : '<button class="mini" data-dir-accion="confirmar">Confirmar a mano</button>';
+  }
+
+  return abierta
+    ? formAtestacion('Verificar el número',
+        'Un número de WhatsApp se reasigna, se clona o se pierde con el teléfono. Verifícalo solo si comprobaste que es de esta persona.')
+    : '<button class="mini" data-dir-accion="verificar">Verificar número</button>';
+}
+
+function fichaCliente(m) {
+  const nombre = nombreVisible(m);
+  const tiene = new Set(m.grants.map((g) => g.category));
+  const pideAtestacionPermiso = dirAccion && dirAccion.id === m.id && dirAccion.tipo === 'permiso';
+
+  const permisos = m.role === 'VIEWER'
+    ? '<div class="permisos-lista">' + CATEGORIAS.map((c) =>
+        '<label class="permiso' + (tiene.has(c) ? ' activo' : '') + '">' +
+          '<input type="checkbox" data-dir-permiso="' + c + '"' + (tiene.has(c) ? ' checked' : '') +
+            (puedeGestionar() ? '' : ' disabled') + '> ' + esc(NOMBRE_CATEGORIA[c] ?? c) +
+          (SENSIBLES.includes(c) ? ' <span class="pill warn">sensible</span>' : '') +
+        '</label>').join('') + '</div>' +
+      '<p class="muted small">Solo recibe documentos que estén a su nombre.</p>' +
+      (pideAtestacionPermiso
+        ? formAtestacion('Dar acceso a ' + esc(NOMBRE_CATEGORIA[dirAccion.category] ?? dirAccion.category),
+            'Es un documento sensible: solo dáselo a quien ya comprobaste quién es.')
+        : '')
+    : '<p class="muted">Como ' + ROL_NOMBRE[m.role].toLowerCase() + ', ve todos los documentos de su empresa.</p>';
+
+  return '<div class="ficha-head">' +
+      '<span class="dir-avatar grande">' + esc(iniciales(nombre)) + '</span>' +
+      '<div class="ficha-quien"><h3>' + esc(nombre) + '</h3>' +
+        '<div class="muted small"><span class="mono">' + esc(numeroBonito(m.contact.waId)) + '</span> · ' +
+          ROL_NOMBRE[m.role] + (m.contact.displayName && m.fullName ? ' · ' + esc(m.contact.displayName) : '') + '</div></div>' +
+      '<button class="icon" data-dir-cerrar title="Cerrar">✕</button>' +
+    '</div>' +
+    '<h4>Identidad</h4>' +
+    '<ol class="pasos">' + pasosDe(m).map((p, i) =>
+      '<li class="' + (p.listo ? 'hecho' : '') + '">' +
+        '<span class="paso-n">' + (p.listo ? '✓' : String(i + 1)) + '</span>' +
+        '<div class="paso-cuerpo"><strong>' + p.titulo + '</strong>' +
+          '<small class="muted">' + p.detalle + '</small>' + accionDePaso(m, p) + '</div>' +
+      '</li>').join('') + '</ol>' +
+    '<h4>Qué puede pedir</h4>' + permisos +
+    (puedeGestionar()
+      ? '<div class="ficha-pie"><span class="muted small">Alta: ' + fecha(m.createdAt) + '</span>' +
+          '<button class="mini peligro" data-dir-revocar="' + m.id + '">Quitar acceso</button></div>'
+      : '');
+}
+
+function fichaNuevo(empresas) {
+  const deEmpresa = yo?.role === 'EMPRESA';
+  return '<div class="ficha-head"><div class="ficha-quien"><h3>Nuevo cliente</h3>' +
+      '<div class="muted small">Recibirá documentos por WhatsApp cuando confirme su nombre.</div></div>' +
+      '<button class="icon" data-dir-cerrar title="Cerrar">✕</button></div>' +
+    '<form id="dir-alta" class="alta">' +
+      (deEmpresa ? '' : '<label class="campo">Empresa<select id="dir-alta-empresa">' + empresas.map((o) =>
+        '<option value="' + o.id + '"' + (o.id === dirEmpresa ? ' selected' : '') + '>' + esc(o.name) + '</option>').join('') +
+        '</select></label>') +
+      '<label class="campo">Número de WhatsApp<input id="tel" placeholder="998 486 2017" autocomplete="off" required>' +
+        '<small id="tel-preview" class="muted">Escríbelo como lo tengas; yo lo formateo.</small></label>' +
+      '<label class="campo">Nombre completo, con apellidos<input id="dir-alta-nombre" placeholder="Ana Ruiz Soto" autocomplete="off" required>' +
+        '<small class="muted">El bot se lo pide por WhatsApp antes del primer documento y debe coincidir.</small></label>' +
+      '<label class="campo">Cómo lo identificas <span class="muted">(opcional)</span>' +
+        '<input id="dir-alta-alias" placeholder="Contadora de Flores" autocomplete="off"></label>' +
+      '<fieldset class="tipo"><legend>Tipo de acceso</legend>' +
+        '<label class="opcion"><input type="radio" name="dir-rol" value="VIEWER" checked>' +
+          '<span><strong>Cliente</strong><small class="muted">Solo lo que marques abajo, y solo documentos a su nombre.</small></span></label>' +
+        '<label class="opcion"><input type="radio" name="dir-rol" value="MANAGER">' +
+          '<span><strong>Gerente</strong><small class="muted">Todos los documentos de la empresa.</small></span></label>' +
+        (deEmpresa ? '' : '<label class="opcion"><input type="radio" name="dir-rol" value="ADMIN">' +
+          '<span><strong>Administrador</strong><small class="muted">Todo, y además autoriza a otros por WhatsApp.</small></span></label>') +
+      '</fieldset>' +
+      '<div id="dir-alta-permisos"><span class="muted small">Qué puede pedir</span><div class="permisos-lista">' +
+        CATEGORIAS.map((c) => '<label class="permiso"><input type="checkbox" name="dir-cat" value="' + c + '"> ' +
+          esc(NOMBRE_CATEGORIA[c] ?? c) + (SENSIBLES.includes(c) ? ' <span class="pill warn">sensible</span>' : '') +
+        '</label>').join('') +
+      '</div></div>' +
+      '<div id="dir-alta-atestacion" class="atestacion" hidden>' +
+        '<strong>Marcaste documentos sensibles</strong>' +
+        '<label class="check"><input type="checkbox" id="dir-alta-confirmo"> Hablé con esta persona y comprobé que el número es suyo.</label>' +
+        '<label class="campo">¿Cómo lo comprobaste?<textarea id="dir-alta-nota" rows="2"></textarea></label>' +
+      '</div>' +
+      '<div class="fila-botones"><button type="submit">Dar de alta</button>' +
+        '<button type="button" class="ghost" data-dir-cerrar>Cancelar</button></div>' +
+    '</form>';
+}
+
+async function vistaDirectorio() {
+  const [filas, empresas] = await Promise.all([api('numeros'), api('empresas')]);
+  const deEmpresa = yo?.role === 'EMPRESA';
+  if (deEmpresa) dirEmpresa = yo.organizationId;
+  else if (!empresas.some((o) => o.id === dirEmpresa)) dirEmpresa = empresas[0]?.id ?? null;
+  if (!dirEmpresa) return '<p class="vacio">No hay empresas registradas.</p>';
+
+  const propios = filas.filter((m) => m.organization.id === dirEmpresa);
+  const pendientes = propios.filter((m) => !estadoDe(m).listo).length;
+  if (dirSeleccion && dirSeleccion !== 'nuevo' && !propios.some((m) => m.id === dirSeleccion)) {
+    dirSeleccion = null;
+    dirAccion = null;
+  }
+
+  const visibles = propios
+    .filter((m) => dirFiltro === 'todos' || (dirFiltro === 'pendientes') === !estadoDe(m).listo)
+    .sort((a, b) => (Number(estadoDe(a).listo) - Number(estadoDe(b).listo)) ||
+      nombreVisible(a).localeCompare(nombreVisible(b), 'es'));
+
+  const selector = deEmpresa ? '' : '<select class="compacto" id="dir-empresa">' + empresas.map((o) =>
+    '<option value="' + o.id + '"' + (o.id === dirEmpresa ? ' selected' : '') + '>' + esc(o.name) + '</option>').join('') +
+    '</select>';
+
+  const chips = [
+    ['todos', 'Todos', propios.length],
+    ['pendientes', 'Pendientes', pendientes],
+    ['listos', 'Listos', propios.length - pendientes],
+  ].map(([valor, texto, n]) =>
+    '<button class="chip' + (dirFiltro === valor ? ' activo' : '') + '" data-dir-filtro="' + valor + '">' +
+      texto + ' <span class="muted">' + n + '</span></button>').join('');
+
+  const barra = '<div class="dir-barra">' + selector +
+    '<input class="dir-buscar" id="dir-buscar" placeholder="Buscar por nombre o número" autocomplete="off" value="' + escAttr(dirBusqueda) + '">' +
+    chips + '<span class="spacer"></span>' +
+    (puedeGestionar() ? '<button class="primario" data-dir-nuevo>+ Nuevo cliente</button>' : '') +
+  '</div>';
+
+  const filasHtml = visibles.map((m) => {
+    const e = estadoDe(m);
+    const nombre = nombreVisible(m);
+    const busca = (nombre + ' ' + (m.contact.displayName ?? '') + ' ' + m.contact.waId).toLowerCase();
+    return '<button class="dir-fila' + (m.id === dirSeleccion ? ' activa' : '') + '" data-dir-ver="' + m.id + '"' +
+        ' data-busca="' + escAttr(busca) + '">' +
+      '<span class="dir-avatar">' + esc(iniciales(nombre)) + '</span>' +
+      '<span class="dir-quien"><strong>' + esc(nombre) + '</strong>' +
+        '<small class="mono">' + esc(numeroBonito(m.contact.waId)) + '</small></span>' +
+      '<span class="dir-rol">' + ROL_NOMBRE[m.role] + '</span>' +
+      '<span class="dir-estado ' + (e.listo ? 'ok' : 'warn') + '">' + (e.listo ? '✓ ' : '') + esc(e.texto) + '</span>' +
+    '</button>';
+  }).join('');
+
+  const lista = '<div class="card dir-lista">' + (filasHtml || '<p class="vacio">' +
+    (propios.length ? 'Nadie con este filtro.' : 'Todavía no hay clientes. Da de alta el primero.') + '</p>') + '</div>';
+
+  const seleccionado = propios.find((m) => m.id === dirSeleccion);
+  const ficha = dirSeleccion === 'nuevo'
+    ? fichaNuevo(empresas)
+    : seleccionado ? fichaCliente(seleccionado) : '';
+
+  // La búsqueda filtra lo ya pintado: escribir no repinta ni pierde el foco.
+  setTimeout(filtrarDirectorio, 0);
+
+  return barra + '<div class="dir-layout' + (ficha ? ' con-ficha' : '') + '">' + lista +
+    (ficha ? '<aside class="card dir-ficha">' + ficha + '</aside>' : '') + '</div>';
+}
+
+function filtrarDirectorio() {
+  const q = dirBusqueda.trim().toLowerCase();
+  document.querySelectorAll('.dir-fila').forEach((fila) => {
+    fila.hidden = q !== '' && !fila.dataset.busca.includes(q);
+  });
+}
+
+/** Con algo a medio llenar en el directorio, el refresco automático espera. */
+function directorioOcupado() {
+  return vistaActual === 'directorio' && (dirSeleccion === 'nuevo' || dirAccion !== null);
+}
+
+const repintarDirectorio = () => pintar('directorio', true);
+
+document.addEventListener('input', (e) => {
+  if (e.target.id === 'dir-buscar') {
+    dirBusqueda = e.target.value;
+    filtrarDirectorio();
+  }
+});
+
+document.addEventListener('click', async (e) => {
+  const ver = e.target.closest('[data-dir-ver]');
+  if (ver) { dirSeleccion = ver.dataset.dirVer; dirAccion = null; return repintarDirectorio(); }
+
+  if (e.target.closest('[data-dir-nuevo]')) { dirSeleccion = 'nuevo'; dirAccion = null; return repintarDirectorio(); }
+  if (e.target.closest('[data-dir-cerrar]')) { dirSeleccion = null; dirAccion = null; return repintarDirectorio(); }
+  if (e.target.closest('[data-dir-cancelar]')) { dirAccion = null; return repintarDirectorio(); }
+
+  const filtro = e.target.closest('[data-dir-filtro]');
+  if (filtro) { dirFiltro = filtro.dataset.dirFiltro; return repintarDirectorio(); }
+
+  const accion = e.target.closest('[data-dir-accion]');
+  if (accion) { dirAccion = { tipo: accion.dataset.dirAccion, id: dirSeleccion }; return repintarDirectorio(); }
+
+  const revocar = e.target.closest('[data-dir-revocar]');
+  if (revocar) {
+    if (!confirm('¿Quitarle el acceso? Deja de recibir documentos por WhatsApp desde este momento.')) return;
+    try {
+      await enviar('numeros/revocar', { id: revocar.dataset.dirRevocar });
+      aviso('Acceso retirado');
+      dirSeleccion = null;
+      dirAccion = null;
+      repintarDirectorio();
+    } catch (err) { aviso(err.message, 'error'); }
+  }
+});
+
+document.addEventListener('change', async (e) => {
+  if (e.target.id === 'dir-empresa') {
+    dirEmpresa = e.target.value;
+    dirSeleccion = null;
+    dirAccion = null;
+    return repintarDirectorio();
+  }
+
+  // Alta: los permisos solo aplican a un cliente; lo sensible pide el doble paso.
+  if (e.target.name === 'dir-rol' || e.target.name === 'dir-cat') {
+    const rol = document.querySelector('input[name="dir-rol"]:checked')?.value;
+    document.getElementById('dir-alta-permisos').hidden = rol !== 'VIEWER';
+    const sensible = rol === 'VIEWER' &&
+      [...document.querySelectorAll('input[name="dir-cat"]:checked')].some((c) => SENSIBLES.includes(c.value));
+    document.getElementById('dir-alta-atestacion').hidden = !sensible;
+    return;
+  }
+
+  const permiso = e.target.closest('[data-dir-permiso]');
+  if (permiso) {
+    const category = permiso.dataset.dirPermiso;
+    if (permiso.checked && SENSIBLES.includes(category)) {
+      permiso.checked = false;
+      dirAccion = { tipo: 'permiso', id: dirSeleccion, category };
+      return repintarDirectorio();
+    }
+    try {
+      await enviar('numeros/permiso', { membershipId: dirSeleccion, category, enabled: permiso.checked });
+      aviso(permiso.checked ? 'Ahora puede pedir ' + (NOMBRE_CATEGORIA[category] ?? category) : 'Permiso retirado');
+      repintarDirectorio();
+    } catch (err) {
+      permiso.checked = !permiso.checked;
+      aviso(err.message, 'error');
+    }
+  }
+});
+
+document.addEventListener('submit', async (e) => {
+  if (e.target.id === 'dir-atestacion') {
+    e.preventDefault();
+    const firma = {
+      confirmo: document.getElementById('dir-confirmo').checked,
+      nota: document.getElementById('dir-nota').value,
+    };
+    const a = dirAccion;
+    try {
+      if (a.tipo === 'verificar') {
+        await enviar('numeros/verificar', { id: a.id, ...firma });
+        aviso('Número verificado');
+      } else if (a.tipo === 'confirmar') {
+        await enviar('numeros/confirmar-nombre', { id: a.id, ...firma });
+        aviso('Nombre confirmado');
+      } else if (a.tipo === 'permiso') {
+        await enviar('numeros/permiso', { membershipId: a.id, category: a.category, enabled: true, ...firma });
+        aviso('Ahora puede pedir ' + (NOMBRE_CATEGORIA[a.category] ?? a.category));
+      }
+      dirAccion = null;
+      repintarDirectorio();
+    } catch (err) { aviso(err.message, 'error'); }
+    return;
+  }
+
+  if (e.target.id === 'dir-nombre-form') {
+    e.preventDefault();
+    try {
+      await enviar('numeros/nombre', { id: dirAccion.id, fullName: document.getElementById('dir-nombre').value });
+      aviso('Nombre guardado');
+      dirAccion = null;
+      repintarDirectorio();
+    } catch (err) { aviso(err.message, 'error'); }
+    return;
+  }
+
+  if (e.target.id === 'dir-alta') {
+    e.preventDefault();
+    const rol = document.querySelector('input[name="dir-rol"]:checked').value;
+    try {
+      const r = await enviar('numeros', {
+        organizationId: document.getElementById('dir-alta-empresa')?.value ?? dirEmpresa,
+        phone: document.getElementById('tel').value,
+        fullName: document.getElementById('dir-alta-nombre').value,
+        displayName: document.getElementById('dir-alta-alias').value,
+        role: rol,
+        categories: rol === 'VIEWER'
+          ? [...document.querySelectorAll('input[name="dir-cat"]:checked')].map((c) => c.value)
+          : [],
+        confirmo: document.getElementById('dir-alta-confirmo').checked,
+        nota: document.getElementById('dir-alta-nota').value,
+      });
+      aviso('Alta lista: ' + r.display + (r.existsOnWhatsApp ? '' : ' (WhatsApp no lo reconoció)'));
+      const empresaAlta = document.getElementById('dir-alta-empresa')?.value;
+      if (empresaAlta) dirEmpresa = empresaAlta;
+      dirSeleccion = null;
+      repintarDirectorio();
+    } catch (err) { aviso(err.message, 'error'); }
+  }
+});
+
+/**
+ * Quién de una empresa entra a su propio panel: ve y gestiona sus clientes
+ * y sus documentos, nada más. La contraseña la genera el servidor y se
+ * enseña una sola vez.
+ */
+async function tarjetaAccesos(empresa) {
+  if (!empresa) { accesosEmpresa = null; return ''; }
+  const usuarios = await api('empresas/usuarios?empresa=' + encodeURIComponent(empresa.id));
+
+  return '<section class="card accesos">' +
+    '<div class="ficha-head"><div class="ficha-quien"><h3>Accesos al panel · ' + esc(empresa.name) + '</h3>' +
+      '<div class="muted small">Ven y gestionan sus clientes y sus documentos. No ven conversaciones, tickets ni otras empresas.</div></div>' +
+      '<button class="icon" data-accesos-cerrar title="Cerrar">✕</button></div>' +
+    (claveNueva
+      ? '<div class="atestacion"><strong>Contraseña de ' + esc(claveNueva.email) + '</strong>' +
+          '<span class="mono clave">' + esc(claveNueva.password) + '</span>' +
+          '<span class="muted small">Cópiala ahora y compártela por un canal seguro: no se vuelve a mostrar.</span></div>'
+      : '') +
+    (usuarios.length
+      ? '<ul class="accesos-lista">' + usuarios.map((u) =>
+          '<li><span class="dir-quien"><strong>' + esc(u.name) + '</strong><small>' + esc(u.email) +
+            (u.lastLoginAt ? ' · entró ' + fecha(u.lastLoginAt) : ' · aún no entra') + '</small></span>' +
+          '<button class="mini peligro" data-acceso-baja="' + u.id + '">Quitar</button></li>').join('') + '</ul>'
+      : '<p class="muted small">Nadie de esta empresa tiene acceso todavía.</p>') +
+    '<form id="form-acceso" class="fila-alta">' +
+      '<label class="campo">Nombre<input id="acceso-nombre" placeholder="Paula Flores" required></label>' +
+      '<label class="campo">Correo<input id="acceso-correo" type="email" placeholder="paula@empresa.com" required></label>' +
+      '<button type="submit">Dar acceso</button>' +
+    '</form>' +
+  '</section>';
+}
+
+document.addEventListener('click', async (e) => {
+  const abrir = e.target.closest('[data-accesos]');
+  if (abrir) { accesosEmpresa = abrir.dataset.accesos; claveNueva = null; return pintar('empresas', true); }
+
+  if (e.target.closest('[data-accesos-cerrar]')) { accesosEmpresa = null; claveNueva = null; return pintar('empresas', true); }
+
+  const baja = e.target.closest('[data-acceso-baja]');
+  if (baja) {
+    if (!confirm('¿Quitarle el acceso al panel? Su sesión se cierra en ese momento.')) return;
+    try {
+      await enviar('empresas/usuarios/baja', { id: baja.dataset.accesoBaja });
+      aviso('Acceso al panel retirado');
+      pintar('empresas', true);
+    } catch (err) { aviso(err.message, 'error'); }
+  }
+});
+
+document.addEventListener('submit', async (e) => {
+  if (e.target.id !== 'form-acceso') return;
+  e.preventDefault();
+  try {
+    claveNueva = await enviar('empresas/usuarios', {
+      organizationId: accesosEmpresa,
+      name: document.getElementById('acceso-nombre').value,
+      email: document.getElementById('acceso-correo').value,
+    });
+    aviso('Acceso creado');
+    pintar('empresas', true);
+  } catch (err) { aviso(err.message, 'error'); }
+});
+
 const VISTAS = {
   async bandeja() {
     const consulta = filtroBandeja === 'todas' ? 'bandeja' : 'bandeja?esperando=' + filtroBandeja;
@@ -800,95 +1259,7 @@ const VISTAS = {
   },
 
   async directorio() {
-    const [filas, empresas] = await Promise.all([api('numeros'), api('empresas')]);
-    const esAdmin = yo?.role === 'ADMIN';
-
-    const formulario = esAdmin ? \`
-      <form class="card form-alta" id="form-numero">
-        <h3>Dar de alta un número</h3>
-        <div class="campos">
-          <label>Número
-            <input id="tel" placeholder="9984862017" autocomplete="off" required>
-            <small id="tel-preview" class="muted">Escríbelo como lo tengas; yo lo formateo.</small>
-          </label>
-          <label>Nombre
-            <input id="nombre" placeholder="Contadora de Flores" autocomplete="off">
-          </label>
-          <label>Nombre completo, con apellidos
-            <input id="nombre-completo" placeholder="Ana Ruiz Soto" autocomplete="off" required>
-            <small class="muted">Se lo pido por WhatsApp antes del primer documento. A un VIEWER solo le llegan los documentos a este nombre.</small>
-          </label>
-          <label>Empresa
-            <select id="empresa" required>\${empresas.map((o) =>
-              '<option value="' + o.id + '">' + esc(o.name) + '</option>').join('')}</select>
-          </label>
-          <label>Rol
-            <select id="rol">
-              <option value="VIEWER">VIEWER · solo lo que marques abajo</option>
-              <option value="MANAGER">MANAGER · todo lo de su empresa</option>
-              <option value="ADMIN">ADMIN · además autoriza a otros</option>
-            </select>
-          </label>
-        </div>
-        <div class="permisos" id="permisos">
-          <span class="muted">Puede consultar:</span>
-          \${CATEGORIAS.map((c) =>
-            '<label class="check"><input type="checkbox" value="' + c + '"> ' + c + '</label>').join('')}
-        </div>
-        <button type="submit">Agregar al directorio</button>
-      </form>\` : '';
-
-    if (!filas.length) return formulario + '<p class="vacio">No hay números autorizados todavía.</p>';
-
-    const nombreCompleto = (m) => {
-      if (!m.fullName) return '<span class="pill warn">falta</span>';
-      return esc(m.fullName) + ' ' + (m.nameConfirmedAt
-        ? '<span class="pill ok">confirmado</span>'
-        : '<span class="pill warn">sin confirmar</span>');
-    };
-
-    const acciones = (m) => !esAdmin ? '' :
-      '<button class="mini" data-nombre-completo="' + m.id + '" data-actual="' + escAttr(m.fullName ?? '') + '">Nombre</button> ' +
-      (m.fullName && !m.nameConfirmedAt
-        ? '<button class="mini" data-confirmar-nombre="' + m.id + '" data-actual="' + escAttr(m.fullName) + '">Confirmar</button> '
-        : '') +
-      (m.verifiedAt ? '' : '<button class="mini" data-verificar="' + m.id + '">Verificar</button> ') +
-      '<button class="mini peligro" data-revocar="' + m.id + '">Revocar</button>';
-
-    const fila = (m) => '<tr>' +
-      '<td class="mono">' + esc(numeroBonito(m.contact.waId)) + '</td>' +
-      '<td>' + esc(m.contact.displayName ?? '—') + '</td>' +
-      '<td>' + nombreCompleto(m) + '</td>' +
-      '<td>' + m.role + '</td>' +
-      '<td>' + (m.verifiedAt
-        ? '<span class="pill ok">sí</span>'
-        : '<span class="pill warn">no</span>') + '</td>' +
-      '<td>' + (m.role === 'VIEWER'
-        ? (m.grants.map((g) => esc(g.category)).join(', ') || '<span class="muted">nada</span>')
-        : '<span class="muted">todo lo de su empresa</span>') + '</td>' +
-      '<td class="acciones">' + acciones(m) + '</td>' +
-    '</tr>';
-
-    // Una tarjeta por empresa, con sus números: igual que Documentos.
-    const porEmpresa = new Map();
-    for (const m of filas) {
-      const id = m.organization.id;
-      if (!porEmpresa.has(id)) porEmpresa.set(id, { nombre: m.organization.name, miembros: [] });
-      porEmpresa.get(id).miembros.push(m);
-    }
-
-    const secciones = [...porEmpresa.values()]
-      .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
-      .map(({ nombre, miembros }) => {
-        const pendientes = miembros.filter((m) => !m.fullName || !m.nameConfirmedAt).length;
-        return '<section class="card docs-tipo"><h3>' + esc(nombre) +
-          ' <span class="muted small">' + miembros.length + ' número' + (miembros.length === 1 ? '' : 's') + '</span>' +
-          (pendientes ? ' <span class="pill warn">' + pendientes + ' sin nombre confirmado</span>' : '') + '</h3>' +
-          tabla(['Número', 'Nombre', 'Nombre completo', 'Rol', 'Verificado', 'Puede consultar', ''], miembros.map(fila), '') +
-        '</section>';
-      }).join('');
-
-    return formulario + '<div class="docs-grid">' + secciones + '</div>';
+    return vistaDirectorio();
   },
 
   async empresas() {
@@ -937,7 +1308,8 @@ const VISTAS = {
         '</select> ';
       return cambiar + (o.sourceType === 'PC'
         ? '<button class="mini" data-codigo-pc="' + o.id + '" data-nombre="' + esc(o.name) + '">Conectar PC</button>'
-        : '<button class="mini" data-guardar="' + o.id + '">Guardar</button>');
+        : '<button class="mini" data-guardar="' + o.id + '">Guardar</button>') +
+        ' <button class="mini" data-accesos="' + o.id + '">Accesos al panel</button>';
     };
 
     // El estado de cada conector se pide después de pintar la tabla: son
@@ -947,7 +1319,9 @@ const VISTAS = {
       for (const o of filas.filter((x) => x.waLineId)) pintarEstadoWa(o.id, o.name);
     }, 0);
 
-    return formulario + '<div id="codigo-pc">' + codigoPcVigente() + '</div>' +
+    const accesos = esAdmin && accesosEmpresa ? await tarjetaAccesos(filas.find((o) => o.id === accesosEmpresa)) : '';
+
+    return formulario + accesos + '<div id="codigo-pc">' + codigoPcVigente() + '</div>' +
       '<div id="qr-wa">' + qrWaVigente() + '</div>' + tabla(
       ['Empresa', 'RFC', 'Origen de documentos', 'WhatsApp', 'Números', 'Documentos', 'Tickets', ''],
       filas.map((o) => '<tr>' +
@@ -970,7 +1344,7 @@ const VISTAS = {
     if (!empresas.some((o) => o.id === docsEmpresa)) docsEmpresa = empresas[0].id;
 
     const filas = await api('documentos?empresa=' + encodeURIComponent(docsEmpresa) + '&estado=' + docsEstado);
-    const esAdmin = yo?.role === 'ADMIN';
+    const esAdmin = puedeGestionar();
 
     const selector = '<select class="compacto" id="docs-empresa">' +
       empresas.map((o) => '<option value="' + o.id + '"' + (o.id === docsEmpresa ? ' selected' : '') + '>' +
@@ -1310,27 +1684,6 @@ document.addEventListener('submit', async (e) => {
     return;
   }
 
-  if (e.target.id === 'form-numero') {
-    e.preventDefault();
-    const categorias = [...document.querySelectorAll('#permisos input:checked')]
-      .map((c) => c.value);
-
-    try {
-      const r = await enviar('numeros', {
-        organizationId: document.getElementById('empresa').value,
-        phone: document.getElementById('tel').value,
-        displayName: document.getElementById('nombre').value,
-        fullName: document.getElementById('nombre-completo').value,
-        role: document.getElementById('rol').value,
-        categories: categorias,
-      });
-
-      aviso('Agregado como ' + r.display + (r.existsOnWhatsApp ? '' : ' (sin confirmar en WhatsApp)'));
-      pintar('directorio');
-    } catch (err) { aviso(err.message, 'error'); }
-    return;
-  }
-
   if (e.target.id === 'form-empresa') {
     e.preventDefault();
     try {
@@ -1451,18 +1804,6 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
-  const nombreCompleto = e.target.closest('[data-nombre-completo]');
-  if (nombreCompleto) {
-    const nuevo = prompt('Nombre completo, con apellidos. Si lo cambias, el número tendrá que confirmarlo otra vez por WhatsApp.', nombreCompleto.dataset.actual);
-    if (nuevo === null) return;
-    try {
-      await enviar('numeros/nombre', { id: nombreCompleto.dataset.nombreCompleto, fullName: nuevo });
-      aviso('Nombre guardado: se lo pido al número antes del siguiente documento');
-      pintar('directorio');
-    } catch (err) { aviso(err.message, 'error'); }
-    return;
-  }
-
   const titular = e.target.closest('[data-titular]');
   if (titular) {
     const nuevo = prompt('¿A nombre de quién va este documento? Un cliente (VIEWER) solo lo recibe si su nombre completo coincide.', titular.dataset.actual);
@@ -1473,37 +1814,6 @@ document.addEventListener('click', async (e) => {
       pintar('documentos');
     } catch (err) { aviso(err.message, 'error'); }
     return;
-  }
-
-  const confirmarNombre = e.target.closest('[data-confirmar-nombre]');
-  if (confirmarNombre) {
-    if (!confirm('¿Confirmas que este número es de ' + confirmarNombre.dataset.actual + '? Desde ahora recibe documentos sin que se le pregunte su nombre.')) return;
-    try {
-      await enviar('numeros/confirmar-nombre', { id: confirmarNombre.dataset.confirmarNombre });
-      aviso('Nombre confirmado');
-      pintar('directorio');
-    } catch (err) { aviso(err.message, 'error'); }
-    return;
-  }
-
-  const verificar = e.target.closest('[data-verificar]');
-  if (verificar) {
-    try {
-      await enviar('numeros/verificar', { id: verificar.dataset.verificar });
-      aviso('Número verificado: ya puede recibir documentos sensibles');
-      pintar('directorio');
-    } catch (err) { aviso(err.message, 'error'); }
-    return;
-  }
-
-  const revocar = e.target.closest('[data-revocar]');
-  if (revocar) {
-    if (!confirm('¿Revocar el acceso de este número? Deja de recibir documentos.')) return;
-    try {
-      await enviar('numeros/revocar', { id: revocar.dataset.revocar });
-      aviso('Acceso revocado');
-      pintar('directorio');
-    } catch (err) { aviso(err.message, 'error'); }
   }
 });
 
@@ -1701,6 +2011,14 @@ function mostrarCodigoPc(id, nombre) {
 // ── Armazón ─────────────────────────────────────────────────────────────
 
 async function pintarResumen() {
+  // Las cifras de la portada son de toda la operación: a una empresa no se
+  // le enseñan (el servidor tampoco se las daría).
+  if (!yo || yo.role === 'EMPRESA') {
+    document.getElementById('resumen').innerHTML = yo
+      ? '<span class="muted">' + esc(yo.organizationName ?? '') + ' · tus clientes y tus documentos</span>'
+      : '';
+    return;
+  }
   const r = await api('resumen');
   if (!r) return;
 
@@ -1773,18 +2091,33 @@ api('me').then((usuario) => {
   if (usuario) {
     document.getElementById('yo-avatar').textContent = iniciales(usuario.name);
     document.getElementById('yo-nombre').textContent = usuario.name;
-    document.getElementById('yo-rol').textContent = usuario.role === 'ADMIN' ? 'Administrador' : 'Agente';
+    document.getElementById('yo-rol').textContent = usuario.role === 'ADMIN'
+      ? 'Administrador'
+      : usuario.role === 'EMPRESA' ? (usuario.organizationName ?? 'Empresa') : 'Agente';
   }
+
+  if (usuario?.role === 'EMPRESA') {
+    document.querySelectorAll('.nav-items button').forEach((b) => {
+      b.hidden = b.dataset.view !== 'directorio' && b.dataset.view !== 'documentos';
+    });
+    TITULOS.directorio = 'Clientes';
+    document.getElementById('hilo').hidden = true;
+    pintarResumen();
+    pintar('directorio');
+    return;
+  }
+
+  pintarResumen();
   pintar('bandeja');
 });
-
-pintarResumen();
 
 // Refresco de la lista cada 20 s, sin recargar debajo de un formulario a
 // medio llenar. El hilo abierto tiene su propio refresco más frecuente.
 setInterval(() => {
   // Ni un formulario a medio llenar ni el buscador mientras se escribe.
   if (document.querySelector('#contenido input:focus, #contenido select:focus, #contenido textarea:focus')) return;
+  if (directorioOcupado()) return;
+  if (vistaActual === 'empresas' && claveNueva) return;
   pintarResumen();
   pintar(vistaActual, true);
 }, 20000);
@@ -2114,6 +2447,11 @@ const STYLES = `<link rel="preconnect" href="https://fonts.googleapis.com">
     border-radius: 10px; cursor: pointer; font-size: 14px; font-weight: 700;
   }
   button[type=submit]:hover { background: var(--acento-fuerte); }
+  .primario {
+    background: var(--acento); border: none; color: #fff; padding: 9px 16px; font-family: inherit;
+    border-radius: 10px; cursor: pointer; font-size: 13.5px; font-weight: 700;
+  }
+  .primario:hover { background: var(--acento-fuerte); }
   .ghost {
     background: none; border: 1px solid var(--borde2); color: var(--suave); font: inherit; font-weight: 600;
     padding: 7px 13px; border-radius: 10px; cursor: pointer;
@@ -2202,6 +2540,101 @@ const STYLES = `<link rel="preconnect" href="https://fonts.googleapis.com">
     letter-spacing: .02em; color: rgba(241, 239, 255, .7);
   }
   .burbuja.sale.persona .firma { color: #6ee7b7; }
+  /* ── Directorio: lista + ficha ─────────────────────────────────────── */
+  .dir-barra { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px; }
+  .dir-buscar {
+    flex: 1 1 220px; max-width: 340px; background: var(--caja); border: 1px solid var(--borde);
+    border-radius: 10px; padding: 9px 12px; color: var(--texto); font: inherit; font-size: 13.5px;
+  }
+  .dir-buscar:focus { outline: none; border-color: var(--acento-borde); }
+  .dir-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: start; }
+  .dir-layout.con-ficha { grid-template-columns: minmax(0, 1fr) minmax(340px, 420px); }
+  .dir-lista { padding: 6px; }
+  .dir-fila {
+    display: grid; grid-template-columns: 38px minmax(0, 1fr) 110px minmax(150px, auto); align-items: center;
+    gap: 12px; width: 100%; padding: 10px 12px; border: none; border-radius: 10px; background: none;
+    color: var(--texto); font: inherit; text-align: left; cursor: pointer;
+  }
+  .dir-fila + .dir-fila { border-top: 1px solid var(--borde); border-radius: 0; }
+  .dir-fila:hover { background: var(--caja2); }
+  .dir-fila.activa { background: var(--acento-suave); border-radius: 10px; }
+  .dir-avatar {
+    width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center;
+    background: var(--caja3); font-weight: 800; font-size: 13px; color: var(--texto);
+  }
+  .dir-avatar.grande { width: 46px; height: 46px; font-size: 15px; flex-shrink: 0; }
+  .dir-quien { min-width: 0; display: flex; flex-direction: column; }
+  .dir-quien strong { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dir-quien small { color: var(--suave); font-size: 12px; }
+  .dir-rol { color: var(--suave); font-size: 13px; }
+  .dir-estado { justify-self: end; font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 999px; white-space: nowrap; }
+  .dir-estado.ok { background: var(--verde-suave); color: var(--verde); }
+  .dir-estado.warn { background: var(--ambar-suave); color: var(--ambar); }
+  .dir-ficha { position: sticky; top: 12px; padding: 18px; display: flex; flex-direction: column; gap: 6px; }
+  .dir-ficha h4 {
+    margin: 14px 0 4px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--tenue);
+  }
+  .ficha-head { display: flex; align-items: center; gap: 12px; }
+  .accesos { margin-bottom: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .accesos-lista { list-style: none; margin: 0; padding: 0; }
+  .accesos-lista li { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--borde); }
+  .accesos-lista .dir-quien { flex: 1; }
+  .clave { font-size: 18px; letter-spacing: .04em; user-select: all; }
+  .fila-alta { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
+  .fila-alta .campo { flex: 1 1 200px; }
+  .ficha-quien { flex: 1; min-width: 0; }
+  .ficha-quien h3 { margin: 0 0 2px; font-size: 17px; }
+  .pasos { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+  .pasos li { display: flex; gap: 10px; }
+  .paso-n {
+    width: 24px; height: 24px; border-radius: 999px; flex-shrink: 0; display: grid; place-items: center;
+    font-size: 12px; font-weight: 800; background: var(--ambar-suave); color: var(--ambar);
+  }
+  .pasos li.hecho .paso-n { background: var(--verde-suave); color: var(--verde); }
+  .paso-cuerpo { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+  .paso-cuerpo strong { font-size: 13.5px; }
+  .paso-cuerpo small { font-size: 12.5px; }
+  .paso-cuerpo .mini { align-self: flex-start; margin-top: 4px; }
+  .permisos-lista { display: flex; flex-wrap: wrap; gap: 6px; }
+  .permiso {
+    display: inline-flex; flex-direction: row; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 9px;
+    border: 1px solid var(--borde); font-size: 13px; color: var(--texto); cursor: pointer;
+  }
+  .permiso.activo { border-color: var(--acento-borde); background: var(--acento-suave); }
+  .atestacion {
+    display: flex; flex-direction: column; gap: 8px; margin-top: 8px; padding: 12px;
+    border-radius: 10px; background: var(--caja2); border: 1px solid var(--ambar-borde);
+  }
+  .atestacion p { margin: 0; }
+  .campo { display: flex; flex-direction: column; gap: 5px; font-size: 13px; font-weight: 600; }
+  .campo input, .campo select, .campo textarea {
+    background: var(--caja); border: 1px solid var(--borde); border-radius: 9px; padding: 9px 11px;
+    color: var(--texto); font: inherit; font-weight: 400; font-size: 13.5px; resize: vertical;
+  }
+  .campo small { font-weight: 400; }
+  .fila-botones { display: flex; gap: 8px; margin-top: 4px; }
+  .ficha-pie {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--borde);
+  }
+  .alta { display: flex; flex-direction: column; gap: 12px; margin-top: 10px; }
+  .tipo { border: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .tipo legend { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  .opcion {
+    display: flex; flex-direction: row; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: 10px;
+    border: 1px solid var(--borde); color: var(--texto); cursor: pointer;
+  }
+  .opcion:has(input:checked) { border-color: var(--acento-borde); background: var(--acento-suave); }
+  .opcion span { display: flex; flex-direction: column; gap: 2px; font-size: 13.5px; }
+  @media (max-width: 1100px) {
+    .dir-layout.con-ficha { grid-template-columns: minmax(0, 1fr); }
+    .dir-ficha { position: static; order: -1; }
+  }
+  @media (max-width: 640px) {
+    .dir-fila { grid-template-columns: 38px minmax(0, 1fr); }
+    .dir-rol { display: none; }
+    .dir-estado { grid-column: 2; justify-self: start; }
+  }
   .burbuja.pendiente { opacity: .6; }
   .burbuja.fallo { opacity: 1; background: var(--rojo-suave); border: 1px solid rgba(248, 113, 113, .35); }
   .burbuja .pill.tipo { display: table; margin-bottom: 6px; background: rgba(255, 255, 255, .07); color: var(--suave); }
