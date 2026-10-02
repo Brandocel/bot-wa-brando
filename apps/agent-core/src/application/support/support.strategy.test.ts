@@ -2014,7 +2014,7 @@ const adversarialIntent = {
 };
 
 for (const message of [
-  'qué calor hace', 'jajaja', 'te voy a demandar', 'no me puedes hablar así',
+  'qué calor hace', 'jajaja', 'no me puedes hablar así',
   'qué bot corriente', 'eres un pendejo', 'mañana hablamos', 'me equivoqué de chat',
   'Roberto está haciendo un contrato', 'en marzo me voy a Cancún',
   'la cotización estuvo carísima', 'mi póliza venció', 'se fue la luz',
@@ -2662,4 +2662,36 @@ test('si lo único que aparece es de otro tipo, se ofrece y no se manda solo', a
 
   await h.handle('sí');
   assert.deepEqual(entregados(h), ['Contrato_marzo.pdf']);
+});
+
+// ── Queja y petición en el mismo mensaje: ninguna se pierde ─────────────
+
+for (const mensaje of [
+  'te voy a demandar, pero primero pásame mi factura de marzo de 2026',
+  'qué bot tan malo pero pásame la factura de marzo de 2026',
+  'me cobraron doble, pero pásame la factura de marzo de 2026',
+]) {
+  test(`queja + petición: "${mensaje}" escala la queja y entrega`, async (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-06-15T12:00:00.000Z') });
+    const h = makeHarness();
+    h.search.periodResults.set('2026-03', [document('mixta', 'FACTURA_2026-03.pdf', 'FACTURA', '2026-03')]);
+
+    await h.handle(mensaje);
+    assert.equal(h.escalations.length, 1, 'la queja queda con una persona');
+    assert.deepEqual(entregados(h), ['FACTURA_2026-03.pdf']);
+  });
+}
+
+test('queja + inventario: "no me gustó el servicio; ¿qué facturas tienes?" escala y lista', async () => {
+  const h = makeHarness();
+  const reply = await h.handle('no me gustó el servicio; ¿qué facturas tienes?');
+  assert.equal(h.escalations.length, 1);
+  assert.match(reply?.text ?? '', /documentos|factura/i);
+});
+
+test('una amenaza de demanda no es charla: la ve una persona', async () => {
+  const h = makeHarness();
+  await h.handle('te voy a demandar');
+  assert.equal(h.escalations.length, 1);
+  assert.deepEqual(h.delivered, []);
 });

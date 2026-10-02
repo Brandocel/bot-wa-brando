@@ -314,22 +314,30 @@ export class SupportStrategy {
      * mes?": se contesta con lo que hay, sin modelo y sin tocar la
      * solicitud en curso.
      */
-    if (esInventario(message.body)) {
-      return this.inventario(turn, sol);
-    }
-
     /**
      * Quejas que el bot no puede resolver solo —una factura con el RFC
      * mal, alguien que lleva días esperando, "este bot no sirve"— y
      * preguntas por un caso que ya tiene una persona. Se atienden ANTES de
      * buscar nada: contestarle a una queja con otra búsqueda es lo que la
      * convierte en dos quejas.
+     *
+     * Y antes del inventario: "no me gustó el servicio; ¿qué facturas
+     * tienes?" recibía la lista y la inconformidad se perdía.
      */
     const errorDocumentalExplicito = clas.motivo !== 'error_en_documento' ||
       /\b(?:factura|cfdi|documento|archivo|contrato|cotizacion|reporte|poliza|rfc|iva|subtotal|importe|monto|datos fiscales)\b/.test(normalizar(message.body));
     if ((quejaParaPersona(clas) && errorDocumentalExplicito) || clas.tipo === 'SEGUIMIENTO') {
       const atendida = await this.atenderQueja(turn, sol, clas);
-      if (atendida) return atendida;
+      if (atendida) {
+        // "Te voy a demandar, pero primero pásame mi factura": la queja va
+        // con una persona Y la petición se atiende. Ninguna se pierde.
+        const peticion = await this.peticionJuntoAQueja(message, ctx);
+        return peticion ? juntarRespuestas(atendida, peticion) : atendida;
+      }
+    }
+
+    if (esInventario(message.body)) {
+      return this.inventario(turn, sol);
     }
 
     /**
@@ -1847,6 +1855,29 @@ export class SupportStrategy {
     };
   }
 
+  /**
+   * La petición que venía junto a una queja: "¿qué facturas tienes?" o
+   * "pásame la de abril". Se atiende como mensaje propio, ya sin la queja,
+   * después de que la queja quedó con una persona.
+   */
+  private async peticionJuntoAQueja(
+    message: IncomingMessage,
+    ctx: StrategyContext,
+  ): Promise<StrategyReply | null> {
+    const intent = documentIntent(message.body, { enCurso: false, pendiente: null, companyName: null });
+    const texto = intent.kind === 'document'
+      ? intent.request
+      : message.body
+          .split(/(?<=[.;!?])\s+|;|,\s*(?=(?:pero|y|ahora)\b)/i)
+          .map((parte) => parte.trim())
+          .find((parte) => parte && esInventario(parte) && !quejaParaPersona(clasificar(parte))) ?? null;
+    if (!texto || normalizar(texto) === normalizar(message.body)) return null;
+
+    const sinQueja = clasificar(texto);
+    if (quejaParaPersona(sinQueja)) return null;
+    return this.atender({ ...message, body: texto }, ctx, sinQueja);
+  }
+
   /** Molesto y con vueltas encima: a una persona, sin otra pregunta. */
   private async escalarPorMolestia(turn: Turn, sol: Solicitud): Promise<StrategyReply> {
     const caso = await this.tickets.casoEnRevision(turn.ctx.conversationId);
@@ -2278,6 +2309,19 @@ function empresaGuardada(
   if (typeof guardado !== 'string') return null;
 
   return scopes.some((s) => s.organizationId === guardado) ? guardado : null;
+}
+
+/**
+ * Queja y petición en un mismo mensaje: un solo texto, la queja primero
+ * (ya está con una persona) y luego lo de la petición. El documento, si
+ * salió, ya va como archivo aparte.
+ */
+function juntarRespuestas(queja: StrategyReply, peticion: StrategyReply): StrategyReply {
+  return {
+    ...peticion,
+    text: [queja.text, peticion.text].filter(Boolean).join('\n\n'),
+    awaiting: peticion.awaiting === 'CLIENTE' ? 'CLIENTE' : queja.awaiting,
+  };
 }
 
 /** Un saludo al inicio que además trae datos documentales no detiene la solicitud. */

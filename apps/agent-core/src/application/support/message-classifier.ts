@@ -120,7 +120,7 @@ const DEMORA =
 
 /** El bot no le está sirviendo, o quiere dejar una queja formal. */
 const MAL_SERVICIO =
-  /\b((pesimo|mal|malisimo|terrible|horrible|fatal) (servicio|atencion|bot|sistema)|que (mal|malo|pesimo) (servicio|atencion)|no sirves|no sirve (para nada|este bot|el bot|esto|de nada)|(eres|es un|que bot) (inutil|tonto)|bot inutil|no entiendes nada|no me (entiendes|estas entendiendo)|no me ayudas (en nada|para nada)|nunca (encuentras|sirves|funciona|me ayudas)|es una burla|es el colmo|inaceptable|voy a (poner|levantar|meter) (una )?(queja|denuncia)|quiero (poner|levantar|hacer|presentar|dejar) (una )?queja|(tengo|es) una queja)\b/;
+  /\b((pesimo|mal|malisimo|terrible|horrible|fatal) (servicio|atencion|bot|sistema)|que (mal|malo|pesimo) (servicio|atencion)|no sirves|no sirve (para nada|este bot|el bot|esto|de nada)|(eres|es un|que bot) (inutil|tonto)|bot inutil|no entiendes nada|no me (entiendes|estas entendiendo)|no me ayudas (en nada|para nada)|nunca (encuentras|sirves|funciona|me ayudas)|es una burla|es el colmo|inaceptable|voy a (poner|levantar|meter) (una )?(queja|denuncia)|quiero (poner|levantar|hacer|presentar|dejar) (una )?queja|(tengo|es) una queja|(que|el|este|tu|un) bot (tan |muy )?(malo|pesimo|inutil|tonto)|(te|los|las|lo|la) voy a demandar|voy a demandar(los|te)?|no me gusto (el|la|su|tu) (servicio|atencion)|(servicio|atencion) (fue|es|esta) (pesim[oa]|malisim[oa]|terrible|horrible|mal[oa]))\b/;
 
 /** Le mandamos lo que no era, dicho como reclamo. */
 const EQUIVOCADO =
