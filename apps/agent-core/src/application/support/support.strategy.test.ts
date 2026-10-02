@@ -2649,3 +2649,17 @@ test('"No, gracias" a la confirmación no manda nada', async () => {
   await h.handle('no');
   assert.deepEqual(h.delivered, []);
 });
+
+test('si lo único que aparece es de otro tipo, se ofrece y no se manda solo', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-06-15T12:00:00.000Z') });
+  const h = makeHarness();
+  const contrato = document('otro-tipo', 'Contrato_marzo.pdf', 'CONTRATO', '2026-03');
+  h.search.periodResults.set('2026-03', [contrato]);
+
+  const reply = await h.handle('la factura de marzo de 2026');
+  assert.deepEqual(h.delivered, []);
+  assert.match(reply?.text ?? '', /registrado como el contrato/);
+
+  await h.handle('sí');
+  assert.deepEqual(entregados(h), ['Contrato_marzo.pdf']);
+});

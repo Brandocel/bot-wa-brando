@@ -816,12 +816,25 @@ export class SupportStrategy {
     query: SearchQuery,
     doc: Document,
   ): Promise<StrategyReply> {
+    const pedido = describirPedido(query);
+
+    // El tipo pedido manda: la búsqueda por folio no filtra por tipo y los
+    // rescates por nombre o palabras pueden dar con otro. Puede ser un
+    // archivo mal clasificado, así que se ofrece, pero no se manda solo.
+    if (query.category && doc.category !== query.category) {
+      await this.guardarOpciones(turn, [doc]);
+      return {
+        text: voz.unicaDeOtroTipo(pedido, doc.name, nombreConArticulo(doc.category)),
+        awaiting: 'CLIENTE',
+        topic: query.category,
+      };
+    }
+
     const veredicto = coincideMes(doc, query);
     if (veredicto === 'coincide') return this.entregar(turn, doc);
 
     await this.guardarOpciones(turn, [doc]);
 
-    const pedido = describirPedido(query);
     const text =
       veredicto === 'contradice'
         ? voz.unicaDeOtroMes(pedido, doc.name, mesEnPalabras(doc.period!))

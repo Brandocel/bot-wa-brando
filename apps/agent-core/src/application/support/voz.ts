@@ -444,6 +444,11 @@ export function unicaDeOtroMes(pedido: string, nombre: string, mes: string): str
   ]);
 }
 
+/** Lo único que apareció está registrado como otro tipo: se ofrece, no se manda. */
+export function unicaDeOtroTipo(pedido: string, nombre: string, tipo: string): string {
+  return `No encontré ${pedido}. Lo más cercano es ${n(nombre)}, pero está registrado como ${tipo}.\n¿Es ese? Dime *sí* y te lo mando, o dame el *folio* o el *nombre del archivo*.`;
+}
+
 /** Solo hay un candidato y no se sabe de qué mes es: se dice tal cual. */
 export function unicaSinMes(pedido: string, nombre: string): string {
   return una([
