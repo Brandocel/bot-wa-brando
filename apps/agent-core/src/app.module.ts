@@ -17,6 +17,7 @@ import { AccessScopeService } from './application/support/access-scope.service';
 import { ConversationStateService } from './application/support/conversation-state.service';
 import { DirectoryService } from './application/support/directory.service';
 import { DocumentLinkService } from './application/support/document-link.service';
+import { EntregaVigenteService } from './application/support/entrega-vigente.service';
 import { DocumentDeliveryService } from './application/support/document-delivery.service';
 import { DriveSyncService } from './application/support/drive-sync.service';
 import { SlotExtractorService } from './application/support/slot-extractor.service';
@@ -118,6 +119,7 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     ConversationStateService,
     DirectoryService,
     DocumentLinkService,
+    EntregaVigenteService,
 
     // ── Casos de uso ───────────────────────────────────────────────────
     DriveCommandsService,

@@ -2,7 +2,6 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { Document } from '@prisma/client';
 import { config } from '../../config';
 import { PrismaService } from '../../infrastructure/persistence/prisma.service';
-import { DocumentLinkService } from './document-link.service';
 import {
   DOCUMENT_SOURCE_PORT,
   type DocumentSourcePort,
@@ -64,26 +63,7 @@ export class DocumentDeliveryService {
   constructor(
     private readonly prisma: PrismaService,
     @Inject(DOCUMENT_SOURCE_PORT) private readonly source: DocumentSourcePort,
-    private readonly links: DocumentLinkService,
   ) {}
-
-  /**
-   * El mensaje con el enlace, para cuando el adjunto no sale.
-   *
-   * No es tan cómodo como recibir el PDF —hay que tocar un enlace— pero
-   * llega. Y caduca pronto, así que reenviarlo por ahí no lo convierte en
-   * una puerta abierta.
-   */
-  private enlaceDeRespaldo(document: Document): string {
-    const enlace = this.links.crear(document.id);
-
-    return [
-      `No pude adjuntarte ${document.name} por aquí, pero lo descargas desde:`,
-      enlace.url,
-      '',
-      'El enlace vence en 30 minutos.',
-    ].join('\n');
-  }
 
   /**
    * Encola el archivo en el outbox. No envía aquí: enviar es trabajo del
@@ -92,9 +72,13 @@ export class DocumentDeliveryService {
    * `fallbackText` es lo que se le dice a la persona si, después de todos
    * los reintentos, el archivo no sale. El envío es asíncrono, así que
    * quien llama ya no está ahí cuando eso pasa; deja aquí el mensaje.
+   *
+   * El documento y la persona van en la fila: el despachador vuelve a
+   * comprobar el permiso justo antes de mandar, y arma el enlace de
+   * respaldo hasta que lo necesita.
    */
   async deliver(
-    chatId: string,
+    destino: { chatId: string; waId: string },
     document: Document,
     caption: string,
     fallbackText?: string,
@@ -130,23 +114,18 @@ export class DocumentDeliveryService {
 
     await this.prisma.outboxMessage.create({
       data: {
-        chatId,
+        chatId: destino.chatId,
         payload: {
           kind: 'file',
           base64,
           filename,
           caption,
-          // Si el adjunto no sale, el enlace firmado sí. open-wa no logra
-          // mandar archivos a los hilos que WhatsApp direcciona por LID, y
-          // eso no se arregla desde aquí: es un límite de la librería. Un
-          // enlace que caduca en media hora entrega el documento igual.
-          //
-          // El enlace va SIEMPRE por delante de lo que diga quien llama: su
-          // texto explica que hubo un problema, pero el enlace lo resuelve.
-          // Anteponer la disculpa dejaba a la persona sin su documento.
-          fallbackText: [this.enlaceDeRespaldo(document), fallbackText]
-            .filter(Boolean)
-            .join('\n\n'),
+          documentId: document.id,
+          waId: destino.waId,
+          // Si el adjunto no sale, el despachador manda un enlace firmado
+          // (open-wa no logra mandar archivos a los hilos direccionados por
+          // LID) seguido de este texto.
+          fallbackText: fallbackText ?? null,
         },
       },
     });

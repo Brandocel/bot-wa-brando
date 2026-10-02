@@ -9,6 +9,7 @@ import {
   MESSAGING_PORT,
   type MessagingPort,
 } from '../../application/ports/messaging.port';
+import { EntregaVigenteService } from '../../application/support/entrega-vigente.service';
 import { PrismaService } from './prisma.service';
 
 /** Chats a los que se les manda a la vez. Cada uno sigue yendo en orden. */
@@ -40,7 +41,24 @@ interface OutboxFilePayload {
    * reintentos. Sin esto el fallo es mudo: el bot dijo "aquí está" y nunca
    * llegó nada, y quien espera no sabe si volver a pedirlo o a quién.
    */
-  fallbackText?: string;
+  fallbackText?: string | null;
+  /**
+   * Qué documento es y para quién. Con esto se revalida el permiso justo
+   * antes de mandar y se arma el enlace de respaldo. Las filas de antes de
+   * este cambio no lo traen y se mandan como siempre.
+   */
+  documentId?: string;
+  waId?: string;
+}
+
+const YA_NO_DISPONIBLE =
+  'Ya no puedo enviarte ese archivo. Si todavía lo necesitas, dime cuál buscas.';
+
+/** El archivo no se queda guardado en la base una vez que salió o se descartó. */
+function sinArchivo(payload: OutboxPayload): object {
+  if (payload.kind !== 'file') return payload;
+  const { base64: _base64, ...resto } = payload;
+  return resto;
 }
 
 type OutboxPayload = OutboxTextPayload | OutboxFilePayload;
@@ -70,6 +88,7 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly prisma: PrismaService,
     @Inject(MESSAGING_PORT) private readonly messaging: MessagingPort,
+    private readonly entregas: EntregaVigenteService,
   ) {}
 
   onModuleInit(): void {
@@ -158,11 +177,36 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
      * respuesta dos veces. El `attempts` en el where es el cerrojo: solo
      * una de las dos consigue subirlo, y la otra ve 0 filas y se aparta.
      */
-    const claimed = await this.prisma.outboxMessage.updateMany({
-      where: { id: row.id, status: 'PENDING', attempts: row.attempts },
-      data: { attempts },
-    });
-    if (claimed.count === 0) return true;
+    //
+    // Y solo si no queda nada más viejo pendiente en ese chat: con dos
+    // instancias, la otra podría estar mandando la fila anterior todavía,
+    // y esta saldría antes. Así el orden por chat se cumple entre procesos.
+    const claimed = await this.prisma.$executeRaw`
+      UPDATE "OutboxMessage" o SET "attempts" = ${attempts}
+      WHERE o."id" = ${row.id} AND o."status" = 'PENDING' AND o."attempts" = ${row.attempts}
+        AND NOT EXISTS (
+          SELECT 1 FROM "OutboxMessage" p
+          WHERE p."chatId" = o."chatId" AND p."status" = 'PENDING'
+            AND p."attempts" < ${MAX_ATTEMPTS}
+            AND (p."createdAt", p."id") < (o."createdAt", o."id")
+        )`;
+    if (claimed === 0) return false;
+
+    // El permiso se decidió al buscar; entre eso y ahora se pudo retirar.
+    const destino =
+      payload.kind === 'file' && payload.documentId && payload.waId
+        ? { waId: payload.waId, chatId: row.chatId, documentId: payload.documentId }
+        : null;
+    if (destino && !(await this.entregas.documento(destino, destino.documentId, 'envio'))) {
+      await this.prisma.outboxMessage.update({
+        where: { id: row.id },
+        data: { status: 'FAILED', lastError: 'permiso retirado antes de enviar', payload: sinArchivo(payload) },
+      });
+      await this.prisma.outboxMessage.create({
+        data: { chatId: row.chatId, payload: { kind: 'text', text: YA_NO_DISPONIBLE } },
+      });
+      return true;
+    }
 
     try {
       // Ritmo humano: nada de responder en 200ms como una máquina.
@@ -177,7 +221,7 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
 
       await this.prisma.outboxMessage.update({
         where: { id: row.id },
-        data: { status: 'SENT', sentAt: new Date() },
+        data: { status: 'SENT', sentAt: new Date(), payload: sinArchivo(payload) },
       });
 
       await this.recordOutbound(row.chatId, sent.id, sent.body, sent.kind);
@@ -197,24 +241,41 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
           data: {
             lastError: detail,
             status: agotado ? 'FAILED' : 'PENDING',
+            ...(agotado ? { payload: sinArchivo(payload) } : {}),
           },
         });
 
         // Se rindió con el archivo: que la persona lo sepa, en vez de
         // quedarse esperando un PDF que ya no va a llegar.
-        if (agotado && payload.kind === 'file' && payload.fallbackText) {
-          await this.prisma.outboxMessage.create({
-            data: {
-              chatId: row.chatId,
-              payload: { kind: 'text', text: payload.fallbackText },
-            },
-          });
+        if (agotado && payload.kind === 'file') {
+          const texto = await this.textoDeRespaldo(row.chatId, payload);
+          if (texto) {
+            await this.prisma.outboxMessage.create({
+              data: { chatId: row.chatId, payload: { kind: 'text', text: texto } },
+            });
+          }
         }
       } catch {
         this.logger.warn(`outbox ${row.id} ya no existe; se ignora`);
       }
       return false;
     }
+  }
+
+  /**
+   * El enlace se arma ahora, no al encolar: si el gateway estuvo caído un
+   * buen rato, uno hecho al principio llegaba vencido. Y solo si la
+   * persona todavía puede ver el documento.
+   */
+  private async textoDeRespaldo(chatId: string, payload: OutboxFilePayload): Promise<string | null> {
+    if (!payload.documentId || !payload.waId) return payload.fallbackText ?? null;
+
+    const destino = { waId: payload.waId, chatId };
+    const doc = await this.entregas.documento(destino, payload.documentId, 'respaldo');
+    if (!doc) return YA_NO_DISPONIBLE;
+    return [this.entregas.textoDeRespaldo(doc, destino), payload.fallbackText]
+      .filter(Boolean)
+      .join('\n\n');
   }
 
   private async sendTextPayload(
