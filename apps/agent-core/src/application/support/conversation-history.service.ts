@@ -69,18 +69,31 @@ export class ConversationHistoryService {
  * Las URL se quitan: el enlace de descarga de una entrega anterior no le
  * sirve al modelo para nada y, si lo copiara en una respuesta, estaría
  * repartiendo un enlace que probablemente ya venció.
+ *
+ * Y de lo que dijo el bot se quitan los nombres de archivo: una entrega
+ * de hace un rato pudo quedar fuera del permiso de la persona (o el
+ * documento retirarse), y el modelo no necesita el nombre para charlar ni
+ * para entender "y la de marzo". Lo que sí se conserva es que hubo una
+ * entrega o una lista. Si pregunta qué se le mandó, eso se contesta por
+ * reglas, revalidando el documento.
  */
 export function formatHistory(turns: readonly HistoryTurn[]): string {
   if (turns.length === 0) return '(sin mensajes anteriores)';
 
   return turns
-    .map((t) => `${t.role === 'cliente' ? 'Cliente' : 'Bot'}: ${sinUrls(t.text)}`)
+    .map((t) => `${t.role === 'cliente' ? 'Cliente' : 'Bot'}: ${t.role === 'bot' ? sinArchivos(sinUrls(t.text)) : sinUrls(t.text)}`)
     .join('\n');
 }
 
 function recortar(text: string): string {
   const limpio = text.replace(/\s+/g, ' ').trim();
   return limpio.length > MAX_CHARS ? `${limpio.slice(0, MAX_CHARS)}…` : limpio;
+}
+
+/** "[documento] X.pdf" y los nombres de archivo de las listas, sin el nombre. */
+export function sinArchivos(text: string): string {
+  if (text.startsWith('[documento]')) return '[documento enviado]';
+  return text.replace(/[^\s*]+\.(?:pdf|docx?|xlsx?|xml|csv|txt|pptx?|jpe?g|png|webp|zip)\b/gi, '[archivo]');
 }
 
 function sinUrls(text: string): string {

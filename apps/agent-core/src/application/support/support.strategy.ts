@@ -460,13 +460,14 @@ export class SupportStrategy {
     });
     if (intent.kind === 'other') {
       if (clas.tipo === 'SOLICITUD') clas.tipo = 'OTRO';
-      // El historial y el contexto pueden nombrar la última entrega. Antes
-      // de enviarlos al redactor, comprobar su ID con el alcance actual.
+      // El contexto puede describir la última entrega: antes de dárselo al
+      // redactor se revalida contra el alcance actual. El historial ya va
+      // sin nombres de archivo (formatHistory), así que se conserva entero
+      // y la charla no pierde memoria por un permiso retirado.
       const vigente = !entregada || (necesitaContextoEntregado
         ? documentoEntregado !== null
         : await this.search.byId(entregada.documentId, turn.scopes) !== null);
-      const writerTurn = vigente ? turn : { ...turn, history: [] };
-      return { text: await this.smallTalk(writerTurn, vigente ? conocido : [], clas), awaiting: 'NADIE' };
+      return { text: await this.smallTalk(turn, vigente ? conocido : [], clas), awaiting: 'NADIE' };
     }
     if (intent.kind === 'ambiguous') {
       const candidate = parseQuery(message.body);

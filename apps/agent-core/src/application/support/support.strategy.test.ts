@@ -1,3 +1,4 @@
+import { formatHistory, type HistoryTurn } from './conversation-history.service';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { LlmPort } from '../ports/llm.port';
@@ -2288,7 +2289,7 @@ for (const question of [
   });
 }
 
-test('redacción casual posterior a revocación no recibe historial ni metadatos de la última entrega', async () => {
+test('redacción casual posterior a revocación no recibe nombres ni metadatos de la última entrega', async () => {
   const { h } = savedThreeOptions(
     [{ ...orgScope, windows: [{ category: 'CONTRATO', periodFrom: null, periodTo: null }] }],
     'ALLOW',
@@ -2305,7 +2306,11 @@ test('redacción casual posterior a revocación no recibe historial ni metadatos
   const before = structuredClone(h.requests.state);
   await h.handle('jajaja mi amigo está loco');
   assert.equal(h.writerContexts.length, 1);
-  assert.deepEqual(h.writerContexts[0]!.history, []);
+  // El historial se conserva (la charla no pierde memoria), pero lo que
+  // llega al modelo va sin el nombre, el folio ni el mes del documento.
+  const prompt = formatHistory(h.writerContexts[0]!.history as HistoryTurn[]);
+  assert.doesNotMatch(prompt, /FACTURA_B|A100|marzo/);
+  assert.match(prompt, /documento enviado/);
   assert.deepEqual(h.writerContexts[0]!.known, []);
   assert.deepEqual(h.search.byIdCalls, ['cached-B']);
   assert.deepEqual(h.search.searches, []);
