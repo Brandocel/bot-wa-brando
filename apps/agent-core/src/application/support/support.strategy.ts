@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
+import { SalesStrategy } from '../sales/sales.strategy';
 import type { Awaiting, DocCategory, Document } from '@prisma/client';
 import type { IncomingMessage } from '../../domain/message/incoming-message';
 import { AccessScopeService, type OrgScope, type ScopeResult } from './access-scope.service';
@@ -142,6 +143,7 @@ export class SupportStrategy {
     private readonly solicitudes: SolicitudService,
     private readonly history: ConversationHistoryService,
     private readonly writer: ReplyWriterService,
+    @Optional() private readonly ventas?: SalesStrategy,
   ) {}
 
   /**
@@ -198,6 +200,13 @@ export class SupportStrategy {
     // Antes de cualquier documento, quién es: el nombre completo, una vez
     // por número. A un número que no está en el directorio solo se le
     // contesta si pide un documento.
+    // Quien no es cliente de la empresa y le escribe a su línea, si esa
+    // empresa vende por WhatsApp, viene a comprar: eso lo atiende ventas.
+    if (scope.decision === 'DENY_NO_MEMBERSHIP' && this.ventas) {
+      const negocio = await this.ventas.negocioDe(message.chatId);
+      if (negocio) return this.ventas.handle(message, ctx, negocio);
+    }
+
     if (scope.decision === 'NEEDS_NAME' || scope.decision === 'DENY_NO_MEMBERSHIP') {
       return this.identificar(message, ctx, scope);
     }

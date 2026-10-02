@@ -24,6 +24,7 @@ import { SlotExtractorService } from './application/support/slot-extractor.servi
 import { ConversationHistoryService } from './application/support/conversation-history.service';
 import { ReplyWriterService } from './application/support/reply-writer.service';
 import { SupportStrategy } from './application/support/support.strategy';
+import { SalesStrategy } from './application/sales/sales.strategy';
 import { DocumentSearchService } from './application/support/document-search.service';
 import { DocumentContentService } from './application/support/document-content.service';
 import { DocumentClassifierService } from './application/support/document-classifier.service';
@@ -37,6 +38,7 @@ import { HandleIncomingMessageUseCase } from './application/use-cases/handle-inc
 import { ConnectorService } from './application/support/connector.service';
 import { ConnectorController } from './infrastructure/http/connector.controller';
 import { DownloadController } from './infrastructure/http/download.controller';
+import { PanelVentasController } from './infrastructure/http/panel/panel-ventas.controller';
 import { PanelConnectorController } from './infrastructure/http/panel/panel-connector.controller';
 import { RoutingDocumentSource } from './infrastructure/storage/routing-document-source';
 import { HealthController } from './infrastructure/http/health.controller';
@@ -66,6 +68,7 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     PanelController,
     PanelApiController,
     PanelConnectorController,
+    PanelVentasController,
     ConnectorController,
   ],
   providers: [
@@ -116,6 +119,7 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     ConversationHistoryService,
     ReplyWriterService,
     SupportStrategy,
+    SalesStrategy,
     ConversationStateService,
     DirectoryService,
     DocumentLinkService,

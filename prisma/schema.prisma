@@ -62,6 +62,7 @@ model Contact {
   memoryFacts   MemoryFact[]
   reminders     Reminder[]
   lead          Lead?
+  orders        Order[]
   memberships   Membership[]
   tickets       Ticket[]
 
@@ -151,6 +152,15 @@ model Message {
   motivo  String?
   /// Se notaba molesto, fuera cual fuera el tipo.
   molesto Boolean        @default(false)
+
+  /// Solo entrantes de venta: la lectura de ese mensaje (ver
+  /// application/sales/lectura.ts). Emoción, etapa de compra y qué tan
+  /// probable es que termine en un pedido real, 0 a 100.
+  salesEmotion   String?
+  salesIntensity Int?
+  salesStage     String?
+  salesScore     Int?
+  salesSignal    String?
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
@@ -330,6 +340,9 @@ model Organization {
   pairCodes   ConnectorPairCode[]
   storedFiles StoredFile[]
   panelUsers  PanelUser[]
+  sales       SalesSettings?
+  products    Product[]
+  orders      Order[]
 }
 
 enum MemberRole {
@@ -665,4 +678,110 @@ model PanelSession {
   user PanelUser @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([expiresAt])
+}
+
+// ─── Ventas de cada empresa ───────────────────────────────────────────────
+
+/// Cómo entrega una empresa lo que vende. Depende del giro.
+enum DeliveryMode {
+  RECOGER // pasa por él al local
+  DOMICILIO // se lleva, con zonas y costo por zona
+  PAQUETERIA // envío a cualquier parte (equipo, productos físicos)
+  DIGITAL // no hay nada que mover (servicios, páginas web)
+}
+
+/// Ventas de UNA empresa por su línea de WhatsApp. Sin esta fila, o con
+/// enabled en false, la línea solo atiende a sus clientes registrados.
+model SalesSettings {
+  organizationId String  @id
+  enabled        Boolean @default(false)
+  /// Qué es el negocio, en una frase: "pollos asados al carbón", "equipo de cómputo".
+  businessType   String  @default("")
+  /// Lo que el bot debe saber para recomendar: especialidades, para cuántos
+  /// rinde cada cosa, promociones vigentes. Texto de la empresa, no del bot.
+  pitch          String  @default("") @db.Text
+  /// Horario semanal: { "lun": [["11:00","21:00"]], "dom": [] ... }, hora local.
+  hours          Json    @default("{}")
+  timezone       String  @default("America/Mexico_City")
+  deliveryModes  DeliveryMode[]
+  /// Zonas de domicilio: [{ "nombre": "Centro", "costo": 30 }]. Costo en pesos.
+  zones          Json    @default("[]")
+  /// Minutos que tarda en estar listo un pedido normal.
+  prepMinutes    Int     @default(30)
+  /// Pedido mínimo en pesos (0 = sin mínimo).
+  minOrder       Int     @default(0)
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+/// Lo que vende una empresa. El bot solo ofrece lo que está aquí y activo.
+model Product {
+  id             String  @id @default(cuid())
+  organizationId String
+  name           String
+  description    String  @default("")
+  /// Para agrupar en la carta: "Pollos", "Complementos", "Bebidas".
+  section        String  @default("")
+  /// Centavos: sin decimales flotantes en los totales.
+  priceCents     Int
+  active         Boolean @default(true)
+  sortOrder      Int     @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, active])
+}
+
+enum OrderStatus {
+  ARMANDO // el cliente y el bot lo están armando
+  POR_ACEPTAR // el cliente lo confirmó; la empresa lo tiene que aceptar
+  ACEPTADO // la empresa lo aceptó, con hora estimada
+  RECHAZADO // la empresa no lo puede surtir
+  ENTREGADO
+  CANCELADO // lo canceló el cliente o caducó sin confirmarse
+}
+
+/// Un pedido. Los renglones copian nombre y precio del producto en ese
+/// momento: cambiar el catálogo después no altera un pedido ya hecho.
+model Order {
+  id             String       @id @default(cuid())
+  /// Folio corto para hablar del pedido: "P-1042".
+  number         Int          @default(autoincrement())
+  organizationId String
+  contactId      String
+  conversationId String
+  status         OrderStatus  @default(ARMANDO)
+  /// La última probabilidad de compra (0-100) leída en la conversación.
+  buyingScore    Int?
+  /// Se le mostró el resumen final y se espera su "sí". Un sí sin esto
+  /// no confirma nada: así un "ok" suelto no manda un pedido.
+  confirmPending Boolean      @default(false)
+  /// [{ productId, nombre, precioCents, cantidad, nota }]
+  items          Json         @default("[]")
+  deliveryMode   DeliveryMode?
+  address        String?
+  zone           String?
+  deliveryCents  Int          @default(0)
+  totalCents     Int          @default(0)
+  customerName   String?
+  notes          String?
+  /// null = lo antes posible; si no, para cuándo lo quiere.
+  scheduledFor   DateTime?
+  /// Lo que dijo la empresa al aceptar: listo a esta hora.
+  etaAt          DateTime?
+  decidedBy      String?
+  rejectReason   String?
+  submittedAt    DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([number])
+  @@index([organizationId, status, createdAt])
+  @@index([conversationId, status])
 }

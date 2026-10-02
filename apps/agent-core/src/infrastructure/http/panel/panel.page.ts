@@ -39,6 +39,7 @@ const TRAZOS: Record<string, string> = {
   buscar: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
   archivo: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15h6"/><path d="M9 11h6"/>',
   ajustes: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
+  carrito: '<circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/>',
   bot: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>',
 };
 
@@ -105,6 +106,7 @@ export function panelPage(): string {
       <button data-view="tickets" title="Tickets">${icono('ticket')}<span class="nav-text">Tickets</span></button>
       <button data-view="directorio" title="Directorio">${icono('usuarios')}<span class="nav-text">Directorio</span></button>
       <button data-view="empresas" title="Empresas">${icono('empresa')}<span class="nav-text">Empresas</span></button>
+      <button data-view="ventas" title="Ventas">${icono('carrito')}<span class="nav-text">Ventas</span></button>
       <button data-view="documentos" title="Documentos">${icono('documentos')}<span class="nav-text">Documentos</span></button>
       <button data-view="cuarentena" title="Cuarentena">${icono('carpeta')}<span class="nav-text">Cuarentena</span><span class="badge nav-text" id="badge-cuarentena" hidden></span></button>
       <button data-view="auditoria" title="Auditoría">${icono('escudo')}<span class="nav-text">Auditoría</span></button>
@@ -204,7 +206,7 @@ let ultimoHilo = null;
 
 const TITULOS = {
   bandeja: 'Conversaciones', tickets: 'Tickets', directorio: 'Directorio',
-  empresas: 'Empresas', documentos: 'Documentos', cuarentena: 'Cuarentena', auditoria: 'Auditoría', ajustes: 'Ajustes',
+  empresas: 'Empresas', ventas: 'Ventas', documentos: 'Documentos', cuarentena: 'Cuarentena', auditoria: 'Auditoría', ajustes: 'Ajustes',
 };
 
 const api = async (ruta) => {
@@ -1181,6 +1183,289 @@ document.addEventListener('submit', async (e) => {
   } catch (err) { aviso(err.message, 'error'); }
 });
 
+// ── Ventas: pedidos, catálogo y configuración de una empresa ───────────
+
+let vtEmpresa = null;
+let vtTab = 'pedidos';
+let vtEstado = 'activos';
+let vtProducto = null; // id del producto en edición, 'nuevo' o null
+const SALTO = String.fromCharCode(10);
+
+const DIAS_VT = [['lun', 'Lunes'], ['mar', 'Martes'], ['mie', 'Miércoles'], ['jue', 'Jueves'], ['vie', 'Viernes'], ['sab', 'Sábado'], ['dom', 'Domingo']];
+const ENTREGAS_VT = {
+  RECOGER: ['Pasar a recoger', 'El cliente pasa por su pedido.'],
+  DOMICILIO: ['A domicilio', 'Lo llevan ustedes, con costo por zona.'],
+  PAQUETERIA: ['Paquetería', 'Envío a cualquier parte (equipo, productos físicos).'],
+  DIGITAL: ['Digital', 'No hay nada que mover: servicios, páginas web, licencias.'],
+};
+const ESTADO_PEDIDO = {
+  ARMANDO: ['armándose', ''], POR_ACEPTAR: ['por aceptar', 'warn'], ACEPTADO: ['aceptado', 'ok'],
+  RECHAZADO: ['rechazado', ''], ENTREGADO: ['entregado', 'ok'], CANCELADO: ['cancelado', ''],
+};
+
+const dinero = (cents) => '$' + (cents / 100).toLocaleString('es-MX', { maximumFractionDigits: 2 });
+
+function pillScore(score) {
+  if (score === null || score === undefined) return '';
+  const color = score >= 70 ? 'ok' : score >= 40 ? 'warn' : '';
+  return '<span class="pill ' + color + '" title="Probabilidad de que termine en compra">' + score + '% compra</span>';
+}
+
+function empresaVentas(empresas) {
+  if (yo?.role === 'EMPRESA') return yo.organizationId;
+  if (!empresas.some((o) => o.id === vtEmpresa)) vtEmpresa = empresas[0]?.id ?? null;
+  return vtEmpresa;
+}
+
+const conEmpresa = (ruta) => ruta + (yo?.role === 'EMPRESA' ? '' : (ruta.includes('?') ? '&' : '?') + 'empresa=' + encodeURIComponent(vtEmpresa));
+
+async function vistaVentas() {
+  const empresas = await api('empresas');
+  if (!empresaVentas(empresas)) return '<p class="vacio">No hay empresas registradas.</p>';
+
+  const selector = yo?.role === 'EMPRESA' ? '' : '<select class="compacto" id="vt-empresa">' + empresas.map((o) =>
+    '<option value="' + o.id + '"' + (o.id === vtEmpresa ? ' selected' : '') + '>' + esc(o.name) + '</option>').join('') + '</select>';
+  const tabs = [['pedidos', 'Pedidos'], ['catalogo', 'Catálogo'], ['config', 'Configuración']].map(([v, t]) =>
+    '<button class="chip' + (vtTab === v ? ' activo' : '') + '" data-vt-tab="' + v + '">' + t + '</button>').join('');
+
+  const cuerpo = vtTab === 'catalogo' ? await vtCatalogo() : vtTab === 'config' ? await vtConfig() : await vtPedidos();
+  return '<div class="dir-barra">' + selector + tabs + '</div>' + cuerpo;
+}
+
+async function vtPedidos() {
+  const [pedidos, config] = await Promise.all([api(conEmpresa('ventas/pedidos?estado=' + vtEstado)), api(conEmpresa('ventas/config'))]);
+  const filtros = [['activos', 'Por atender'], ['armando', 'En conversación'], ['cerrados', 'Cerrados']].map(([v, t]) =>
+    '<button class="chip' + (vtEstado === v ? ' activo' : '') + '" data-vt-estado="' + v + '">' + t + '</button>').join('');
+  const aviso = config.enabled ? '' :
+    '<p class="alert">Las ventas están apagadas: el bot no está tomando pedidos. Actívalas en Configuración.</p>';
+
+  if (!pedidos.length) {
+    return aviso + '<div class="chips">' + filtros + '</div><p class="vacio">' +
+      (vtEstado === 'activos' ? 'No hay pedidos por atender.' : 'Nada por aquí.') + '</p>';
+  }
+
+  const tarjeta = (o) => {
+    const [estado, clase] = ESTADO_PEDIDO[o.status] ?? [o.status, ''];
+    const cliente = o.customerName || o.contact?.displayName || numeroBonito(o.contact?.waId ?? '');
+    const items = (o.items ?? []).map((i) =>
+      '<li>' + i.cantidad + ' × ' + esc(i.nombre) + (i.nota ? ' <span class="muted">(' + esc(i.nota) + ')</span>' : '') +
+      '<span class="spacer"></span>' + dinero(i.precioCents * i.cantidad) + '</li>').join('');
+    const entrega = o.deliveryMode
+      ? (ENTREGAS_VT[o.deliveryMode]?.[0] ?? o.deliveryMode) + (o.address ? ': ' + esc(o.address) : '') + (o.zone ? ' (' + esc(o.zone) + ')' : '')
+      : 'Entrega sin elegir';
+    const cuando = o.etaAt ? 'Listo para ' + fecha(o.etaAt) : o.scheduledFor ? 'Programado para ' + fecha(o.scheduledFor) : 'Lo antes posible';
+
+    let acciones = '';
+    if (o.status === 'POR_ACEPTAR') {
+      acciones = '<div class="vt-acciones">' +
+        (o.scheduledFor ? '' : '<label class="campo en-linea">Listo en <input type="number" min="0" max="600" value="' +
+          (config.prepMinutes ?? 30) + '" data-vt-minutos="' + o.id + '"> min</label>') +
+        '<button class="primario" data-vt-aceptar="' + o.id + '">Aceptar</button>' +
+        '<input class="vt-motivo" placeholder="Motivo si lo rechazas" data-vt-motivo="' + o.id + '">' +
+        '<button class="mini peligro" data-vt-rechazar="' + o.id + '">Rechazar</button></div>';
+    } else if (o.status === 'ACEPTADO') {
+      acciones = '<div class="vt-acciones"><button class="mini" data-vt-entregado="' + o.id + '">Marcar entregado</button></div>';
+    }
+
+    return '<article class="card vt-pedido">' +
+      '<div class="vt-cabeza"><strong>P-' + o.number + '</strong>' +
+        '<span class="pill ' + clase + '">' + estado + '</span>' + pillScore(o.buyingScore) +
+        '<span class="spacer"></span><span class="muted small">' + fecha(o.submittedAt ?? o.updatedAt) + '</span></div>' +
+      '<div class="vt-cliente">' + esc(cliente) + ' <span class="muted mono small">' + esc(numeroBonito(o.contact?.waId ?? '')) + '</span></div>' +
+      (items ? '<ul class="vt-items">' + items + '</ul>' : '<p class="muted small">Aún sin productos.</p>') +
+      (o.deliveryCents ? '<div class="muted small">Envío ' + dinero(o.deliveryCents) + '</div>' : '') +
+      '<div class="vt-total">Total <strong>' + dinero(o.totalCents) + '</strong></div>' +
+      '<div class="muted small">' + entrega + ' · ' + cuando + (o.notes ? ' · Nota: ' + esc(o.notes) : '') + '</div>' +
+      (o.rejectReason ? '<div class="muted small">Rechazado: ' + esc(o.rejectReason) + '</div>' : '') +
+      acciones +
+    '</article>';
+  };
+
+  return aviso + '<div class="chips">' + filtros + '</div><div class="vt-grid">' + pedidos.map(tarjeta).join('') + '</div>';
+}
+
+async function vtCatalogo() {
+  const productos = await api(conEmpresa('ventas/productos'));
+  const editando = vtProducto && vtProducto !== 'nuevo' ? productos.find((p) => p.id === vtProducto) : null;
+  const p = editando ?? { name: '', section: '', description: '', priceCents: 0, active: true };
+
+  const form = vtProducto
+    ? '<form id="vt-form-producto" class="card alta vt-form">' +
+        '<h3>' + (editando ? 'Editar producto' : 'Nuevo producto') + '</h3>' +
+        '<div class="fila-alta">' +
+          '<label class="campo">Nombre<input id="vt-p-nombre" required value="' + escAttr(p.name) + '" placeholder="Pollo entero"></label>' +
+          '<label class="campo">Sección<input id="vt-p-seccion" value="' + escAttr(p.section) + '" placeholder="Pollos, Complementos, Bebidas"></label>' +
+          '<label class="campo">Precio (pesos)<input id="vt-p-precio" type="number" min="0" step="0.5" required value="' + (p.priceCents / 100) + '"></label>' +
+        '</div>' +
+        '<label class="campo">Descripción <span class="muted">(el bot la usa para recomendar: para cuántos rinde, qué lleva)</span>' +
+          '<input id="vt-p-desc" value="' + escAttr(p.description) + '" placeholder="Rinde para 4 personas, incluye salsa"></label>' +
+        '<label class="check"><input type="checkbox" id="vt-p-activo"' + (p.active ? ' checked' : '') + '> Disponible para vender</label>' +
+        '<div class="fila-botones"><button type="submit">Guardar</button><button type="button" class="ghost" data-vt-producto-cerrar>Cancelar</button></div>' +
+      '</form>'
+    : '';
+
+  const filas = productos.map((x) => '<tr' + (x.active ? '' : ' class="apagado"') + '>' +
+    '<td><strong>' + esc(x.name) + '</strong>' + (x.description ? '<div class="muted small">' + esc(x.description) + '</div>' : '') + '</td>' +
+    '<td>' + esc(x.section || '—') + '</td>' +
+    '<td>' + dinero(x.priceCents) + '</td>' +
+    '<td>' + (x.active ? '<span class="pill ok">disponible</span>' : '<span class="pill">no disponible</span>') + '</td>' +
+    '<td class="acciones">' + (puedeGestionar() ? '<button class="mini" data-vt-producto="' + x.id + '">Editar</button>' : '') + '</td>' +
+  '</tr>');
+
+  return (puedeGestionar() && !vtProducto ? '<div class="dir-barra"><span class="spacer"></span><button class="primario" data-vt-producto="nuevo">+ Producto</button></div>' : '') +
+    form + tabla(['Producto', 'Sección', 'Precio', 'Estado', ''], filas, 'Todavía no hay productos. El bot solo vende lo que esté aquí.');
+}
+
+async function vtConfig() {
+  const c = await api(conEmpresa('ventas/config'));
+  const horas = c.hours ?? {};
+  const fila = ([dia, nombre]) => {
+    const tramo = (horas[dia] ?? [])[0];
+    return '<div class="vt-dia"><span>' + nombre + '</span>' +
+      '<label class="check"><input type="checkbox" data-vt-abre-dia="' + dia + '"' + (tramo ? ' checked' : '') + '> Abre</label>' +
+      '<input type="time" data-vt-de="' + dia + '" value="' + (tramo?.[0] ?? '11:00') + '">' +
+      '<span class="muted">a</span><input type="time" data-vt-a="' + dia + '" value="' + (tramo?.[1] ?? '21:00') + '"></div>';
+  };
+  const zonas = (c.zones ?? []).map((z) => z.nombre + ', ' + z.costo).join(SALTO);
+  const deshabilitado = puedeGestionar() ? '' : ' disabled';
+
+  return '<form id="vt-form-config" class="card alta vt-form">' +
+    '<label class="check vt-activar"><input type="checkbox" id="vt-c-activo"' + (c.enabled ? ' checked' : '') + deshabilitado + '>' +
+      ' <span><strong>Vender por WhatsApp</strong><small class="muted"> Quien escriba al WhatsApp de la empresa y no sea cliente registrado podrá hacer pedidos.</small></span></label>' +
+    '<div class="fila-alta">' +
+      '<label class="campo">Qué venden<input id="vt-c-giro" value="' + escAttr(c.businessType) + '" placeholder="Pollos asados al carbón"' + deshabilitado + '></label>' +
+      '<label class="campo">Zona horaria<select id="vt-c-tz"' + deshabilitado + '>' +
+        ['America/Mexico_City', 'America/Cancun', 'America/Monterrey', 'America/Chihuahua', 'America/Hermosillo', 'America/Tijuana'].map((z) =>
+          '<option' + (z === c.timezone ? ' selected' : '') + '>' + z + '</option>').join('') + '</select></label>' +
+    '</div>' +
+    '<label class="campo">Lo que el bot debe saber para recomendar' +
+      '<textarea id="vt-c-pitch" rows="4" placeholder="Especialidades, para cuántos rinde cada cosa, promociones vigentes, qué recomendar a quien no sabe qué pedir."' + deshabilitado + '>' + esc(c.pitch) + '</textarea>' +
+      '<small class="muted">El bot no inventa promociones: solo menciona las que escribas aquí.</small></label>' +
+    '<fieldset class="tipo"><legend>Horario</legend>' + DIAS_VT.map(fila).join('') + '</fieldset>' +
+    '<fieldset class="tipo"><legend>Formas de entrega</legend><div class="permisos-lista">' +
+      Object.entries(ENTREGAS_VT).map(([m, [t, d]]) =>
+        '<label class="permiso" title="' + escAttr(d) + '"><input type="checkbox" name="vt-entrega" value="' + m + '"' +
+          ((c.deliveryModes ?? []).includes(m) ? ' checked' : '') + deshabilitado + '> ' + t + '</label>').join('') +
+    '</div></fieldset>' +
+    '<label class="campo">Zonas a domicilio <span class="muted">(una por renglón: nombre, costo en pesos)</span>' +
+      '<textarea id="vt-c-zonas" rows="3" placeholder="Centro, 30' + SALTO + 'Región 100, 45"' + deshabilitado + '>' + esc(zonas) + '</textarea></label>' +
+    '<div class="fila-alta">' +
+      '<label class="campo">Minutos para tener listo un pedido<input id="vt-c-prep" type="number" min="5" value="' + c.prepMinutes + '"' + deshabilitado + '></label>' +
+      '<label class="campo">Pedido mínimo (pesos, 0 = sin mínimo)<input id="vt-c-min" type="number" min="0" value="' + c.minOrder + '"' + deshabilitado + '></label>' +
+    '</div>' +
+    (puedeGestionar() ? '<div class="fila-botones"><button type="submit">Guardar configuración</button></div>' : '') +
+  '</form>';
+}
+
+const repintarVentas = () => pintar('ventas', true);
+
+/** Con un formulario de ventas abierto, el refresco automático espera. */
+function ventasOcupado() {
+  return vistaActual === 'ventas' && (vtTab === 'config' || vtProducto !== null);
+}
+
+document.addEventListener('click', async (e) => {
+  const tab = e.target.closest('[data-vt-tab]');
+  if (tab) { vtTab = tab.dataset.vtTab; vtProducto = null; return repintarVentas(); }
+  const est = e.target.closest('[data-vt-estado]');
+  if (est) { vtEstado = est.dataset.vtEstado; return repintarVentas(); }
+  const prod = e.target.closest('[data-vt-producto]');
+  if (prod) { vtProducto = prod.dataset.vtProducto; return repintarVentas(); }
+  if (e.target.closest('[data-vt-producto-cerrar]')) { vtProducto = null; return repintarVentas(); }
+
+  const empresaBody = yo?.role === 'EMPRESA' ? {} : { organizationId: vtEmpresa };
+
+  const aceptar = e.target.closest('[data-vt-aceptar]');
+  if (aceptar) {
+    const id = aceptar.dataset.vtAceptar;
+    const minutos = document.querySelector('[data-vt-minutos="' + id + '"]')?.value ?? 0;
+    try {
+      await enviar('ventas/pedidos/aceptar', { ...empresaBody, id, minutos: Number(minutos) });
+      aviso('Pedido aceptado: ya le avisé al cliente');
+      repintarVentas();
+    } catch (err) { aviso(err.message, 'error'); }
+    return;
+  }
+
+  const rechazar = e.target.closest('[data-vt-rechazar]');
+  if (rechazar) {
+    const id = rechazar.dataset.vtRechazar;
+    const motivo = document.querySelector('[data-vt-motivo="' + id + '"]')?.value ?? '';
+    if (!confirm('¿Rechazar este pedido? Se le avisa al cliente con el motivo que escribiste.')) return;
+    try {
+      await enviar('ventas/pedidos/rechazar', { ...empresaBody, id, motivo });
+      aviso('Pedido rechazado; el cliente ya lo sabe');
+      repintarVentas();
+    } catch (err) { aviso(err.message, 'error'); }
+    return;
+  }
+
+  const entregado = e.target.closest('[data-vt-entregado]');
+  if (entregado) {
+    try {
+      await enviar('ventas/pedidos/entregado', { ...empresaBody, id: entregado.dataset.vtEntregado });
+      aviso('Marcado como entregado');
+      repintarVentas();
+    } catch (err) { aviso(err.message, 'error'); }
+  }
+});
+
+document.addEventListener('change', (e) => {
+  if (e.target.id === 'vt-empresa') { vtEmpresa = e.target.value; vtProducto = null; repintarVentas(); }
+});
+
+document.addEventListener('submit', async (e) => {
+  const empresaBody = yo?.role === 'EMPRESA' ? {} : { organizationId: vtEmpresa };
+
+  if (e.target.id === 'vt-form-producto') {
+    e.preventDefault();
+    try {
+      await enviar('ventas/productos', {
+        ...empresaBody,
+        id: vtProducto === 'nuevo' ? undefined : vtProducto,
+        name: document.getElementById('vt-p-nombre').value,
+        section: document.getElementById('vt-p-seccion').value,
+        price: Number(document.getElementById('vt-p-precio').value),
+        description: document.getElementById('vt-p-desc').value,
+        active: document.getElementById('vt-p-activo').checked,
+      });
+      aviso('Producto guardado');
+      vtProducto = null;
+      repintarVentas();
+    } catch (err) { aviso(err.message, 'error'); }
+    return;
+  }
+
+  if (e.target.id === 'vt-form-config') {
+    e.preventDefault();
+    const hours = {};
+    for (const [dia] of DIAS_VT) {
+      const abre = document.querySelector('[data-vt-abre-dia="' + dia + '"]').checked;
+      hours[dia] = abre
+        ? [[document.querySelector('[data-vt-de="' + dia + '"]').value, document.querySelector('[data-vt-a="' + dia + '"]').value]]
+        : [];
+    }
+    const zones = document.getElementById('vt-c-zonas').value.split(SALTO).map((l) => l.split(','))
+      .filter((p) => p[0] && p[0].trim()).map((p) => ({ nombre: p[0].trim(), costo: Number((p[1] ?? '0').trim()) || 0 }));
+    try {
+      await enviar('ventas/config', {
+        ...empresaBody,
+        enabled: document.getElementById('vt-c-activo').checked,
+        businessType: document.getElementById('vt-c-giro').value,
+        pitch: document.getElementById('vt-c-pitch').value,
+        timezone: document.getElementById('vt-c-tz').value,
+        hours,
+        deliveryModes: [...document.querySelectorAll('input[name="vt-entrega"]:checked')].map((c) => c.value),
+        zones,
+        prepMinutes: Number(document.getElementById('vt-c-prep').value),
+        minOrder: Number(document.getElementById('vt-c-min').value),
+      });
+      aviso('Configuración guardada');
+      repintarVentas();
+    } catch (err) { aviso(err.message, 'error'); }
+  }
+});
+
 const VISTAS = {
   async bandeja() {
     const consulta = filtroBandeja === 'todas' ? 'bandeja' : 'bandeja?esperando=' + filtroBandeja;
@@ -1260,6 +1545,10 @@ const VISTAS = {
 
   async directorio() {
     return vistaDirectorio();
+  },
+
+  async ventas() {
+    return vistaVentas();
   },
 
   async empresas() {
@@ -2015,7 +2304,7 @@ async function pintarResumen() {
   // le enseñan (el servidor tampoco se las daría).
   if (!yo || yo.role === 'EMPRESA') {
     document.getElementById('resumen').innerHTML = yo
-      ? '<span class="muted">' + esc(yo.organizationName ?? '') + ' · tus clientes y tus documentos</span>'
+      ? '<span class="muted">' + esc(yo.organizationName ?? '') + '</span>'
       : '';
     return;
   }
@@ -2098,7 +2387,7 @@ api('me').then((usuario) => {
 
   if (usuario?.role === 'EMPRESA') {
     document.querySelectorAll('.nav-items button').forEach((b) => {
-      b.hidden = b.dataset.view !== 'directorio' && b.dataset.view !== 'documentos';
+      b.hidden = !['directorio', 'ventas', 'documentos'].includes(b.dataset.view);
     });
     TITULOS.directorio = 'Clientes';
     document.getElementById('hilo').hidden = true;
@@ -2117,6 +2406,7 @@ setInterval(() => {
   // Ni un formulario a medio llenar ni el buscador mientras se escribe.
   if (document.querySelector('#contenido input:focus, #contenido select:focus, #contenido textarea:focus')) return;
   if (directorioOcupado()) return;
+  if (ventasOcupado()) return;
   if (vistaActual === 'empresas' && claveNueva) return;
   pintarResumen();
   pintar(vistaActual, true);
@@ -2635,6 +2925,33 @@ const STYLES = `<link rel="preconnect" href="https://fonts.googleapis.com">
     .dir-rol { display: none; }
     .dir-estado { grid-column: 2; justify-self: start; }
   }
+  /* ── Ventas ───────────────────────────────────────────────────────── */
+  .vt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; margin-top: 12px; }
+  .vt-pedido { display: flex; flex-direction: column; gap: 8px; }
+  .vt-cabeza { display: flex; align-items: center; gap: 8px; }
+  .vt-cabeza strong { font-size: 16px; white-space: nowrap; }
+  .vt-cabeza .muted { white-space: nowrap; }
+  .vt-cliente { font-weight: 700; }
+  .vt-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13.5px; }
+  .vt-items li { display: flex; gap: 8px; }
+  .vt-total { display: flex; justify-content: space-between; border-top: 1px solid var(--borde); padding-top: 8px; }
+  .vt-acciones { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; }
+  .vt-acciones .campo.en-linea { flex-direction: row; align-items: center; gap: 6px; }
+  .vt-acciones .campo.en-linea input { width: 72px; }
+  .vt-motivo {
+    flex: 1 1 140px; background: var(--caja); border: 1px solid var(--borde); border-radius: 9px;
+    padding: 7px 10px; color: var(--texto); font: inherit; font-size: 13px;
+  }
+  .vt-form { max-width: 860px; }
+  .vt-form h3 { margin: 0; }
+  .vt-activar { align-items: flex-start; }
+  .vt-activar span { display: flex; flex-direction: column; gap: 2px; }
+  .vt-dia { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .vt-dia > span:first-child { width: 90px; color: var(--texto); }
+  .vt-dia input[type=time] {
+    background: var(--caja); border: 1px solid var(--borde); border-radius: 8px; padding: 6px 8px; color: var(--texto); font: inherit;
+  }
+  tr.apagado td { opacity: .55; }
   .burbuja.pendiente { opacity: .6; }
   .burbuja.fallo { opacity: 1; background: var(--rojo-suave); border: 1px solid rgba(248, 113, 113, .35); }
   .burbuja .pill.tipo { display: table; margin-bottom: 6px; background: rgba(255, 255, 255, .07); color: var(--suave); }
