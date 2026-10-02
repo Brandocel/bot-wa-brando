@@ -160,12 +160,17 @@ export class SupportStrategy {
      * cortesía, ni cuando no hay texto: la entrega va como leyenda del
      * archivo.
      */
+    //
+    // Solo cuando está molesto CON el bot o su trámite (pide, pregunta,
+    // sigue un caso). "Qué pinche calor" trae una grosería pero no es con
+    // nosotros: disculparse ahí suena raro.
     const reconocer =
       clasificacion.molesto &&
       reply.text !== '' &&
       reply.awaiting !== 'AGENTE' &&
-      clasificacion.tipo !== 'QUEJA' &&
-      clasificacion.tipo !== 'CORTESIA';
+      (clasificacion.tipo === 'SOLICITUD' ||
+        clasificacion.tipo === 'CONSULTA' ||
+        clasificacion.tipo === 'SEGUIMIENTO');
 
     const saludo = reply.text && saludoConSolicitud(message.body)
       ? `${voz.saludoBreve(normalizar(message.body), voz.nombreDePila(message.senderName))} `

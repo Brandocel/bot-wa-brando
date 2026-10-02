@@ -96,10 +96,6 @@ export class HandleIncomingMessageUseCase {
   }
 
   /**
-   * FASE 1: eco. Aquí es donde en la Fase 3 entra el selector de Strategy
-   * (Assistant / Sales / Support) y todo lo demás se queda igual.
-   */
-  /**
    * El turno, en dos fases.
    *
    * FASE 1 registra al contacto, la conversación y el mensaje entrante, y

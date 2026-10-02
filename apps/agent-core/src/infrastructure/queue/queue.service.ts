@@ -17,9 +17,10 @@ export interface IncomingJob {
 /**
  * Cola sobre Postgres (pg-boss) en vez de Redis.
  *
- * No es solo por ahorrarse los $10/mes del Key Value de Render: encolar el
- * job y escribir el outbox ocurren contra la MISMA base, así que pueden ir
- * en una sola transacción. Con Redis serían dos sistemas que se desincronizan.
+ * Para ahorrarse los $10/mes del Key Value de Render y un sistema más que
+ * operar: la cola vive en la misma base que todo lo demás. Ojo: el job y el
+ * outbox NO se escriben en una misma transacción; lo que evita perder o
+ * repetir mensajes es Message.handledAt (ver HandleIncomingMessageUseCase).
  */
 @Injectable()
 export class QueueService implements OnModuleInit, OnModuleDestroy {

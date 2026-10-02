@@ -71,7 +71,9 @@ export function nombreDePila(pushName: string | null | undefined): string | null
 }
 
 export function saludoDeNuevo(mensaje: string, nombre: string | null = null): string {
-  return `${saludoBreve(mensaje, nombre)} Qué gusto saludarte. ¿Qué documento necesitas hoy?`;
+  // Sin "qué gusto saludarte": ya se dijo en el primer saludo, y repetirlo
+  // en cada "hola" suena a contestador.
+  return `${saludoBreve(mensaje, nombre)} ${una(['¿Qué documento necesitas?', '¿En qué te ayudo?', 'Dime qué documento te busco.'])}`;
 }
 
 export function saludoBreve(mensaje: string, nombre: string | null): string {

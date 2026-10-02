@@ -13,11 +13,13 @@ import { formatHistory, type HistoryTurn } from './conversation-history.service'
  * plantilla sonaría a contestador. El modelo ve la conversación reciente
  * para no saludar dos veces ni preguntar lo que ya se dijo.
  *
- * Lo que el modelo NO puede hacer: cambiar el fondo. Recibe los hechos ya
- * resueltos y una lista de literales que su texto tiene que contener (el
- * folio, sobre todo). Si el borrador no los trae, o se pasa de largo, o
- * mete un enlace, se descarta y sale el texto fijo que quien llama dejó
- * preparado. Sin modelo configurado sale ese mismo texto: el bot nunca se
+ * Lo que el modelo no decide: qué documento, permisos ni entregas. Recibe
+ * los hechos ya resueltos y una lista de literales que su texto tiene que
+ * contener (el folio, sobre todo). La validación es de forma, no de fondo:
+ * si el borrador no trae esos literales, se pasa de largo o mete un
+ * enlace, se descarta y sale el texto fijo que quien llama dejó preparado.
+ * Que no invente hechos depende del prompt; por eso nunca recibe nombres
+ * de archivo (ver formatHistory). Sin modelo configurado sale ese mismo texto: el bot nunca se
  * queda callado por culpa de la redacción.
  */
 

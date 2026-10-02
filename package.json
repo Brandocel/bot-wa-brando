@@ -2,7 +2,7 @@
   "name": "bot-wa-brando",
   "private": true,
   "version": "0.1.0",
-  "description": "Agente de WhatsApp: vendedor consultivo + asistente personal",
+  "description": "Jarvis: asistente de WhatsApp que entrega documentos de cada empresa a quien tiene permiso",
   "engines": {
     "node": ">=20"
   },
