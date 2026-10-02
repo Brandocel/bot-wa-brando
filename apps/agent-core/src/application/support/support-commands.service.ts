@@ -103,7 +103,8 @@ export class SupportCommandsService {
             return `  • ${w.category}${window}`;
           })
           .join('\n');
-        return `${s.organizationName}:\n${cats}`;
+        const titular = s.titular ? `\n  (solo a nombre de: ${s.titular.join(' ')})` : '';
+        return `${s.organizationName}:\n${cats}${titular}`;
       })
       .join('\n\n');
   }

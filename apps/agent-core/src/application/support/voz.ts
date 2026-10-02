@@ -617,3 +617,32 @@ export function consultaSinModelo(empresas: string): string {
 export function quejaSinModelo(): string {
   return 'Entiendo, y perdón por el inconveniente.\nSi quieres que lo vea alguien del equipo, escribe *"quiero hablar con una persona"*. Si es un documento, dime cuál y lo busco.';
 }
+
+// ── Confirmar quién es ──────────────────────────────────────────────────
+
+/** Primera vez que este número pide algo: el nombre, antes que nada. */
+export function pedirNombre(): string {
+  return una([
+    'Para mandarte documentos primero necesito confirmar quién eres. ¿Me escribes tu *nombre completo*, con apellidos?',
+    'Antes de buscarte documentos, ¿me compartes tu *nombre completo*, con apellidos? Es para confirmar que eres tú.',
+  ]);
+}
+
+/** Escribió algo que no parece un nombre completo. */
+export function nombreIncompleto(): string {
+  return 'Necesito tu *nombre completo*, con apellidos, como lo tiene registrado el equipo.';
+}
+
+export function nombreNoCoincide(): string {
+  return 'Ese nombre no coincide con el que tengo registrado para este número. ¿Me lo escribes de nuevo, completo y con apellidos?';
+}
+
+/** Igual coincida o no: no se le dice a un desconocido quién está registrado. */
+export function nombreEnRevision(): string {
+  return 'Gracias. Lo reviso con el equipo y te aviso por aquí.';
+}
+
+export function nombreConfirmado(nombre: string | null, sigue: boolean): string {
+  const gracias = nombre ? `Gracias, ${nombre}, ya quedó.` : 'Gracias, ya quedó.';
+  return sigue ? gracias : `${gracias} ¿Qué documento necesitas?`;
+}

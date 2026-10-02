@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import type { Awaiting, DocCategory, Document } from '@prisma/client';
 import type { IncomingMessage } from '../../domain/message/incoming-message';
-import { AccessScopeService, type OrgScope } from './access-scope.service';
+import { AccessScopeService, type OrgScope, type ScopeResult } from './access-scope.service';
+import { tokensNombre } from '../../domain/contact/nombre';
 import {
   ConversationHistoryService,
   type HistoryTurn,
@@ -88,6 +89,9 @@ const MAX_OPCIONES = 5;
  * Más que eso satura el chat: se manda esto y se ofrece acotar.
  */
 const MAX_ENTREGAS = 10;
+
+/** Intentos de escribir el nombre completo antes de pasarlo al equipo. */
+const MAX_INTENTOS_NOMBRE = 3;
 
 /** Dentro de este tiempo, el mismo archivo no se vuelve a mandar sin que lo pidan. */
 const REPETIDA_MS = 30 * 60 * 1000;
@@ -191,8 +195,14 @@ export class SupportStrategy {
     // Con el chat: por la línea de una empresa, solo esa empresa.
     const scope = await this.scope.resolve(message.senderId, message.chatId);
 
-    // Sin membresía no hay conversación de soporte. Que conteste el eco o,
-    // más adelante, la Strategy de ventas.
+    // Antes de cualquier documento, quién es: el nombre completo, una vez
+    // por número. A un número que no está en el directorio solo se le
+    // contesta si pide un documento.
+    if (scope.decision === 'NEEDS_NAME' || scope.decision === 'DENY_NO_MEMBERSHIP') {
+      return this.identificar(message, ctx, scope);
+    }
+
+    // Sin permisos no hay conversación de soporte.
     if (scope.decision !== 'ALLOW') return null;
 
     // Reiniciar abandona la solicitud entera, antes de interpretar opciones
@@ -1095,6 +1105,149 @@ export class SupportStrategy {
 
     // Sin texto aparte: la leyenda del archivo ya lo dice todo.
     return { text: '', awaiting: 'NADIE', topic: doc.category };
+  }
+
+  /**
+   * Confirmar quién escribe, por su nombre completo.
+   *
+   *  - Con membresía (NEEDS_NAME): el nombre se compara con el que registró
+   *    el equipo. Si coincide, queda confirmado para este número y se
+   *    atiende lo que había pedido. Tras MAX_INTENTOS_NOMBRE fallos, o si
+   *    el equipo no registró ningún nombre, pasa a una persona.
+   *  - Sin membresía: el nombre NO da acceso (cualquiera puede escribir un
+   *    nombre). Si coincide con alguien registrado, se avisa al equipo para
+   *    que confirme y asocie el número. La respuesta es la misma coincida o
+   *    no: a un desconocido no se le dice quién está registrado.
+   *
+   * El nombre escrito no va a la auditoría: es un dato personal y ahí no
+   * hace falta. Sí va al ticket, que es donde una persona lo compara.
+   */
+  private async identificar(
+    message: IncomingMessage,
+    ctx: StrategyContext,
+    scope: ScopeResult,
+  ): Promise<StrategyReply | null> {
+    const conocido = scope.decision === 'NEEDS_NAME';
+    const texto = message.body.trim();
+    if (texto === '') return null;
+
+    const sol = await this.solicitudes.actual(ctx.conversationId);
+    const espera = sol.pideNombre ?? null;
+    const pide =
+      documentIntent(texto, { enCurso: false, pendiente: null, companyName: null }).kind === 'document';
+
+    if (espera?.escalado) {
+      return conocido || pide ? { text: voz.nombreEnRevision(), awaiting: 'AGENTE' } : null;
+    }
+
+    if (!espera) {
+      if (!conocido && !pide) return null;
+      await this.solicitudes.guardar(ctx.conversationId, {
+        pideNombre: { intentos: 0, pedido: pide ? texto : null, escalado: false },
+      });
+      return { text: voz.pedirNombre(), awaiting: 'CLIENTE' };
+    }
+
+    if (esCierre(texto) || pideReinicio(texto)) {
+      await this.solicitudes.cerrar(ctx.conversationId);
+      return { text: voz.cierreSolicitud(), awaiting: 'NADIE' };
+    }
+
+    // Pidió otra cosa en vez de dar el nombre: se guarda y se repite la pregunta.
+    if (pide) {
+      await this.solicitudes.guardar(ctx.conversationId, { pideNombre: { ...espera, pedido: texto } });
+      return { text: voz.pedirNombre(), awaiting: 'CLIENTE' };
+    }
+
+    // "Hola", "Juan": no es un nombre completo, y no cuenta como intento.
+    if (tokensNombre(texto).length < 2) {
+      return { text: voz.nombreIncompleto(), awaiting: 'CLIENTE' };
+    }
+
+    const intentos = espera.intentos + 1;
+
+    if (!conocido) {
+      const registrados = await this.scope.registradosConNombre(texto, message.chatId);
+      if (registrados.length > 0) {
+        await this.escalarIdentidad(ctx, texto, 'número nuevo; el nombre coincide con alguien registrado', registrados);
+      }
+      await this.solicitudes.guardar(ctx.conversationId, {
+        pideNombre: { ...espera, intentos, escalado: true },
+      });
+      return { text: voz.nombreEnRevision(), awaiting: registrados.length > 0 ? 'AGENTE' : 'NADIE' };
+    }
+
+    const pendientes = scope.pendientesNombre ?? [];
+    const confirmadas = await this.scope.confirmarNombre(pendientes, texto);
+
+    if (confirmadas.length > 0) {
+      await this.scope.audit({
+        waId: message.senderId,
+        query: '(nombre completo)',
+        documentId: null,
+        decision: 'NAME_CONFIRMED',
+        decidedBy: `nombre confirmado en ${confirmadas.map((c) => c.organizationName).join(', ')}`,
+      });
+      await this.solicitudes.guardar(ctx.conversationId, { pideNombre: null });
+
+      const gracias = voz.nombreConfirmado(voz.nombreDePila(confirmadas[0]!.fullName), espera.pedido !== null);
+      if (!espera.pedido) return { text: gracias, awaiting: 'CLIENTE' };
+
+      // Lo que había pedido, como si lo acabara de escribir.
+      const reply = await this.atender({ ...message, body: espera.pedido }, ctx, clasificar(espera.pedido));
+      if (!reply) return { text: gracias, awaiting: 'CLIENTE' };
+      return { ...reply, text: reply.text ? `${gracias}
+${reply.text}` : gracias };
+    }
+
+    await this.scope.audit({
+      waId: message.senderId,
+      query: '(nombre completo)',
+      documentId: null,
+      decision: 'NAME_MISMATCH',
+      decidedBy: `intento ${intentos} de ${MAX_INTENTOS_NOMBRE}`,
+    });
+
+    const sinRegistro = pendientes.every((p) => p.fullName === null);
+    if (sinRegistro || intentos >= MAX_INTENTOS_NOMBRE) {
+      await this.escalarIdentidad(
+        ctx,
+        texto,
+        sinRegistro ? 'el equipo no ha registrado su nombre completo' : `el nombre no coincide tras ${intentos} intentos`,
+        pendientes,
+      );
+      await this.solicitudes.guardar(ctx.conversationId, {
+        pideNombre: { ...espera, intentos, escalado: true },
+      });
+      return { text: voz.nombreEnRevision(), awaiting: 'AGENTE' };
+    }
+
+    await this.solicitudes.guardar(ctx.conversationId, { pideNombre: { ...espera, intentos } });
+    return { text: voz.nombreNoCoincide(), awaiting: 'CLIENTE' };
+  }
+
+  /** Un caso para que una persona confirme quién es y, si toca, asocie el número. */
+  private async escalarIdentidad(
+    ctx: StrategyContext,
+    escrito: string,
+    motivo: string,
+    membresias: readonly { organizationId: string; organizationName: string; fullName: string | null }[],
+  ): Promise<void> {
+    await this.tickets.abrirEscalado({
+      conversationId: ctx.conversationId,
+      contactId: ctx.contactId,
+      organizationId: membresias.length === 1 ? membresias[0]!.organizationId : null,
+      subject: `Confirmar identidad: escribió "${escrito}"`,
+      slots: {
+        nombreEscrito: escrito,
+        motivo,
+        membresias: membresias.map((m) => ({
+          empresa: m.organizationName,
+          nombreRegistrado: m.fullName,
+        })),
+      },
+      reason: 'sin_permiso',
+    });
   }
 
   /**

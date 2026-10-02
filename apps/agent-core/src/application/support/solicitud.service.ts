@@ -55,6 +55,12 @@ export interface Solicitud {
    * empresa. Al elegirla se vuelve a partir y se atiende entero.
    */
   lote?: string | null;
+  /**
+   * Se le pidió el nombre completo para confirmar quién es. `pedido` es lo
+   * que pidió antes de eso, para atenderlo al confirmar; `escalado` = ya
+   * se pasó al equipo y no se le vuelve a preguntar.
+   */
+  pideNombre?: { intentos: number; pedido: string | null; escalado: boolean } | null;
   /** Cuándo se tocó por última vez. null = no hay solicitud en curso. */
   updatedAt: string | null;
 }

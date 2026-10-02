@@ -9,6 +9,7 @@ import {
   MESSAGING_PORT,
   type MessagingPort,
 } from '../ports/messaging.port';
+import { tokensNombre } from '../../domain/contact/nombre';
 
 /**
  * Alta y baja del directorio: empresas, números y qué puede ver cada uno.
@@ -28,6 +29,8 @@ export interface AddMemberInput {
   /** Lo que tecleó el operador: "9984862017", "+52 998...", lo que sea. */
   phone: string;
   displayName?: string;
+  /** Nombre completo con apellidos: el número lo confirma por WhatsApp. */
+  fullName?: string;
   role: MemberRole;
   /** Categorías que podrá consultar. Vacío para MANAGER y ADMIN: ven todo. */
   categories?: DocCategory[];
@@ -115,10 +118,15 @@ export class DirectoryService {
         contactId: contact.id,
         organizationId: input.organizationId,
         role: input.role,
+        fullName: limpiarNombre(input.fullName),
       },
       // Reactivar una membresía revocada es una operación normal: alguien
       // vuelve a la empresa. Se limpia la revocación en vez de crear otra.
-      update: { role: input.role, revokedAt: null },
+      update: {
+        role: input.role,
+        revokedAt: null,
+        ...(limpiarNombre(input.fullName) ? { fullName: limpiarNombre(input.fullName), nameConfirmedAt: null } : {}),
+      },
     });
 
     // VIEWER necesita permisos explícitos; MANAGER y ADMIN ven todo lo de su
@@ -159,6 +167,21 @@ export class DirectoryService {
     await this.prisma.membership.update({
       where: { id: membershipId },
       data: { verifiedAt: new Date() },
+    });
+  }
+
+  /**
+   * Cambiar el nombre registrado obliga a confirmarlo otra vez: lo que el
+   * número confirmó era el nombre anterior.
+   */
+  async setFullName(membershipId: string, fullName: string): Promise<void> {
+    const nombre = limpiarNombre(fullName);
+    if (!nombre || tokensNombre(nombre).length < 2) {
+      throw new Error('escribe el nombre completo, con apellidos');
+    }
+    await this.prisma.membership.update({
+      where: { id: membershipId },
+      data: { fullName: nombre, nameConfirmedAt: null },
     });
   }
 
@@ -244,4 +267,10 @@ export class DirectoryService {
       throw err;
     }
   }
+}
+
+/** Espacios de más fuera; vacío = sin nombre. */
+function limpiarNombre(nombre: string | undefined | null): string | null {
+  const limpio = nombre?.trim().replace(/\s+/g, ' ') ?? '';
+  return limpio === '' ? null : limpio.slice(0, 120);
 }

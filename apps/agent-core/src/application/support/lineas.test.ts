@@ -92,7 +92,15 @@ function prismaDeMembresias() {
   const membresias = [
     { organizationId: 'vega', organization: { id: 'vega', name: 'Constructora Vega' } },
     { organizationId: 'pollos', organization: { id: 'pollos', name: 'Pollos Pirata' } },
-  ].map((m) => ({ ...m, role: 'MANAGER', verifiedAt: new Date(), grants: [] }));
+  ].map((m) => ({
+    ...m,
+    id: `m-${m.organizationId}`,
+    role: 'MANAGER',
+    verifiedAt: new Date(),
+    fullName: 'Ana Ruiz Soto',
+    nameConfirmedAt: new Date(),
+    grants: [],
+  }));
 
   return {
     consultas,
@@ -134,6 +142,82 @@ test('una línea que ya no es de ninguna empresa no da acceso a nada', async () 
   const r = await svc.resolve('521555@c.us', 'linea:org_borrada:521555@c.us');
   assert.equal(r.decision, 'DENY_NO_MEMBERSHIP');
   assert.deepEqual(r.scopes, []);
+});
+
+// ── Nombre completo y titular ───────────────────────────────────────────
+
+function prismaDeUnaMembresia(m: Record<string, unknown>) {
+  const actualizadas: unknown[] = [];
+  const base = {
+    id: 'm1',
+    organizationId: 'vega',
+    organization: { id: 'vega', name: 'Constructora Vega' },
+    role: 'VIEWER',
+    verifiedAt: new Date(),
+    fullName: 'Ana Ruiz Soto',
+    nameConfirmedAt: new Date(),
+    grants: [{ category: 'FACTURA', periodFrom: null, periodTo: null }],
+    ...m,
+  };
+  return {
+    actualizadas,
+    organization: { findUnique: async () => null },
+    membership: {
+      findMany: async () => [base],
+      updateMany: async (args: unknown) => { actualizadas.push(args); return { count: 1 }; },
+    },
+  };
+}
+
+test('sin nombre confirmado, la membresía no abre nada y pide el nombre', async () => {
+  const { AccessScopeService } = await import('./access-scope.service');
+  const svc = new AccessScopeService(prismaDeUnaMembresia({ nameConfirmedAt: null }) as never);
+  const r = await svc.resolve('521555@c.us', '521555@c.us');
+  assert.equal(r.decision, 'NEEDS_NAME');
+  assert.deepEqual(r.scopes, []);
+  assert.equal(r.pendientesNombre?.[0]?.fullName, 'Ana Ruiz Soto');
+});
+
+test('un cliente (VIEWER) solo ve lo que va a su nombre; un MANAGER, toda su empresa', async () => {
+  const { AccessScopeService } = await import('./access-scope.service');
+  const viewer = await new AccessScopeService(prismaDeUnaMembresia({}) as never).resolve('521555@c.us');
+  assert.equal(viewer.decision, 'ALLOW');
+  assert.deepEqual(viewer.scopes[0]!.titular, ['ana', 'ruiz', 'soto']);
+
+  const manager = await new AccessScopeService(prismaDeUnaMembresia({ role: 'MANAGER' }) as never).resolve('521555@c.us');
+  assert.equal(manager.scopes[0]!.titular, undefined);
+});
+
+test('confirmar el nombre: sin acentos ni orden, pero completo', async () => {
+  const { AccessScopeService } = await import('./access-scope.service');
+  const prisma = prismaDeUnaMembresia({ nameConfirmedAt: null });
+  const svc = new AccessScopeService(prisma as never);
+  const { pendientesNombre } = await svc.resolve('521555@c.us');
+
+  assert.deepEqual(await svc.confirmarNombre(pendientesNombre!, 'Ana Ruiz'), []);
+  assert.equal(prisma.actualizadas.length, 0);
+
+  const ok = await svc.confirmarNombre(pendientesNombre!, 'soto ana RUÍZ');
+  assert.equal(ok.length, 1);
+  assert.equal(prisma.actualizadas.length, 1);
+});
+
+test('el filtro del cliente va al WHERE: A1 no alcanza el documento de A2', async () => {
+  const { DocumentSearchService } = await import('./document-search.service');
+  const consultas: Record<string, unknown>[] = [];
+  const prisma = { document: { findMany: async ({ where }: { where: Record<string, unknown> }) => { consultas.push(where); return []; } } };
+  const svc = new DocumentSearchService(prisma as never);
+  await svc.search(
+    [{
+      organizationId: 'vega', organizationName: 'Vega', strippedByVerification: [],
+      windows: [{ category: 'FACTURA', periodFrom: null, periodTo: null }],
+      titular: ['ana', 'ruiz'],
+    }],
+    { category: 'FACTURA', period: null, folio: 'C3001', text: null },
+  );
+  const json = JSON.stringify(consultas[0]);
+  assert.match(json, /"holderKey":\{"contains":" ana "\}/);
+  assert.match(json, /"holderKey":\{"contains":" ruiz "\}/);
 });
 
 // ── El dueño solo es dueño en el número principal ───────────────────────

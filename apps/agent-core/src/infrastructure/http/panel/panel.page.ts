@@ -228,6 +228,9 @@ const enviar = async (ruta, cuerpo) => {
 const esc = (valor) => String(valor ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
+/** Para valores dentro de un atributo: además, las comillas. */
+const escAttr = (valor) => esc(valor).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
 const fecha = (iso) => iso
   ? new Date(iso).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' })
   : '—';
@@ -795,6 +798,10 @@ const VISTAS = {
           <label>Nombre
             <input id="nombre" placeholder="Contadora de Flores" autocomplete="off">
           </label>
+          <label>Nombre completo, con apellidos
+            <input id="nombre-completo" placeholder="Ana Ruiz Soto" autocomplete="off" required>
+            <small class="muted">Se lo pido por WhatsApp antes del primer documento. A un VIEWER solo le llegan los documentos a este nombre.</small>
+          </label>
           <label>Empresa
             <select id="empresa" required>\${empresas.map((o) =>
               '<option value="' + o.id + '">' + esc(o.name) + '</option>').join('')}</select>
@@ -816,10 +823,15 @@ const VISTAS = {
       </form>\` : '';
 
     return formulario + tabla(
-      ['Número', 'Nombre', 'Empresa', 'Rol', 'Verificado', 'Puede consultar', ''],
+      ['Número', 'Nombre', 'Nombre completo', 'Empresa', 'Rol', 'Verificado', 'Puede consultar', ''],
       filas.map((m) => '<tr>' +
         '<td class="mono">' + esc(numeroBonito(m.contact.waId)) + '</td>' +
         '<td>' + esc(m.contact.displayName ?? '—') + '</td>' +
+        '<td>' + (m.fullName
+          ? esc(m.fullName) + ' ' + (m.nameConfirmedAt
+            ? '<span class="pill ok">confirmado</span>'
+            : '<span class="pill warn">sin confirmar</span>')
+          : '<span class="pill warn">falta</span>') + '</td>' +
         '<td>' + esc(m.organization.name) + '</td>' +
         '<td>' + m.role + '</td>' +
         '<td>' + (m.verifiedAt
@@ -829,7 +841,8 @@ const VISTAS = {
           ? (m.grants.map((g) => esc(g.category)).join(', ') || '<span class="muted">nada</span>')
           : '<span class="muted">todo lo de su empresa</span>') + '</td>' +
         '<td class="acciones">' + (esAdmin
-          ? (m.verifiedAt ? '' : '<button class="mini" data-verificar="' + m.id + '">Verificar</button> ') +
+          ? '<button class="mini" data-nombre-completo="' + m.id + '" data-actual="' + escAttr(m.fullName ?? '') + '">Nombre</button> ' +
+            (m.verifiedAt ? '' : '<button class="mini" data-verificar="' + m.id + '">Verificar</button> ') +
             '<button class="mini peligro" data-revocar="' + m.id + '">Revocar</button>'
           : '') + '</td>' +
       '</tr>'),
@@ -916,6 +929,7 @@ const VISTAS = {
     if (!empresas.some((o) => o.id === docsEmpresa)) docsEmpresa = empresas[0].id;
 
     const filas = await api('documentos?empresa=' + encodeURIComponent(docsEmpresa) + '&estado=' + docsEstado);
+    const esAdmin = yo?.role === 'ADMIN';
 
     const selector = '<select class="compacto" id="docs-empresa">' +
       empresas.map((o) => '<option value="' + o.id + '"' + (o.id === docsEmpresa ? ' selected' : '') + '>' +
@@ -945,7 +959,10 @@ const VISTAS = {
 
     const fila = (d) => {
       const [estado, clase] = ESTADO_DOC[d.status] ?? [d.status, ''];
-      const detalle = [d.folio ? 'folio ' + esc(d.folio) : '', d.counterpart ? esc(d.counterpart) : '', tamano(d.sizeBytes)]
+      const titularTxt = d.counterpart
+        ? 'a nombre de ' + esc(d.counterpart) + (d.holderByOperator ? ' (corregido)' : '')
+        : 'sin titular';
+      const detalle = [d.folio ? 'folio ' + esc(d.folio) : '', titularTxt, tamano(d.sizeBytes)]
         .filter(Boolean).join(' · ');
       return '<tr>' +
         '<td>' + esc(d.name) + (d.summary ? '<div class="muted small">' + esc(d.summary) + '</div>' : '') + '</td>' +
@@ -953,6 +970,9 @@ const VISTAS = {
         '<td>' + (d.docClass === 'SENSIBLE'
           ? '<span class="pill warn">sensible</span>'
           : '<span class="pill ' + clase + '">' + estado + '</span>') + '</td>' +
+        '<td class="acciones">' + (esAdmin
+          ? '<button class="mini" data-titular="' + d.id + '" data-actual="' + escAttr(d.counterpart ?? '') + '">Titular</button>'
+          : '') + '</td>' +
       '</tr>';
     };
 
@@ -1259,6 +1279,7 @@ document.addEventListener('submit', async (e) => {
         organizationId: document.getElementById('empresa').value,
         phone: document.getElementById('tel').value,
         displayName: document.getElementById('nombre').value,
+        fullName: document.getElementById('nombre-completo').value,
         role: document.getElementById('rol').value,
         categories: categorias,
       });
@@ -1385,6 +1406,30 @@ document.addEventListener('click', async (e) => {
       await enviar('empresas/actualizar', { id, driveFolderId: campo.value });
       aviso('Carpeta actualizada. Corre /sync por WhatsApp para reindexar.');
       pintar('empresas');
+    } catch (err) { aviso(err.message, 'error'); }
+    return;
+  }
+
+  const nombreCompleto = e.target.closest('[data-nombre-completo]');
+  if (nombreCompleto) {
+    const nuevo = prompt('Nombre completo, con apellidos. Si lo cambias, el número tendrá que confirmarlo otra vez por WhatsApp.', nombreCompleto.dataset.actual);
+    if (nuevo === null) return;
+    try {
+      await enviar('numeros/nombre', { id: nombreCompleto.dataset.nombreCompleto, fullName: nuevo });
+      aviso('Nombre guardado: se lo pido al número antes del siguiente documento');
+      pintar('directorio');
+    } catch (err) { aviso(err.message, 'error'); }
+    return;
+  }
+
+  const titular = e.target.closest('[data-titular]');
+  if (titular) {
+    const nuevo = prompt('¿A nombre de quién va este documento? Un cliente (VIEWER) solo lo recibe si su nombre completo coincide.', titular.dataset.actual);
+    if (nuevo === null) return;
+    try {
+      await enviar('documentos/titular', { id: titular.dataset.titular, titular: nuevo });
+      aviso(nuevo.trim() ? 'Titular guardado' : 'Titular borrado: ningún cliente lo recibirá');
+      pintar('documentos');
     } catch (err) { aviso(err.message, 'error'); }
     return;
   }

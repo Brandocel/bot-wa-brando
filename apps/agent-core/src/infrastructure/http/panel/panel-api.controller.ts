@@ -40,6 +40,7 @@ import { OutboxDispatcher } from '../../persistence/outbox.dispatcher';
 import { PanelAuthService, SESSION_COOKIE } from './panel-auth.service';
 import { PanelGuard, readCookie, type PanelRequest } from './panel.guard';
 import { prefijoDeLinea, separarChat } from '../../../domain/message/linea';
+import { claveTitular } from '../../../domain/contact/nombre';
 
 /** Las conversaciones de esa persona en el mismo número de WhatsApp. */
 function mismaLinea(contactId: string, chatId: string): Prisma.ConversationWhereInput {
@@ -374,6 +375,7 @@ export class PanelApiController {
         folio: true,
         summary: true,
         counterpart: true,
+        holderByOperator: true,
         status: true,
         docClass: true,
         indexedAt: true,
@@ -403,6 +405,25 @@ export class PanelApiController {
       if (err instanceof RevisionError) throw new BadRequestException(err.message);
       throw err;
     }
+  }
+
+  /**
+   * A nombre de quién va un documento. Es lo que decide qué cliente (VIEWER)
+   * lo puede recibir, así que corregirlo es solo de ADMIN, y queda fijo: el
+   * barrido ya no lo pisa con lo que lea el clasificador.
+   */
+  @UseGuards(PanelGuard)
+  @Post('documentos/titular')
+  async setHolder(@Req() req: PanelRequest, @Body() body: { id?: string; titular?: string }) {
+    this.requireAdmin(req);
+    if (!body.id) throw new BadRequestException('falta el id');
+
+    const titular = body.titular?.trim().replace(/\s+/g, ' ').slice(0, 200) || null;
+    await this.prisma.document.update({
+      where: { id: body.id },
+      data: { counterpart: titular, holderKey: claveTitular(titular), holderByOperator: true },
+    });
+    return { ok: true };
   }
 
   /**
@@ -460,6 +481,8 @@ export class PanelApiController {
         id: true,
         role: true,
         verifiedAt: true,
+        fullName: true,
+        nameConfirmedAt: true,
         validUntil: true,
         contact: { select: { waId: true, displayName: true } },
         organization: { select: { name: true } },
@@ -893,6 +916,7 @@ export class PanelApiController {
       organizationId?: string;
       phone?: string;
       displayName?: string;
+      fullName?: string;
       role?: MemberRole;
       categories?: DocCategory[];
     },
@@ -907,6 +931,7 @@ export class PanelApiController {
       organizationId: body.organizationId,
       phone: body.phone,
       displayName: body.displayName,
+      fullName: body.fullName,
       role: body.role ?? 'VIEWER',
       categories: body.categories ?? [],
       grantedBy,
@@ -920,6 +945,21 @@ export class PanelApiController {
     if (!body.id) throw new BadRequestException('falta el id');
 
     await this.directory.verifyMember(body.id);
+    return { ok: true };
+  }
+
+  /** Nombre completo registrado. Cambiarlo obliga al número a confirmarlo de nuevo. */
+  @UseGuards(PanelGuard)
+  @Post('numeros/nombre')
+  async setFullName(@Req() req: PanelRequest, @Body() body: { id?: string; fullName?: string }) {
+    this.requireAdmin(req);
+    if (!body.id) throw new BadRequestException('falta el id');
+
+    try {
+      await this.directory.setFullName(body.id, body.fullName ?? '');
+    } catch (err) {
+      throw new BadRequestException(err instanceof Error ? err.message : String(err));
+    }
     return { ok: true };
   }
 

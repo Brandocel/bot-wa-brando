@@ -345,6 +345,13 @@ model Membership {
   /// una credencial: se reasigna, se clona, se pierde el teléfono.
   verifiedAt DateTime?
 
+  /// Nombre completo de la persona, como lo registró el equipo en el panel.
+  /// Un VIEWER solo recibe documentos cuyo titular lleva este nombre.
+  fullName String?
+  /// Cuándo este número escribió ese nombre por WhatsApp. null = todavía
+  /// no lo confirma: no se le entrega nada hasta que lo haga.
+  nameConfirmedAt DateTime?
+
   validFrom  DateTime  @default(now())
   validUntil DateTime?
   revokedAt  DateTime?
@@ -425,6 +432,12 @@ model Document {
   docClass          DocClass?
   summary           String?   @db.Text
   counterpart       String? // a nombre de quién va o de quién viene
+  /// counterpart normalizado (ver domain/contact/nombre.ts): " juan perez ".
+  /// Es lo que filtra qué documentos ve un VIEWER.
+  holderKey         String?
+  /// El titular lo corrigió una persona en el panel: el barrido ya no lo
+  /// pisa con lo que lea el clasificador.
+  holderByOperator  Boolean   @default(false)
   /// modelo | reglas | operador
   classifiedBy      String?
   /// driveVersion que se clasificó: con la misma versión no se repite.

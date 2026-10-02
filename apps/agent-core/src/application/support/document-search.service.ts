@@ -230,6 +230,15 @@ export class DocumentSearchService {
           };
         }
 
+        // Un cliente solo ve lo que va a su nombre: cada palabra de su
+        // nombre registrado tiene que estar en el titular del documento. Un
+        // documento sin titular no le llega a ningún cliente.
+        if (scope.titular) {
+          condition.AND = scope.titular.length > 0
+            ? scope.titular.map((palabra) => ({ holderKey: { contains: ` ${palabra} ` } }))
+            : [{ id: { in: [] } }];
+        }
+
         conditions.push(condition);
       }
     }

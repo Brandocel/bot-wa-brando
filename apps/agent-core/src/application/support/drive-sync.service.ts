@@ -24,6 +24,7 @@ import { DocumentContentService } from './document-content.service';
 import { CATEGORIAS, type Clasificacion } from './document-classification';
 import { DocumentClassifierService } from './document-classifier.service';
 import { contenidoSensible, esSensible } from './document-safety';
+import { claveTitular } from '../../domain/contact/nombre';
 
 /**
  * Sincronizador Drive → índice local.
@@ -338,6 +339,9 @@ export class DriveSyncService implements OnModuleInit {
         classifiedBy: true,
         classifiedVersion: true,
         classification: true,
+        counterpart: true,
+        holderKey: true,
+        holderByOperator: true,
       },
     });
     const mismaVersion = previo !== null && previo.driveVersion === file.version;
@@ -433,7 +437,10 @@ export class DriveSyncService implements OnModuleInit {
       status,
       docClass: clase,
       summary: clas?.resumen ?? null,
-      counterpart: clas?.contraparte ?? null,
+      // El titular que corrigió una persona manda sobre el clasificador.
+      ...(previo?.holderByOperator
+        ? { counterpart: previo.counterpart, holderKey: previo.holderKey }
+        : { counterpart: clas?.contraparte ?? null, holderKey: claveTitular(clas?.contraparte) }),
       classifiedBy,
       // Sin respuesta del modelo queda sin versión: se reintenta después.
       classifiedVersion: clas ? file.version : null,
@@ -484,6 +491,7 @@ export class DriveSyncService implements OnModuleInit {
       docClass: 'SENSIBLE' as const,
       summary: null,
       counterpart: null,
+      holderKey: null,
       classifiedBy: fuente,
       classifiedVersion: file.version,
       classification: { clase: 'SENSIBLE', fuente, motivo },

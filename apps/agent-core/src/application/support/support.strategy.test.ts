@@ -243,7 +243,7 @@ class ObservedSlotExtractor extends SlotExtractorService {
   }
 }
 
-function makeHarness(options: { senderName?: string | null; scopes?: OrgScope[]; decision?: 'ALLOW' | 'DENY_NO_MEMBERSHIP' | 'DENY_UNVERIFIED'; history?: Array<{ role: 'cliente' | 'bot'; text: string; at: Date }>; llmResponse?: Record<string, unknown>; draftResponse?: string } = {}) {
+function makeHarness(options: { senderName?: string | null; scopes?: OrgScope[]; decision?: 'ALLOW' | 'DENY_NO_MEMBERSHIP' | 'DENY_UNVERIFIED'; scope?: Record<string, unknown>; history?: Array<{ role: 'cliente' | 'bot'; text: string; at: Date }>; llmResponse?: Record<string, unknown>; draftResponse?: string } = {}) {
   const requests = new MemoryRequests();
   const search = new MemorySearch();
   const escalations: unknown[] = [];
@@ -271,6 +271,9 @@ function makeHarness(options: { senderName?: string | null; scopes?: OrgScope[];
       resolve: async () => ({ decision: options.decision ?? 'ALLOW', decidedBy: 'test', scopes }),
       denialFor: () => null,
       audit: async (input: unknown) => { audits.push(input); },
+      confirmarNombre: async () => [],
+      registradosConNombre: async () => [],
+      ...options.scope,
     } as never,
     slots,
     search as never,
@@ -2690,6 +2693,100 @@ test('en un lote, un folio que resulta ser de otro tipo se ofrece y no se manda'
   await h.handle('la 1');
   assert.deepEqual(entregados(h), ['Factura_A100.pdf', 'Contrato_C3001.pdf']);
 });
+
+// ── Nombre completo antes del primer documento ──────────────────────────
+
+const pendienteAna = {
+  membershipId: 'm1', organizationId: 'org-vega', organizationName: 'Constructora Vega', fullName: 'Ana Ruiz Soto',
+};
+
+/** Un número con membresía que aún no confirma su nombre; al confirmar, pasa a ALLOW. */
+function harnessSinNombre(fullName: string | null = 'Ana Ruiz Soto') {
+  const pendiente = { ...pendienteAna, fullName };
+  let confirmado = false;
+  const h = makeHarness({
+    scope: {
+      resolve: async () => confirmado
+        ? { decision: 'ALLOW', decidedBy: 'test', scopes: [orgScope] }
+        : { decision: 'NEEDS_NAME', decidedBy: 'test', scopes: [], pendientesNombre: [pendiente] },
+      confirmarNombre: async (_p: unknown, escrito: string) => {
+        const { mismoNombre } = await import('../../domain/contact/nombre');
+        if (!fullName || !mismoNombre(escrito, fullName)) return [];
+        confirmado = true;
+        return [pendiente];
+      },
+    },
+  });
+  return h;
+}
+
+test('primera vez: pide el nombre, lo confirma y entrega lo que había pedido', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-06-15T12:00:00.000Z') });
+  const h = harnessSinNombre();
+  h.search.periodResults.set('2026-03', [document('factura-marzo', 'FACTURA_2026-03.pdf', 'FACTURA', '2026-03')]);
+
+  const pregunta = await h.handle('pásame la factura de marzo de 2026');
+  assert.match(pregunta?.text ?? '', /nombre completo/);
+  assert.deepEqual(h.search.searches, [], 'sin nombre no se busca nada');
+
+  const reply = await h.handle('ana ruíz soto');
+  assert.deepEqual(entregados(h), ['FACTURA_2026-03.pdf']);
+  assert.match(reply?.text ?? '', /^Gracias, Ana, ya quedó/);
+  assert.equal(h.requests.state.pideNombre ?? null, null);
+});
+
+test('un nombre a medias no cuenta como intento; uno distinto sí', async () => {
+  const h = harnessSinNombre();
+  await h.handle('hola');
+  assert.match((await h.handle('Ana'))?.text ?? '', /con apellidos/);
+  assert.equal(h.requests.state.pideNombre?.intentos, 0);
+
+  assert.match((await h.handle('Ana Ruiz'))?.text ?? '', /no coincide/);
+  assert.equal(h.requests.state.pideNombre?.intentos, 1);
+  assert.deepEqual(h.delivered, []);
+});
+
+test('tres nombres equivocados: pasa al equipo y ya no se le vuelve a preguntar', async () => {
+  const h = harnessSinNombre();
+  await h.handle('necesito mi factura de marzo');
+  await h.handle('Juan Pérez');
+  await h.handle('Juan Pérez López');
+  const tercera = await h.handle('Pedro Pérez López');
+  assert.match(tercera?.text ?? '', /reviso con el equipo/);
+  assert.equal(h.escalations.length, 1);
+  assert.match(String((h.escalations[0] as { subject: string }).subject), /^Confirmar identidad/);
+
+  const despues = await h.handle('Ana Ruiz Soto');
+  assert.match(despues?.text ?? '', /reviso con el equipo/);
+  assert.equal(h.escalations.length, 1, 'un solo caso');
+  assert.deepEqual(h.delivered, []);
+});
+
+test('si el equipo no registró el nombre, el primer intento ya pasa a una persona', async () => {
+  const h = harnessSinNombre(null);
+  await h.handle('necesito mi factura de marzo');
+  const reply = await h.handle('Ana Ruiz Soto');
+  assert.match(reply?.text ?? '', /reviso con el equipo/);
+  assert.equal(h.escalations.length, 1);
+});
+
+for (const coincide of [true, false]) {
+  test(`número desconocido ${coincide ? 'con' : 'sin'} nombre registrado: misma respuesta, ${coincide ? 'con' : 'sin'} aviso al equipo`, async () => {
+    const h = makeHarness({
+      decision: 'DENY_NO_MEMBERSHIP',
+      scopes: [],
+      scope: { registradosConNombre: async () => coincide ? [{ ...pendienteAna, waId: '521999@c.us' }] : [] },
+    });
+    assert.equal(await h.handle('hola, buenas tardes'), null, 'a un desconocido que no pide nada no se le contesta');
+
+    assert.match((await h.handle('necesito mi factura de marzo'))?.text ?? '', /nombre completo/);
+    const reply = await h.handle('Ana Ruiz Soto');
+    assert.equal(reply?.text, 'Gracias. Lo reviso con el equipo y te aviso por aquí.');
+    assert.equal(h.escalations.length, coincide ? 1 : 0);
+    assert.deepEqual(h.search.searches, []);
+    assert.deepEqual(h.delivered, []);
+  });
+}
 
 // ── Queja y petición en el mismo mensaje: ninguna se pierde ─────────────
 

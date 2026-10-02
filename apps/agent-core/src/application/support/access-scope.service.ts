@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { DocCategory } from '@prisma/client';
 import { PrismaService } from '../../infrastructure/persistence/prisma.service';
 import { separarChat } from '../../domain/message/linea';
+import { mismoNombre, tokensNombre } from '../../domain/contact/nombre';
 
 /**
  * LA frontera de seguridad del módulo de soporte.
@@ -28,7 +29,9 @@ export type AccessDecision =
   | 'DENY_NO_MEMBERSHIP'
   | 'DENY_UNVERIFIED'
   | 'DENY_NO_GRANT'
-  | 'DENY_PERIOD';
+  | 'DENY_PERIOD'
+  /** Tiene membresía, pero este número todavía no confirmó su nombre. */
+  | 'NEEDS_NAME';
 
 /** Una categoría permitida, con su ventana de periodo (null = sin límite). */
 export interface CategoryWindow {
@@ -48,6 +51,21 @@ export interface OrgScope {
    * distinta y lleva a la corrección equivocada.
    */
   strippedByVerification: DocCategory[];
+  /**
+   * Solo documentos cuyo titular lleva TODAS estas palabras (ver
+   * domain/contact/nombre.ts). Es lo que separa a dos clientes de una misma
+   * empresa. Ausente = sin filtro: MANAGER y ADMIN ven toda su empresa.
+   */
+  titular?: string[];
+}
+
+/** Una membresía que espera a que el número confirme su nombre. */
+export interface NombrePendiente {
+  membershipId: string;
+  organizationId: string;
+  organizationName: string;
+  /** null = el equipo aún no registra el nombre: no hay contra qué comparar. */
+  fullName: string | null;
 }
 
 export interface ScopeResult {
@@ -55,6 +73,8 @@ export interface ScopeResult {
   /** Nombre de la regla que decidió. Va tal cual a AccessAudit. */
   decidedBy: string;
   scopes: OrgScope[];
+  /** Solo con NEEDS_NAME: las membresías que esperan el nombre. */
+  pendientesNombre?: NombrePendiente[];
 }
 
 @Injectable()
@@ -81,6 +101,71 @@ export class AccessScopeService {
     } catch {
       // Sin log: quien llama está en medio de contestarle a una persona.
     }
+  }
+
+  /**
+   * El número escribió su nombre completo: se confirma en cada membresía
+   * pendiente cuyo nombre registrado coincide. Devuelve las que quedaron
+   * confirmadas (vacío = no coincidió con ninguna).
+   */
+  async confirmarNombre(
+    pendientes: readonly NombrePendiente[],
+    escrito: string,
+  ): Promise<NombrePendiente[]> {
+    const coinciden = pendientes.filter(
+      (p) => p.fullName !== null && mismoNombre(escrito, p.fullName),
+    );
+    if (coinciden.length === 0) return [];
+
+    await this.prisma.membership.updateMany({
+      where: { id: { in: coinciden.map((p) => p.membershipId) }, nameConfirmedAt: null },
+      data: { nameConfirmedAt: new Date() },
+    });
+    return coinciden;
+  }
+
+  /**
+   * Un número sin membresía dice llamarse así: ¿hay alguien registrado con
+   * ese nombre? Por la línea de una empresa, solo en esa empresa. Sirve
+   * para avisarle al equipo, NUNCA para dar acceso: el nombre no es una
+   * credencial.
+   */
+  async registradosConNombre(
+    escrito: string,
+    chatId?: string,
+  ): Promise<Array<{ membershipId: string; organizationId: string; organizationName: string; fullName: string; waId: string }>> {
+    if (tokensNombre(escrito).length < 2) return [];
+
+    const linea = chatId ? separarChat(chatId).linea : null;
+    const empresa = linea
+      ? await this.prisma.organization.findUnique({ where: { waLineId: linea }, select: { id: true } })
+      : null;
+    if (linea && !empresa) return [];
+
+    const candidatos = await this.prisma.membership.findMany({
+      where: {
+        fullName: { not: null },
+        revokedAt: null,
+        organization: { active: true },
+        ...(empresa ? { organizationId: empresa.id } : {}),
+      },
+      select: {
+        id: true,
+        fullName: true,
+        organization: { select: { id: true, name: true } },
+        contact: { select: { waId: true } },
+      },
+    });
+
+    return candidatos
+      .filter((m) => mismoNombre(escrito, m.fullName!))
+      .map((m) => ({
+        membershipId: m.id,
+        organizationId: m.organization.id,
+        organizationName: m.organization.name,
+        fullName: m.fullName!,
+        waId: m.contact.waId,
+      }));
   }
 
   /**
@@ -134,9 +219,30 @@ export class AccessScopeService {
     }
 
     const scopes: OrgScope[] = [];
+    const pendientesNombre: NombrePendiente[] = [];
     let blockedByVerification = false;
+    let sinTitular = false;
 
     for (const membership of memberships) {
+      // Antes que nada, el nombre: sin confirmarlo, esta membresía no
+      // abre nada. Se pide una vez por número (ver SupportStrategy).
+      if (!membership.nameConfirmedAt || !membership.fullName) {
+        pendientesNombre.push({
+          membershipId: membership.id,
+          organizationId: membership.organization.id,
+          organizationName: membership.organization.name,
+          fullName: membership.fullName,
+        });
+        continue;
+      }
+
+      // Un VIEWER es un cliente: solo lo que va a su nombre.
+      const titular = membership.role === 'VIEWER' ? tokensNombre(membership.fullName) : undefined;
+      if (titular && titular.length === 0) {
+        sinTitular = true;
+        continue;
+      }
+
       const verified = membership.verifiedAt !== null;
 
       // MANAGER y ADMIN ven todas las categorías de su organización sin
@@ -172,7 +278,25 @@ export class AccessScopeService {
         organizationName: membership.organization.name,
         windows: allowed,
         strippedByVerification: stripped,
+        ...(titular ? { titular } : {}),
       });
+    }
+
+    if (scopes.length === 0 && pendientesNombre.length > 0) {
+      return {
+        decision: 'NEEDS_NAME',
+        decidedBy: 'nombre completo sin confirmar por este número',
+        scopes: [],
+        pendientesNombre,
+      };
+    }
+
+    if (scopes.length === 0 && sinTitular) {
+      return {
+        decision: 'DENY_NO_GRANT',
+        decidedBy: 'cliente sin nombre registrado para filtrar sus documentos',
+        scopes: [],
+      };
     }
 
     if (scopes.length === 0) {
