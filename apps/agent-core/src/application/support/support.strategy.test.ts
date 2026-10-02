@@ -2591,3 +2591,61 @@ test('mencionar una empresa autorizada en una queja no contesta la pregunta de e
   assert.deepEqual(h.search.searches, []);
   assert.deepEqual(h.delivered, []);
 });
+
+// ── Números casuales con una lista abierta ─────────────────────────────
+// Caso real: con la lista en pantalla, "¿me lo puedes entregar a las 2:00
+// am?" y luego "O las 2?" mandó la factura 2 sin que nadie la pidiera.
+
+for (const casual of [
+  'llego a las 2',
+  'tengo 2 minutos',
+  'somos 2 personas',
+  '1 cosa más: mañana hablamos',
+  'Roberto, nos vemos a las 2',
+  'a las 1 y 2 salgo',
+  'Son las 2?',
+]) {
+  test(`con lista abierta, "${casual}" no elige ni entrega`, async () => {
+    const { h } = pendingDocumentOptions();
+    await h.handle(casual);
+    assert.deepEqual(h.delivered, []);
+    assert.equal(h.requests.state.porConfirmar ?? null, null);
+  });
+}
+
+for (const dudosa of ['O las 2?', '¿la 2?', 'las 2', 'el 2?']) {
+  test(`con lista abierta, "${dudosa}" confirma antes de mandar`, async () => {
+    const { h, documentB } = pendingDocumentOptions();
+    const reply = await h.handle(dudosa);
+    assert.deepEqual(h.delivered, []);
+    assert.match(reply?.text ?? '', /confirmar/i);
+    assert.match(reply?.text ?? '', new RegExp(String(documentB.name).replace('.', '\.')));
+
+    await h.handle('sí');
+    assert.deepEqual(entregados(h), [documentB.name]);
+  });
+}
+
+for (const clara of ['2', 'la 2', 'el 2 porfa', 'dame la segunda', 'opción 2', 'Solo la 2', 'me pasas la 2']) {
+  test(`con lista abierta, "${clara}" entrega la 2 sin preguntar`, async () => {
+    const { h, documentB } = pendingDocumentOptions();
+    await h.handle(clara);
+    assert.deepEqual(entregados(h), [documentB.name]);
+  });
+}
+
+test('"¿me lo puedes entregar a las 2:00 am?" con lista abierta: se entrega al momento, sin escalar', async () => {
+  const { h } = pendingDocumentOptions();
+  const reply = await h.handle('Pero me lo puedes entregar a las 2:00 am?');
+  assert.deepEqual(h.delivered, []);
+  assert.match(reply?.text ?? '', /al momento/);
+  assert.match(reply?.text ?? '', /número/);
+  assert.equal(h.requests.state.opciones?.length, 2, 'la lista sigue viva');
+});
+
+test('"No, gracias" a la confirmación no manda nada', async () => {
+  const { h } = pendingDocumentOptions();
+  await h.handle('O las 2?');
+  await h.handle('no');
+  assert.deepEqual(h.delivered, []);
+});

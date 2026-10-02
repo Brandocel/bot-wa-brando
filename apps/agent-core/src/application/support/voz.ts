@@ -230,6 +230,11 @@ export function comoUbicarVarios(): string {
   return 'Si tienes el *folio* o el *nombre del archivo*, compártemelo y vuelvo a buscar.';
 }
 
+/** Pregunta cuándo llega: se entrega al momento, no hay horario. */
+export function entregaAlMomento(): string {
+  return 'Te lo mando al momento, por aquí mismo: no hace falta esperar a ninguna hora.\nDime el *número* de la lista y te lo paso.';
+}
+
 export function numerosFueraDeLista(cuantas: number): string {
   return `Esos números no están en la lista: van del *1* al *${cuantas}*. ¿Cuáles te mando?`;
 }

@@ -31,7 +31,10 @@ import {
   esPausa,
   esQuejaDeNoRecibido,
   esRechazo,
+  leerEleccion,
   leerNumero,
+  numeroCasual,
+  preguntaCuandoEntrega,
   mencionaRechazo,
   normalizar,
   parseQueryTieneDatos,
@@ -259,8 +262,18 @@ export class SupportStrategy {
      * "no" lo descarta y se vuelve a preguntar; cualquier otra cosa se
      * atiende como mensaje nuevo (la confirmación se olvida).
      */
+    // "¿Me lo puedes entregar a las 2?" con la lista en pantalla: pregunta
+    // cuándo, no elige ni pide una persona. Antes caía en la charla, que lo
+    // escalaba, y el "O las 2?" de después elegía la opción 2.
+    const hayListaDeDocumentos = sol.opciones?.some((o) => o.tipo === 'documento') ?? false;
+    if (preguntaCuandoEntrega(message.body) && (hayListaDeDocumentos || (sol.porConfirmar?.length ?? 0) > 0)) {
+      return { text: voz.entregaAlMomento(), awaiting: 'CLIENTE' };
+    }
+
     if (sol.porConfirmar?.length) {
       const opciones = (sol.opciones ?? []).filter((o) => o.tipo === 'documento');
+      // "Dame un segundo" no contesta la confirmación, pero tampoco la tira.
+      if (esPausa(message.body)) return { text: voz.respuestaPausa(), awaiting: 'CLIENTE' };
       await this.solicitudes.guardar(ctx.conversationId, { porConfirmar: null });
       if (esAfirmacion(message.body)) {
         const elegidas = opciones.filter((o) => sol.porConfirmar!.includes(o.n));
@@ -271,14 +284,21 @@ export class SupportStrategy {
       sol = await this.solicitudes.actual(ctx.conversationId);
     }
 
-    const varias = leerVariasOpciones(message.body);
-    if (varias !== null && sol.opciones?.some((o) => o.tipo === 'documento')) {
+    // "a las 1 y 3 salgo" no es elegir la 1 y la 3.
+    const varias = numeroCasual(message.body) ? null : leerVariasOpciones(message.body);
+    if (varias !== null && hayListaDeDocumentos) {
       return this.entregarVariasOpciones(varias, turn, sol);
     }
 
-    const eleccion = leerNumero(message.body);
+    // Solo lo que no admite otra lectura se manda directo; "¿la 2?" u "o
+    // las 2" se confirma, y "llego a las 2" ni siquiera cuenta.
+    const eleccion = leerEleccion(message.body);
     if (eleccion !== null) {
-      const resuelto = await this.resolverOpcion(eleccion, turn, sol);
+      const opcion = sol.opciones?.find((o) => o.n === eleccion.n);
+      if (!eleccion.clara && opcion?.tipo === 'documento') {
+        return this.confirmarOpciones(turn, [opcion]);
+      }
+      const resuelto = await this.resolverOpcion(eleccion.n, turn, sol);
       if (resuelto) return resuelto;
     }
 
@@ -1004,9 +1024,13 @@ export class SupportStrategy {
       decidedBy: 'dentro del alcance',
     });
 
+    // "También te mando" solo cuando sigue a otra entrega y lo pidió como
+    // una más ("y también la de marzo"); una petición nueva no es "también".
+    const ultimoDelBot = [...turn.history].reverse().find((t) => t.role === 'bot');
     const yaEntregoAlgo =
       otraMas ??
-      turn.history.some((t) => t.role === 'bot' && t.text.startsWith('[documento]'));
+      ((ultimoDelBot?.text.startsWith('[documento]') ?? false) &&
+        /\b(?:tambien|ademas|otra|otro|y la|y el)\b/.test(normalizar(turn.message.body)));
     const que =
       comoLlamarlo ??
       `${nombreConArticulo(doc.category)}${doc.period ? ` de ${mesEnPalabras(doc.period)}` : ''}`;
@@ -1168,26 +1192,32 @@ export class SupportStrategy {
 
     // Con negaciones ("la 2 no, la 3", "todas menos la 2") se confirma
     // antes de mandar: son las frases que, mal escritas, se leen al revés.
-    if (conExclusiones) {
-      const docs: Document[] = [];
-      const unavailable: string[] = [];
-      for (const opcion of elegidas) {
-        const doc = await this.search.byId(opcion.id, turn.scopes);
-        if (doc) docs.push(doc);
-        else unavailable.push(opcion.id);
-      }
-      if (unavailable.length > 0) return this.savedIdUnavailable(turn, unavailable);
-
-      await this.solicitudes.guardar(turn.ctx.conversationId, {
-        porConfirmar: elegidas.map((o) => o.n),
-      });
-      return {
-        text: voz.confirmarSeleccion(elegidas.map((o, index) => `*${o.n}.* ${docs[index]!.name}`)),
-        awaiting: 'CLIENTE',
-      };
-    }
+    if (conExclusiones) return this.confirmarOpciones(turn, elegidas);
 
     return this.mandarOpciones(turn, elegidas, opciones);
+  }
+
+  /**
+   * "Para confirmar, te mando: ..." y se espera el sí. Los ids se
+   * revalidan antes de nombrarlos: la lista pudo quedar vieja.
+   */
+  private async confirmarOpciones(turn: Turn, elegidas: readonly Opcion[]): Promise<StrategyReply> {
+    const docs: Document[] = [];
+    const unavailable: string[] = [];
+    for (const opcion of elegidas) {
+      const doc = await this.search.byId(opcion.id, turn.scopes);
+      if (doc) docs.push(doc);
+      else unavailable.push(opcion.id);
+    }
+    if (unavailable.length > 0) return this.savedIdUnavailable(turn, unavailable);
+
+    await this.solicitudes.guardar(turn.ctx.conversationId, {
+      porConfirmar: elegidas.map((o) => o.n),
+    });
+    return {
+      text: voz.confirmarSeleccion(elegidas.map((o, index) => `*${o.n}.* ${docs[index]!.name}`)),
+      awaiting: 'CLIENTE',
+    };
   }
 
   /** Entrega opciones ya decididas de la lista, conservándola en pantalla. */

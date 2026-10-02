@@ -361,6 +361,67 @@ export function leerNumero(texto: string): number | null {
   return numeros.length === 1 ? numeros[0]! : null;
 }
 
+const CANTIDAD_O_HORA =
+  /\b(?:a las|son las|como a las|minutos?|mins?|horas?|hrs?|segundos|dias?|semanas?|meses|anos|personas?|gente|cosas?|veces|pesos|cuadras|km|kilos?|am|pm)\b|\b\d{1,2}\s*(?:am|pm|hrs?)\b|\bsomos\b|\btengo\b|\bllego\b|\bsalgo\b|\bnos vemos\b/;
+
+/**
+ * ¿El número del mensaje es una hora o una cantidad, no una opción?
+ *
+ * "llego a las 2", "tengo 2 minutos", "somos 3 personas", "a las 1 y 3
+ * salgo". Con una lista abierta, esas frases se tomaban como elegir la 2
+ * o la 3 y se mandaba un documento que nadie pidió.
+ */
+export function numeroCasual(texto: string): boolean {
+  return CANTIDAD_O_HORA.test(normalizar(texto)) || /\d{1,2}:\d{2}/.test(texto);
+}
+
+export interface Eleccion {
+  n: number;
+  /**
+   * true = la frase solo puede ser elegir de la lista ("2", "la 2", "dame
+   * la segunda"). false = trae el número pero se puede leer de otra forma
+   * ("¿la 2?", "o las 2", "las 2" = ¿las dos?): se confirma antes de mandar.
+   */
+  clara: boolean;
+}
+
+const RELLENO =
+  /^(?:(?:oye|ok|va|sale|bueno|pues|entonces|y|mejor|ahora|si|no|solo|nada mas|nomas|porfa|plis|por favor)\s+)+|(?:\s+(?:porfa|plis|pls|por favor|gracias|please))+$/g;
+const ELECCION_CLARA =
+  /^(?:(?:necesito|dame|mandame|pasame|enviame|quiero|elijo|escojo|prefiero|me quedo con|me (?:puedes |podrias )?(?:dar|mandar|pasar|enviar)|me (?:das|mandas|pasas|envias))\s+)?(?:(?:el|la)\s+)?(?:(?:numero|num|opcion)\s+)?(?:[1-9]|primer[oa]|segund[oa]|tercer[oa]|cuart[oa]|quint[oa]|uno|dos|tres|cuatro|cinco)(?:\s+(?:opcion|documento|archivo))?$/;
+
+/**
+ * La opción de una lista que el mensaje elige, y si la elección es clara.
+ *
+ * Con la lista abierta, un número suelto en una charla no es elegir:
+ * "O las 2?" después de preguntar por un horario mandó la factura 2. Solo
+ * se manda directo lo que no admite otra lectura; lo dudoso se confirma y
+ * lo que es claramente hora o cantidad no toca la lista.
+ */
+export function leerEleccion(texto: string): Eleccion | null {
+  if (numeroCasual(texto)) return null;
+  const n = leerNumero(texto);
+  if (n === null) return null;
+
+  const limpio = normalizar(texto).replace(RELLENO, '').trim();
+  const pregunta = /[?¿]/.test(texto);
+  return { n, clara: !pregunta && ELECCION_CLARA.test(limpio) };
+}
+
+/**
+ * "¿Me lo puedes entregar a las 2?", "¿cuándo me lo mandas?", "¿me lo
+ * mandas mañana?": pregunta cuándo llega, no pide otro documento ni una
+ * persona. El bot entrega al momento: la respuesta es esa.
+ */
+export function preguntaCuandoEntrega(texto: string): boolean {
+  const limpio = normalizar(texto);
+  if (limpio.length > 90) return false;
+  const verbo = /\b(?:entregar|entregas|entregan|entregarias|mandar|mandas|mandarias|enviar|envias|pasar|pasas|llega|llegaria|tener|tienes)\b/;
+  const cuando = /\b(?:a las|cuando|a que hora|manana|hoy|en la noche|en la tarde|en la manana|mas tarde|al rato|luego|horario)\b/;
+  return verbo.test(limpio) && cuando.test(limpio) &&
+    !/\b(?:factura|contrato|cotizacion|reporte|poliza)s?\s+de\b/.test(limpio);
+}
+
 /**
  * ¿Está diciendo que no le llegó lo que mandamos?
  *
@@ -421,7 +482,7 @@ export function esInventario(texto: string): boolean {
   if (disponibilidad.test(normalizar(texto))) return true;
   if (preguntaMeses(texto)) return true;
 
-  return /\b((que|cuales|cual) (documentos|docs|archivos|opciones|cosas|meses|fechas)\b|opciones de lo que tienes|cuales tienes|cuales hay|(de que|de cuales) (meses|fechas)|que tienes\b|que hay\b|que( (doc|docs|documento|documentos|archivo|archivos))? me puedes (dar|entregar|mandar|pasar|enviar)|que puedes (darme|entregarme|mandarme|pasarme|enviarme)|lista(me)? (lo que|los documentos|todo)|catalogo|inventario|todo lo que (tienes|tengas|haya))/.test(
+  return /\b((que|cuales|cual) (documentos|docs|archivos|opciones|cosas|meses|fechas)\b|opciones de lo que tienes|cuales tienes\b|cuales hay\b|(de que|de cuales) (meses|fechas)|que tienes\b|que hay\b|que( (doc|docs|documento|documentos|archivo|archivos))? me puedes (dar|entregar|mandar|pasar|enviar)|que puedes (darme|entregarme|mandarme|pasarme|enviarme)|lista(me)? (lo que|los documentos|todo)|catalogo|inventario|todo lo que (tienes|tengas|haya))/.test(
     limpio,
   );
 }
