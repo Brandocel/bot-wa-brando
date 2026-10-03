@@ -7,15 +7,17 @@ import { LLM_PORT, type LlmPort } from '../ports/llm.port';
 import { ConversationHistoryService } from '../support/conversation-history.service';
 import { TicketService } from '../support/ticket.service';
 import type { LecturaVenta, StrategyContext, StrategyReply } from '../support/support.strategy';
-import { ESQUEMA_VENTA, SISTEMA_VENTA } from './guion-venta';
+import { ESQUEMA_VENTA, SISTEMA_CORRECCION, SISTEMA_VENTA } from './guion-venta';
 import {
   abiertoEn,
   cuandoEnPalabras,
   enZona,
+  fechaEnPalabras,
   horarioEnPalabras,
   leerHorario,
   siguienteApertura,
 } from './horario';
+import { leerPresupuesto, montosDePresupuesto, presupuestoParaModelo } from './presupuesto';
 import { avanceDelPedido, leerLectura, mezclar, type LecturaModelo } from './lectura';
 import {
   aplicar,
@@ -27,6 +29,7 @@ import {
   pedidoVacio,
   pesos,
   resumen,
+  subtotal,
   type Accion,
   type Faltante,
   type Pedido,
@@ -39,6 +42,12 @@ import {
 const VIGENCIA_ARMANDO_MS = 6 * 60 * 60 * 1000;
 /** Cuánto atrás se le recuerda al modelo un pedido ya enviado (postventa). */
 const VENTANA_POSTVENTA_MS = 24 * 60 * 60 * 1000;
+/**
+ * Al pasar la plática a una persona, el bot se calla este tiempo (lo mismo que
+ * "Atender yo" en el panel). Antes abría el ticket y seguía contestando: el
+ * cliente tenía dos voces en el chat y no sabía a quién hacerle caso.
+ */
+const SILENCIO_ESCALADO_MS = 4 * 60 * 60 * 1000;
 
 const NOMBRE_ENTREGA: Record<DeliveryMode, string> = {
   RECOGER: 'pasar a recoger',
@@ -164,10 +173,15 @@ export class SalesStrategy {
     });
 
     const turnos = await this.history.recent(ctx.conversationId, { excludeId: message.id });
+    // Del más nuevo al más viejo: "tengo 250" de hace tres mensajes sigue valiendo.
+    const presupuesto = leerPresupuesto([
+      texto,
+      ...turnos.filter((t) => t.role === 'cliente').map((t) => t.text).reverse(),
+    ]);
     const modelo = await this.llm.extract<RespuestaModelo>({
       tarea: 'conversacion',
       system: SISTEMA_VENTA,
-      user: contexto(negocio, pedido, recientes, turnos, texto, ahora),
+      user: contexto(negocio, pedido, recientes, turnos, texto, ahora, presupuesto),
       schema: ESQUEMA_VENTA,
       validate: validarRespuesta,
     });
@@ -190,7 +204,11 @@ export class SalesStrategy {
         reason: 'pidio_humano',
       });
       await this.guardarLectura(lectura, orden?.id ?? null, modelo.lectura, pedido, false, { cancelo: false, enviado: false });
-      return { text: `Claro, le paso tu mensaje a alguien de ${negocio.nombre} y te escribe por aquí.`, awaiting: 'AGENTE' };
+      return {
+        text: `Claro, le paso tu mensaje a alguien de ${negocio.nombre} y te escribe por aquí.`,
+        awaiting: 'AGENTE',
+        silencioMs: SILENCIO_ESCALADO_MS,
+      };
     }
 
     if (r.cancelar) {
@@ -217,10 +235,57 @@ export class SalesStrategy {
 
     await this.guardarLectura(lectura, guardado?.id ?? null, modelo.lectura, pedido, false, { cancelo: false, enviado: false });
 
-    const partes = [textoSeguro(modelo.respuesta, '¿Qué más te gustaría agregar?', pedido, negocio)];
-    if (r.avisos.length) partes.push(r.avisos.join(' '));
+    const permitidos = montosPermitidos(pedido, negocio.catalogo, negocio.reglas);
+    if (presupuesto) for (const m of montosDePresupuesto(negocio.catalogo, presupuesto)) permitidos.add(m);
+
+    // Si una regla frenó algo, el texto del modelo daba por hecho lo que NO
+    // pasó ("listo, te lo dejamos en Veracruz" + "a esa zona no llegamos" en
+    // el mismo mensaje). Y si trae montos que no salen de la carta, tampoco
+    // sale. En los dos casos se pide un texto nuevo con lo que de verdad quedó.
+    const propio = modelo.respuesta.trim();
+    let respuesta: string | null = propio && r.rechazos.length === 0 && !inventaMontos(propio, permitidos) ? propio : null;
+    if (respuesta === null) {
+      respuesta = await this.corregir(negocio, pedido, recientes, turnos, texto, ahora, presupuesto, r.avisos, propio, permitidos);
+    }
+
+    const partes: string[] = [];
+    if (respuesta) partes.push(respuesta);
+    else {
+      // Sin texto que se pueda mandar: lo que no se pudo, primero, y luego
+      // lo que falta. Nunca la misma frase de relleno en cada turno.
+      if (r.avisos.length) partes.push(r.avisos.join(' '));
+      partes.push(siguientePaso(pedido, negocio, ahora));
+    }
     if (r.cambio && pedido.items.length > 0) partes.push('Llevas:\n' + resumen(pedido));
     return { text: partes.join('\n\n'), awaiting: 'CLIENTE' };
+  }
+
+  /** Segundo intento de texto, ya sabiendo qué se rechazó. Null si tampoco sirve. */
+  private async corregir(
+    negocio: Negocio,
+    pedido: Pedido,
+    recientes: Array<{ number: number; status: string; etaAt: Date | null; rejectReason: string | null }>,
+    turnos: Array<{ role: string; text: string }>,
+    texto: string,
+    ahora: Date,
+    presupuesto: number | null,
+    avisos: string[],
+    propio: string,
+    permitidos: Set<number>,
+  ): Promise<string | null> {
+    const borrador = await this.llm.draft({
+      tarea: 'redaccion',
+      system: SISTEMA_CORRECCION,
+      user: [
+        contexto(negocio, pedido, recientes, turnos, texto, ahora, presupuesto),
+        avisos.length ? `AVISOS DEL SISTEMA (esto NO se hizo):\n${avisos.join('\n')}` : '',
+        propio ? `LO QUE SE IBA A CONTESTAR (no se puede mandar así):\n${propio}` : '',
+      ].filter(Boolean).join('\n\n'),
+      maxTokens: 400,
+    });
+    const limpio = borrador?.trim() ?? '';
+    if (!limpio || inventaMontos(limpio, permitidos)) return null;
+    return limpio;
   }
 
   /** El "sí" al resumen: el pedido pasa a la empresa. */
@@ -394,9 +459,11 @@ function contexto(
   turnos: Array<{ role: string; text: string }>,
   texto: string,
   ahora: Date,
+  presupuesto: number | null = null,
 ): string {
   const { reglas } = n;
   const local = enZona(ahora, reglas.timezone);
+  const manana = new Date(ahora.getTime() + 24 * 60 * 60 * 1000);
   const abierto = abiertoEn(reglas.horario, ahora, reglas.timezone);
   const abre = abierto ? null : siguienteApertura(reglas.horario, ahora, reglas.timezone);
 
@@ -414,9 +481,14 @@ function contexto(
     n.pitch ? `LO QUE LA EMPRESA QUIERE QUE SEPAS:\n${n.pitch}` : '',
     `AHORA (hora del negocio): ${local.fecha} ${local.hhmm}, ${abierto ? 'ABIERTO' : 'CERRADO'}` +
       (abre ? `; abre ${cuandoEnPalabras(abre, ahora, reglas.timezone)}` : ''),
+    `HOY ES: ${fechaEnPalabras(ahora, reglas.timezone)}. MAÑANA ES: ${fechaEnPalabras(manana, reglas.timezone)}. ` +
+      'Solo se programa para hoy o mañana.',
     `HORARIO: ${horarioEnPalabras(reglas.horario)}`,
     `ENTREGA: ${reglas.deliveryModes.map((m) => `${m} (${NOMBRE_ENTREGA[m]})`).join(', ') || 'sin definir'}` +
-      (reglas.zonas.length ? `\nZONAS A DOMICILIO: ${reglas.zonas.map((z) => `${z.nombre} ${pesos(z.costoCents)}`).join(', ')}` : '') +
+      (reglas.zonas.length
+        ? `\nZONAS A DOMICILIO (solo estas; cualquier otro lugar = no llegamos): ` +
+          reglas.zonas.map((z) => `${z.nombre} ${pesos(z.costoCents)}`).join(', ')
+        : '') +
       `\nTIEMPO DE PREPARACIÓN: unos ${reglas.prepMinutes} minutos` +
       (reglas.minOrderCents ? `\nPEDIDO MÍNIMO: ${pesos(reglas.minOrderCents)}` : ''),
     `CARTA (usa SOLO estos id):\n${carta.join('\n')}`,
@@ -429,6 +501,7 @@ function contexto(
           (o.etaAt ? ` listo ${cuandoEnPalabras(o.etaAt, ahora, reglas.timezone)}` : '') +
           (o.rejectReason ? ` (${o.rejectReason})` : '')).join('; ')
       : '',
+    presupuesto ? presupuestoParaModelo(n.catalogo, presupuesto, subtotal(p)) : '',
     turnos.length ? 'PLÁTICA RECIENTE:\n' + turnos.map((t) => `${t.role}: ${t.text}`).join('\n') : '',
     `MENSAJE NUEVO DEL CLIENTE:\n${texto}`,
   ].filter(Boolean).join('\n\n');
@@ -454,11 +527,19 @@ function resumenFinal(p: Pedido, n: Negocio, ahora: Date): string {
   ].join('\n\n');
 }
 
+/** La pregunta que sigue cuando no hay texto del modelo que se pueda mandar. */
+function siguientePaso(p: Pedido, n: Negocio, ahora: Date): string {
+  const falta = faltantes(p, n.reglas, ahora, n.catalogo);
+  if (falta.length === 0) return '¿Así te lo dejo o le cambio algo?';
+  if (falta[0] === 'productos') return '¿Ya sabes qué se te antoja o te recomiendo algo?';
+  return preguntaPor(falta[0]!, p, n, ahora);
+}
+
 /** Lo que falta, preguntado como alternativa cuando se puede. */
 function preguntaPor(f: Faltante, p: Pedido, n: Negocio, ahora: Date): string {
   const { reglas } = n;
   switch (f) {
-    case 'productos': return '¿Qué se te antoja? Te puedo recomendar según para cuántos sea.';
+    case 'productos': return '¿Ya sabes qué se te antoja o te recomiendo algo?';
     case 'dia': {
       const fuera = fueraDeDia(p, n.catalogo, reglas, ahora);
       return fuera.map((c) => `${c.name} solo se vende ${diasEnPalabras(c.availableDays ?? [])}.`).join(' ') +

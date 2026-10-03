@@ -117,6 +117,11 @@ export interface StrategyReply {
    * el turno entero (ver SalesStrategy.guardarLectura).
    */
   lecturaVenta?: LecturaVenta;
+  /**
+   * El bot se calla este tiempo en el hilo (handoff), porque lo tomó una
+   * persona. Se escribe con la transacción del turno, como lecturaVenta.
+   */
+  silencioMs?: number;
 }
 
 export interface LecturaVenta {

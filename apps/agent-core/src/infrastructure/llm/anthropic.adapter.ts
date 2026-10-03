@@ -11,9 +11,20 @@ import { ModelosService } from '../persistence/modelos.service';
  * modelos que piensan por defecto el razonamiento también se paga. Haiku
  * 4.5 no acepta el parámetro: ahí no se manda.
  */
-function esfuerzo(model: string): { effort?: 'low' } {
-  return /haiku/i.test(model) ? {} : { effort: 'low' };
+function esfuerzo(model: string, tarea?: TareaLlm): { effort?: 'low' | 'medium' } {
+  if (/haiku/i.test(model)) return {};
+  // La conversación de venta sí razona: qué pidió, qué ya se sabe, qué regla
+  // aplica. Con esfuerzo bajo confundía preguntar con pedir y aceptaba
+  // zonas y fechas fuera de regla.
+  return { effort: tarea === 'conversacion' ? 'medium' : 'low' };
 }
+
+/**
+ * Tope de tokens de la extracción. En los modelos que piensan, el
+ * razonamiento cuenta dentro de este tope: con 512, la respuesta salía
+ * cortada, no validaba y el cliente recibía el mensaje de respaldo.
+ */
+const MAX_TOKENS_EXTRACCION = 4096;
 
 /**
  * ADAPTER del LlmPort contra la API de Anthropic.
@@ -58,7 +69,7 @@ export class AnthropicAdapter implements LlmPort {
       try {
         const response = await client.messages.create({
           model,
-          max_tokens: 512,
+          max_tokens: MAX_TOKENS_EXTRACCION,
           system: input.system,
           messages: [{ role: 'user', content: input.user }],
           output_config: {
@@ -68,7 +79,7 @@ export class AnthropicAdapter implements LlmPort {
             // Esfuerzo bajo a propósito: sacar tres campos de una frase corta
             // no es un problema difícil, y del otro lado hay una persona
             // mirando "escribiendo..." en WhatsApp.
-            ...esfuerzo(model),
+            ...esfuerzo(model, input.tarea),
           },
         });
 

@@ -40,15 +40,15 @@ export const MODELOS_DISPONIBLES: ModeloDisponible[] = [
   {
     id: 'claude-sonnet-5-5',
     nombre: 'Sonnet 5.5',
-    entrada: 3,
-    salida: 15,
+    entrada: 2,
+    salida: 10,
     descripcion: 'Equilibrio. Entiende mejor los mensajes mal escritos o ambiguos.',
   },
   {
     id: 'claude-opus-5-5',
     nombre: 'Opus 5.5',
-    entrada: 5,
-    salida: 25,
+    entrada: 4,
+    salida: 20,
     descripcion: 'El más capaz y el más caro. Rara vez hace falta para esto.',
   },
 ];

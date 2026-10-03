@@ -1,5 +1,5 @@
 import type { DeliveryMode } from '@prisma/client';
-import { abiertoEn, desdeLocal, enZona, type Horario } from './horario';
+import { abiertoEn, desdeLocal, enZona, sumarDias, type Horario } from './horario';
 
 /**
  * El pedido en curso y lo que se le puede hacer.
@@ -68,8 +68,16 @@ export interface Accion {
 
 export const MAX_CANTIDAD = 50;
 const MAX_RENGLONES = 30;
-/** Hasta cuántos días adelante se puede programar un pedido. */
-const MAX_DIAS_PROGRAMA = 14;
+/**
+ * Regla del negocio: se vende para hoy, en el momento. Si el cliente lo pide,
+ * se puede programar como máximo para mañana; nunca más lejos.
+ */
+const MAX_DIAS_PROGRAMA = 1;
+
+/** "sabor a elegir", "pendiente"...: una nota que todavía no dice nada. */
+function notaVacia(nota: string | null): boolean {
+  return !nota || /elegir|pendiente|por definir|sin definir/i.test(nota);
+}
 
 export function pedidoVacio(): Pedido {
   return {
@@ -101,6 +109,12 @@ export interface Resultado {
   cambio: boolean;
   /** Lo que no se pudo hacer, dicho para el cliente. */
   avisos: string[];
+  /**
+   * Qué regla frenó algo (zona, fecha, horario, producto). Si hay alguno, el
+   * texto que escribió el modelo daba por hecho algo que NO pasó y no se
+   * puede mandar tal cual.
+   */
+  rechazos: Array<'zona' | 'fecha' | 'horario' | 'producto'>;
   listo: boolean;
   cancelar: boolean;
   persona: boolean;
@@ -118,21 +132,28 @@ export function aplicar(
   ahora: Date,
 ): Resultado {
   const p: Pedido = { ...inicial, items: inicial.items.map((r) => ({ ...r })) };
-  const r: Resultado = { pedido: p, cambio: false, avisos: [], listo: false, cancelar: false, persona: false };
+  const r: Resultado = { pedido: p, cambio: false, avisos: [], rechazos: [], listo: false, cancelar: false, persona: false };
   const producto = (id: string) => catalogo.find((c) => c.id === id);
 
   for (const a of acciones) {
     switch (a.tipo) {
       case 'agregar': {
         const prod = producto(a.productoId);
-        if (!prod) { r.avisos.push('Eso no lo tengo en la carta.'); break; }
+        if (!prod) { r.avisos.push('Eso no lo tenemos en la carta.'); r.rechazos.push('producto'); break; }
         if (!seVendeEl(prod, p.scheduledFor ?? ahora, reglas.timezone)) {
           r.avisos.push(`${prod.name} solo se vende ${diasEnPalabras(prod.availableDays!)}.`);
         }
         const cantidad = Math.min(MAX_CANTIDAD, Math.max(1, Math.trunc(a.cantidad) || 1));
         const nota = a.texto.trim().slice(0, 120) || null;
         const igual = p.items.find((i) => i.productId === prod.id && i.nota === nota);
-        if (igual) igual.cantidad = Math.min(MAX_CANTIDAD, igual.cantidad + cantidad);
+        // El sabor de algo que ya estaba ("2 pollos, sabor a elegir" y luego
+        // "Pastor") es el MISMO renglón, no uno nuevo: sumarlo duplicaba el
+        // pedido ($510 + $510 por los mismos dos pollos).
+        const porDefinir = !igual && !notaVacia(nota)
+          ? p.items.find((i) => i.productId === prod.id && notaVacia(i.nota) && i.cantidad === cantidad)
+          : undefined;
+        if (porDefinir) porDefinir.nota = nota;
+        else if (igual) igual.cantidad = Math.min(MAX_CANTIDAD, igual.cantidad + cantidad);
         else if (p.items.length < MAX_RENGLONES) {
           p.items.push({ productId: prod.id, nombre: prod.name, precioCents: prod.priceCents, cantidad, nota });
         }
@@ -159,13 +180,21 @@ export function aplicar(
           r.avisos.push('Esa forma de entrega no la manejamos.');
           break;
         }
-        p.deliveryMode = a.modo;
         if (a.modo === 'DOMICILIO') {
-          if (a.texto.trim()) p.address = a.texto.trim().slice(0, 300);
           const zona = reglas.zonas.find((z) => normal(z.nombre) === normal(a.zona));
-          if (a.zona && !zona) r.avisos.push('A esa zona todavía no llegamos.');
+          // Una zona a la que no se llega NO entra al pedido, ni su dirección:
+          // antes se guardaba igual y el bot seguía hasta pedir el nombre
+          // "para cerrar" un pedido a Veracruz.
+          if (a.zona && reglas.zonas.length > 0 && !zona) {
+            r.avisos.push('A esa zona no llegamos a domicilio.');
+            r.rechazos.push('zona');
+            break;
+          }
+          p.deliveryMode = a.modo;
+          if (a.texto.trim()) p.address = a.texto.trim().slice(0, 300);
           if (zona) { p.zone = zona.nombre; p.deliveryCents = zona.costoCents; }
         } else {
+          p.deliveryMode = a.modo;
           if (a.modo === 'PAQUETERIA' && a.texto.trim()) p.address = a.texto.trim().slice(0, 300);
           else p.address = null;
           p.zone = null;
@@ -182,12 +211,15 @@ export function aplicar(
           r.avisos.push('Esa hora ya casi pasó; dime otra.');
           break;
         }
-        if (cuando.getTime() > ahora.getTime() + MAX_DIAS_PROGRAMA * 24 * 3600 * 1000) {
-          r.avisos.push('Solo puedo programar pedidos hasta dos semanas adelante.');
+        const limite = sumarDias(enZona(ahora, reglas.timezone).fecha, MAX_DIAS_PROGRAMA);
+        if (enZona(cuando, reglas.timezone).fecha > limite) {
+          r.avisos.push('Solo podemos programar pedidos para hoy o para mañana.');
+          r.rechazos.push('fecha');
           break;
         }
         if (!abiertoEn(reglas.horario, cuando, reglas.timezone)) {
           r.avisos.push('A esa hora estamos cerrados.');
+          r.rechazos.push('horario');
           break;
         }
         p.scheduledFor = cuando;
@@ -235,10 +267,16 @@ export function faltantes(
   return f;
 }
 
-/** Lo que lleva, en renglones para WhatsApp. Precios del catálogo, nunca del modelo. */
+/**
+ * Lo que lleva, en renglones para WhatsApp. Precios del catálogo, nunca del modelo.
+ *
+ * Sin "1 × …": muchos productos ya traen la cantidad en el nombre ("1/2 pollo")
+ * y "2 × 1 pollo" se leía como otra cosa. La cantidad va al final y solo si
+ * es más de uno.
+ */
 export function resumen(p: Pedido): string {
   const lineas = p.items.map((r) =>
-    `• ${r.cantidad} × ${r.nombre}${r.nota ? ` (${r.nota})` : ''} — ${pesos(r.precioCents * r.cantidad)}`);
+    `• ${r.nombre}${r.nota ? ` (${r.nota})` : ''}${r.cantidad > 1 ? ` ×${r.cantidad}` : ''} — ${pesos(r.precioCents * r.cantidad)}`);
   if (p.deliveryCents > 0) lineas.push(`• Envío${p.zone ? ` a ${p.zone}` : ''} — ${pesos(p.deliveryCents)}`);
   lineas.push(`*Total: ${pesos(total(p))}*`);
   return lineas.join('\n');

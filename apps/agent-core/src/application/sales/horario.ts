@@ -115,7 +115,19 @@ function horaBonita(hhmm: string): string {
   return `${h12}:${String(m).padStart(2, '0')} ${sufijo}`;
 }
 
-function sumarDias(fecha: string, n: number): string {
+const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+
+/**
+ * "sábado 3 de octubre". El día de la semana lo calcula el código: el modelo,
+ * suelto, decía "viernes 3 de octubre" cuando era sábado.
+ */
+export function fechaEnPalabras(instante: Date, timezone: string): string {
+  const z = enZona(instante, timezone);
+  const [, m, d] = z.fecha.split('-').map(Number);
+  return `${NOMBRE_DIA[z.dia]} ${d} de ${MESES[m! - 1]}`;
+}
+
+export function sumarDias(fecha: string, n: number): string {
   const [y, m, d] = fecha.split('-').map(Number);
   return new Date(Date.UTC(y!, m! - 1, d! + n)).toISOString().slice(0, 10);
 }

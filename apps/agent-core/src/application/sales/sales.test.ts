@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { abiertoEn, desdeLocal, leerHorario, siguienteApertura } from './horario';
 import { aplicar, faltantes, inventaMontos, montosPermitidos, pedidoVacio, resumen, type Accion, type ReglasVenta } from './pedido';
+import { leerPresupuesto, montosDePresupuesto } from './presupuesto';
 import { mezclar } from './lectura';
 
 process.env.DATABASE_URL ??= 'postgresql://test@localhost/test';
@@ -72,12 +73,19 @@ test('entrega a domicilio cobra la zona; una zona que no existe no se acepta', (
   assert.equal(paqueteria.pedido.deliveryMode, null, 'un modo que la empresa no maneja no se aplica');
 });
 
-test('programar: solo a horas en que abre, y no en el pasado', () => {
+test('programar: solo hoy o mañana, a horas en que abre, y no en el pasado', () => {
   const base = pedidoVacio();
-  assert.equal(aplicar(base, [accion({ tipo: 'programar', texto: '2026-10-04T13:00' })], carta, reglas, viernesMediodia).pedido.scheduledFor, null, 'domingo cerrado');
   assert.equal(aplicar(base, [accion({ tipo: 'programar', texto: '2026-10-02T12:00' })], carta, reglas, viernesMediodia).pedido.scheduledFor, null, 'ya pasó');
-  const ok = aplicar(base, [accion({ tipo: 'programar', texto: '2026-10-05T14:00' })], carta, reglas, viernesMediodia);
-  assert.equal(ok.pedido.scheduledFor?.toISOString(), '2026-10-05T19:00:00.000Z');
+  const ok = aplicar(base, [accion({ tipo: 'programar', texto: '2026-10-03T14:00' })], carta, reglas, viernesMediodia);
+  assert.equal(ok.pedido.scheduledFor?.toISOString(), '2026-10-03T19:00:00.000Z', 'mañana sí');
+
+  // "Para el lunes" un viernes: pasado mañana o más lejos no se acepta.
+  const lunes = aplicar(base, [accion({ tipo: 'programar', texto: '2026-10-05T14:00' })], carta, reglas, viernesMediodia);
+  assert.equal(lunes.pedido.scheduledFor, null);
+  assert.deepEqual(lunes.rechazos, ['fecha']);
+  assert.ok(lunes.avisos.some((a) => /hoy o para mañana/.test(a)));
+  const proximoAnio = aplicar(base, [accion({ tipo: 'programar', texto: '2027-10-01T14:00' })], carta, reglas, viernesMediodia);
+  assert.equal(proximoAnio.pedido.scheduledFor, null);
 });
 
 test('faltantes: qué pide antes de cerrar, y cerrado obliga a programar', () => {
@@ -134,11 +142,12 @@ function arnes() {
     message: { updateMany: async ({ data }: { data: Record<string, unknown> }) => { mensajes.push(data); } },
   };
   const guion: Array<Record<string, unknown>> = [];
+  const borradores: Array<string | null> = [];
   const llm = {
     extract: async (input: { validate: (v: unknown) => unknown; user: string }) => input.validate(guion.shift()),
-    draft: async () => null,
+    draft: async () => borradores.shift() ?? null,
   };
-  return { prisma, llm, guion, ordenes, mensajes };
+  return { prisma, llm, guion, ordenes, mensajes, borradores };
 }
 
 const lectura = (probabilidad: number, etapa = 'decidiendo') =>
@@ -199,7 +208,7 @@ test('si el modelo inventa un precio, ese texto no sale', async (t) => {
   assert.doesNotMatch(r!.text, /\$150/);
 });
 
-test('un producto de solo miércoles no se cierra otro día, pero sí programado para el miércoles', () => {
+test('un producto de solo miércoles no se cierra otro día, pero sí programado para el miércoles si es mañana', () => {
   const conMiercoles = [...carta, { id: 'super', name: 'Súper Miércoles', description: '', section: 'Miércoles', priceCents: 22000, availableDays: ['mie'] }];
   const r = aplicar(pedidoVacio(), [
     accion({ tipo: 'agregar', productoId: 'super', cantidad: 1, texto: 'BBQ' }),
@@ -209,6 +218,125 @@ test('un producto de solo miércoles no se cierra otro día, pero sí programado
   assert.ok(r.avisos.some((a) => /solo se vende los miércoles/.test(a)));
   assert.deepEqual(faltantes(r.pedido, reglas, viernesMediodia, conMiercoles), ['dia']);
 
-  const miercoles = aplicar(r.pedido, [accion({ tipo: 'programar', texto: '2026-10-07T13:00' })], conMiercoles, reglas, viernesMediodia);
-  assert.deepEqual(faltantes(miercoles.pedido, reglas, viernesMediodia, conMiercoles), []);
+  // Desde el viernes, el miércoles queda demasiado lejos.
+  const lejos = aplicar(r.pedido, [accion({ tipo: 'programar', texto: '2026-10-07T13:00' })], conMiercoles, reglas, viernesMediodia);
+  assert.equal(lejos.pedido.scheduledFor, null);
+
+  // El martes sí: el miércoles es mañana.
+  const martes = new Date('2026-10-06T18:00:00Z');
+  const miercoles = aplicar(r.pedido, [accion({ tipo: 'programar', texto: '2026-10-07T13:00' })], conMiercoles, reglas, martes);
+  assert.deepEqual(faltantes(miercoles.pedido, reglas, martes, conMiercoles), []);
+});
+
+// ── Fallas vistas en las pruebas del 3 de octubre de 2026 ───────────────
+
+test('una zona a la que no se llega no entra al pedido, ni su dirección (Veracruz)', () => {
+  const base = aplicar(pedidoVacio(), [accion({ tipo: 'agregar', productoId: 'medio', cantidad: 1 })], carta, reglas, viernesMediodia).pedido;
+  const r = aplicar(base, [accion({ tipo: 'entrega', modo: 'DOMICILIO', texto: 'Calle Polmorón, Veracruz', zona: 'Veracruz' })], carta, reglas, viernesMediodia);
+  assert.equal(r.pedido.deliveryMode, null);
+  assert.equal(r.pedido.address, null);
+  assert.deepEqual(r.rechazos, ['zona']);
+  assert.ok(faltantes(r.pedido, reglas, viernesMediodia).includes('entrega'), 'el pedido no se puede cerrar así');
+});
+
+test('poner el sabor a lo que ya estaba no lo duplica', () => {
+  const r = aplicar(pedidoVacio(), [
+    accion({ tipo: 'agregar', productoId: 'entero', cantidad: 2, texto: 'sabor a elegir' }),
+    accion({ tipo: 'agregar', productoId: 'entero', cantidad: 2, texto: 'Pastor' }),
+  ], carta, reglas, viernesMediodia);
+  assert.deepEqual(r.pedido.items.map((i) => [i.productId, i.cantidad, i.nota]), [['entero', 2, 'Pastor']]);
+  assert.match(resumen(r.pedido), /Total: \$430/);
+});
+
+test('el resumen se lee claro: sin "1 ×" y la cantidad al final', () => {
+  const r = aplicar(pedidoVacio(), [
+    accion({ tipo: 'agregar', productoId: 'medio', cantidad: 1, texto: 'Pastor' }),
+    accion({ tipo: 'agregar', productoId: 'tortillas', cantidad: 2 }),
+  ], carta, reglas, viernesMediodia);
+  const texto = resumen(r.pedido);
+  assert.match(texto, /• Medio pollo \(Pastor\) — \$120/);
+  assert.match(texto, /• Tortillas \(1 kg\) ×2 — \$60/);
+  assert.doesNotMatch(texto, /\d ×/);
+});
+
+test('presupuesto: se lee de lo que dice el cliente, no de cualquier número', () => {
+  assert.equal(leerPresupuesto(['Tengo 250']), 25000);
+  assert.equal(leerPresupuesto(['Quiero saber si cuesta 120 pesos porque no tengo más']), 12000);
+  assert.equal(leerPresupuesto(['dame 2 pollos', 'traigo $300']), 30000, 'el más reciente que diga uno');
+  assert.equal(leerPresupuesto(['Para 3 personas', 'Vamos a llevar 2 pollos y medio']), null);
+});
+
+test('con presupuesto, las cuentas que salen de la carta se pueden decir', () => {
+  const ok = montosPermitidos(pedidoVacio(), carta, reglas);
+  for (const m of montosDePresupuesto(carta, 25000)) ok.add(m);
+  // Pollo entero ($215) cabe en $250 y sobran $35; medio pollo + 4 tortillas = $240.
+  assert.equal(inventaMontos('Con $250 te alcanza el pollo entero de $215 y te sobran $35.', ok), false);
+  assert.equal(inventaMontos('Medio pollo y cuatro tortillas: $240.', ok), false);
+  assert.equal(inventaMontos('Te lo dejo en $199.', ok), true);
+});
+
+const analisis = { quiere: '', pide_o_pregunta: 'otro', ya_sabemos: '', ambiguo: '', regla: '' };
+
+async function ventasDePrueba(
+  t: { mock: { timers: { enable: (o: { apis: Array<'Date'>; now: Date }) => void } } },
+  tickets: unknown = {},
+) {
+  t.mock.timers.enable({ apis: ['Date'], now: viernesMediodia });
+  const { SalesStrategy } = await import('./sales.strategy');
+  const h = arnes();
+  const ventas = new SalesStrategy(h.prisma as never, h.llm as never, { recent: async () => [] } as never, tickets as never);
+  const negocio = (await ventas.negocioDe('linea:pollos:521555@c.us'))!;
+  let n = 0;
+  const decir = (body: string) =>
+    ventas.handle({ id: `m${++n}`, chatId: 'linea:pollos:521555@c.us', senderId: '521555@c.us', body, kind: 'TEXT' } as never,
+      { contactId: 'c1', conversationId: 'conv1' }, negocio);
+  return { h, decir };
+}
+
+test('si una regla frena algo, no sale el "listo" del modelo: sale la corrección', async (t) => {
+  const { h, decir } = await ventasDePrueba(t);
+  h.guion.push({
+    analisis,
+    respuesta: 'Sí, llegamos a Veracruz. Listo, te lo dejamos ahí.',
+    acciones: [{ tipo: 'entrega', productoId: '', cantidad: 0, texto: 'Calle Polmorón', modo: 'DOMICILIO', zona: 'Veracruz' }],
+    lectura: lectura(60),
+  });
+  h.borradores.push('Perdón, me equivoqué: a Veracruz no llegamos. ¿Me mandas otra ubicación, lo recoges o lo cancelamos?');
+  const r = await decir('¿Llegan hasta Veracruz?');
+  assert.doesNotMatch(r!.text, /llegamos a Veracruz|Listo/);
+  assert.match(r!.text, /^Perdón, me equivoqué/);
+});
+
+test('si la corrección tampoco sirve, va primero el aviso y luego lo que falta (nunca relleno)', async (t) => {
+  const { h, decir } = await ventasDePrueba(t);
+  h.guion.push({
+    analisis,
+    respuesta: 'Listo, te lo dejamos en Veracruz.',
+    acciones: [{ tipo: 'entrega', productoId: '', cantidad: 0, texto: 'Centro de Veracruz', modo: 'DOMICILIO', zona: 'Veracruz' }],
+    lectura: lectura(60),
+  });
+  const r = await decir('que llegue a Veracruz');
+  assert.match(r!.text, /^A esa zona no llegamos a domicilio\./);
+  assert.doesNotMatch(r!.text, /Qué más te gustaría agregar/);
+});
+
+test('con "tengo 250" el bot puede hablar de lo que alcanza sin que se tire su texto', async (t) => {
+  const { h, decir } = await ventasDePrueba(t);
+  h.guion.push({
+    analisis,
+    respuesta: 'Con $250 te alcanza el pollo entero de $215 y te sobran $35. ¿Te late?',
+    acciones: [],
+    lectura: lectura(45, 'explorando'),
+  });
+  const r = await decir('Tengo 250');
+  assert.equal(r!.text, 'Con $250 te alcanza el pollo entero de $215 y te sobran $35. ¿Te late?');
+});
+
+test('al pasar a una persona, el bot pide callarse en el hilo', async (t) => {
+  const tickets = { abrirEscalado: async () => ({ ticket: {}, agente: null }) };
+  const { h, decir } = await ventasDePrueba(t, tickets);
+  h.guion.push({ analisis, respuesta: '', acciones: [{ tipo: 'persona', productoId: '', cantidad: 0, texto: '', modo: '', zona: '' }], lectura: lectura(30) });
+  const r = await decir('soy alérgico, ¿qué trae el postre?');
+  assert.equal(r!.awaiting, 'AGENTE');
+  assert.ok((r!.silencioMs ?? 0) > 0);
 });

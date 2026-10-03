@@ -283,6 +283,16 @@ export class HandleIncomingMessageUseCase {
         tx,
       });
 
+      // Escalado: el bot no vuelve a hablar en este hilo hasta que se venza o
+      // la persona lo regrese desde el panel. Con tx, igual que el resto.
+      if (strategyReply?.silencioMs) {
+        await tx.conversation.update({
+          where: { id: conversationId },
+          data: { handoffUntil: new Date(Date.now() + strategyReply.silencioMs) },
+          select: { id: true },
+        });
+      }
+
       if (strategyReply?.clasificacion) {
         await etiquetar(tx, message.id, strategyReply.clasificacion);
       }
