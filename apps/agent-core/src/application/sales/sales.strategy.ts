@@ -335,7 +335,12 @@ export class SalesStrategy {
       reason: 'seguimiento',
     });
     lectura.v = { salesEmotion: 'interesado', salesIntensity: 3, salesStage: 'cerrando', salesScore: 85, salesSignal: 'mandó su ubicación' };
-    const partes = ['¡Gracias! Ya tengo tu ubicación 📍 En cuanto podamos te confirmamos el costo del envío y tu pedido.'];
+    // Con la liga, el cliente la abre y confirma que el pin quedó donde es:
+    // "y dónde es, solo para confirmar" no tenía respuesta.
+    const partes = [
+      `¡Gracias! Recibí esta ubicación 📍\n${ubicacion.url}\n` +
+        'Ábrela para revisar que sea ahí; si no, mándame otra. En cuanto podamos te confirmamos el costo del envío.',
+    ];
     if (conUbicacion.items.length > 0) partes.push('Llevas:\n' + resumen(conUbicacion));
     return { text: partes.join('\n\n'), awaiting: 'AGENTE', silencioMs: SILENCIO_ESCALADO_MS };
   }

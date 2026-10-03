@@ -85,7 +85,9 @@ export class HandleIncomingMessageUseCase {
     const ctx = await runPipeline(this.filters, message, (c) => this.handle(c));
 
     if (ctx.stoppedBy) {
-      this.logger.debug(`${message.id} cortado por ${ctx.stoppedBy}: ${ctx.stopReason}`);
+      // En log y no en debug: un mensaje que se tira sin dejar rastro es justo
+      // lo que hace imposible saber por qué el bot "no contestó".
+      this.logger.log(`${message.id} cortado por ${ctx.stoppedBy}: ${ctx.stopReason}`);
       // Un reintento que ahora corta un filtro (pausa, tope) ya no se va a
       // contestar: queda atendido para no hacer esperar a los siguientes.
       await this.prisma.message.updateMany({

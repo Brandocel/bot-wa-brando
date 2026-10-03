@@ -237,6 +237,10 @@ const esc = (valor) => String(valor ?? '')
 /** Para valores dentro de un atributo: además, las comillas. */
 const escAttr = (valor) => esc(valor).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
+/** Las ubicaciones que manda el cliente (pin de WhatsApp) se abren en Maps con un clic. Recibe texto ya escapado. */
+const MAPS = new RegExp('https://maps[.]google[.]com/[?]q=[-0-9.,]+', 'g');
+const ligasMaps = (html) => html.replace(MAPS, (u) => '<a href="' + u + '" target="_blank" rel="noopener">Ver en Maps 📍</a>');
+
 const fecha = (iso) => iso
   ? new Date(iso).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' })
   : '—';
@@ -368,7 +372,7 @@ function cuerpoMensaje(body) {
     adjunto = '<div class="adjunto">' + ICONO_ARCHIVO + '<span>' + esc(doc[1]) + '</span></div>';
     texto = texto.slice(doc[0].length);
   }
-  return adjunto + esc(texto).replace(/\\*([^*\\n]+)\\*/g, '<strong>$1</strong>');
+  return adjunto + ligasMaps(esc(texto).replace(/\\*([^*\\n]+)\\*/g, '<strong>$1</strong>'));
 }
 
 /** "Hoy", "Ayer" o la fecha: el separador entre días del hilo. */
@@ -1308,7 +1312,7 @@ async function vtPedidos() {
       '<li>' + i.cantidad + ' × ' + esc(i.nombre) + (i.nota ? ' <span class="muted">(' + esc(i.nota) + ')</span>' : '') +
       '<span class="spacer"></span>' + dinero(i.precioCents * i.cantidad) + '</li>').join('');
     const entrega = o.deliveryMode
-      ? (ENTREGAS_VT[o.deliveryMode]?.[0] ?? o.deliveryMode) + (o.address ? ': ' + esc(o.address) : '') + (o.zone ? ' (' + esc(o.zone) + ')' : '')
+      ? (ENTREGAS_VT[o.deliveryMode]?.[0] ?? o.deliveryMode) + (o.address ? ': ' + ligasMaps(esc(o.address)) : '') + (o.zone ? ' (' + esc(o.zone) + ')' : '')
       : 'Entrega sin elegir';
     const cuando = o.etaAt ? 'Listo para ' + fecha(o.etaAt) : o.scheduledFor ? 'Programado para ' + fecha(o.scheduledFor) : 'Lo antes posible';
 

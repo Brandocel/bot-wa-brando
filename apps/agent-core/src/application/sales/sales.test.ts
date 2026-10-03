@@ -432,7 +432,7 @@ test('con la ubicación, se guarda en el pedido, se avisa que se confirma el env
 
   const { textoDeUbicacion } = await import('../../domain/message/ubicacion');
   const r = await decir(textoDeUbicacion(21.1619, -86.8515, null));
-  assert.match(r!.text, /^¡Gracias! Ya tengo tu ubicación 📍 En cuanto podamos te confirmamos el costo del envío/);
+  assert.ok(r!.text.startsWith('¡Gracias! Recibí esta ubicación 📍\nhttps://maps.google.com/?q=21.1619,-86.8515\nÁbrela para revisar'));
   assert.match(r!.text, /Pollo entero \(Axiote\) — \$215/);
   assert.equal(r!.awaiting, 'AGENTE');
   assert.ok((r!.silencioMs ?? 0) > 0);
