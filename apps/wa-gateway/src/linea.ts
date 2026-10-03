@@ -42,6 +42,10 @@ export interface PayloadParaCore {
   type: string;
   body: string;
   caption: string;
+  /** Solo en ubicaciones (type 'location'): el pin que mandó la persona. */
+  lat?: number;
+  lng?: number;
+  loc?: string | null;
   isGroupMsg: boolean;
   fromMe: boolean;
   isBroadcast: boolean;
@@ -112,8 +116,24 @@ function tipoDeMensaje(m: WAMessage): string {
     return contenido.audioMessage.ptt ? 'ptt' : 'audio';
   }
   if (contenido.stickerMessage) return 'sticker';
+  if (contenido.locationMessage || contenido.liveLocationMessage) return 'location';
 
   return 'unknown';
+}
+
+/**
+ * El pin de una ubicación, con los nombres que usaba open-wa (lat, lng, loc).
+ * Antes ni se mandaba al core: el cliente compartía su ubicación cuando el
+ * bot se la pedía y no pasaba nada.
+ */
+function ubicacionDe(m: WAMessage): { lat?: number; lng?: number; loc?: string | null } {
+  const c = m.message ?? {};
+  const l = c.locationMessage ?? c.liveLocationMessage;
+  if (!l || typeof l.degreesLatitude !== 'number' || typeof l.degreesLongitude !== 'number') return {};
+  const nombre = 'name' in l && typeof l.name === 'string' ? l.name : '';
+  const direccion = 'address' in l && typeof l.address === 'string' ? l.address : '';
+  const loc = [nombre, direccion].filter(Boolean).join(', ') || null;
+  return { lat: l.degreesLatitude, lng: l.degreesLongitude, loc };
 }
 
 /** El texto que escribió la persona, venga suelto o como pie de un archivo. */
@@ -306,6 +326,7 @@ export class Linea {
       type: tipoDeMensaje(m),
       body,
       caption,
+      ...ubicacionDe(m),
       isGroupMsg: esGrupo,
       fromMe,
       isBroadcast: remoteJid === 'status@broadcast',

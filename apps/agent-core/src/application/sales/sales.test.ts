@@ -410,3 +410,46 @@ test('un reclamo abre ticket urgente con el pedido, se disculpa y el bot se call
   assert.equal(abiertos[0]!.reason, 'queja');
   assert.match(String(abiertos[0]!.subject), /^Reclamo P-1042/);
 });
+
+// ── Ubicación (pin de WhatsApp) y audios ─────────────────────────────────
+
+test('la ubicación de WhatsApp se vuelve texto y se vuelve a leer igual', async () => {
+  const { textoDeUbicacion, leerUbicacion } = await import('../../domain/message/ubicacion');
+  const texto = textoDeUbicacion(21.1619, -86.8515, 'Av. Tulum, Cancún');
+  assert.equal(texto, '📍 Ubicación compartida: https://maps.google.com/?q=21.1619,-86.8515 — Av. Tulum, Cancún');
+  assert.deepEqual(leerUbicacion(texto), {
+    lat: 21.1619, lng: -86.8515, url: 'https://maps.google.com/?q=21.1619,-86.8515', descripcion: 'Av. Tulum, Cancún',
+  });
+  assert.equal(leerUbicacion('mi casa está en la 28 poniente'), null);
+});
+
+test('con la ubicación, se guarda en el pedido, se avisa que se confirma el envío y pasa a una persona', async (t) => {
+  const abiertos: Array<Record<string, unknown>> = [];
+  const tickets = { abrirEscalado: async (x: Record<string, unknown>) => { abiertos.push(x); return { ticket: {}, agente: null }; } };
+  const { h, decir } = await ventasDePrueba(t, tickets);
+  h.guion.push({ analisis, respuesta: '¿Te late?', acciones: [accionModelo({ tipo: 'agregar', productoId: 'entero', cantidad: 1, texto: 'Axiote' })], lectura: lectura(60) });
+  await decir('un pollo entero axiote');
+
+  const { textoDeUbicacion } = await import('../../domain/message/ubicacion');
+  const r = await decir(textoDeUbicacion(21.1619, -86.8515, null));
+  assert.match(r!.text, /^¡Gracias! Ya tengo tu ubicación 📍 En cuanto podamos te confirmamos el costo del envío/);
+  assert.match(r!.text, /Pollo entero \(Axiote\) — \$215/);
+  assert.equal(r!.awaiting, 'AGENTE');
+  assert.ok((r!.silencioMs ?? 0) > 0);
+  assert.equal(h.ordenes[0]!.deliveryMode, 'DOMICILIO');
+  assert.match(String(h.ordenes[0]!.address), /maps\.google\.com\/\?q=21\.1619,-86\.8515/);
+  assert.equal(abiertos[0]!.reason, 'seguimiento');
+  assert.match(String(abiertos[0]!.subject), /^Confirmar envío/);
+  assert.equal(h.guion.length, 0, 'la ubicación no gasta una llamada al modelo');
+});
+
+test('un audio sin texto recibe respuesta en vez de silencio', async (t) => {
+  const { SalesStrategy } = await import('./sales.strategy');
+  t.mock.timers.enable({ apis: ['Date'], now: viernesMediodia });
+  const h = arnes();
+  const ventas = new SalesStrategy(h.prisma as never, h.llm as never, { recent: async () => [] } as never, {} as never);
+  const negocio = (await ventas.negocioDe('linea:pollos:521555@c.us'))!;
+  const r = await ventas.handle({ id: 'a1', chatId: 'linea:pollos:521555@c.us', senderId: '521555@c.us', body: '', kind: 'AUDIO' } as never,
+    { contactId: 'c1', conversationId: 'conv1' }, negocio);
+  assert.match(r!.text, /no puedo escuchar audios/);
+});

@@ -18,6 +18,7 @@ import {
   siguienteApertura,
 } from './horario';
 import { leerPresupuesto, montosDePresupuesto, presupuestoParaModelo } from './presupuesto';
+import { leerUbicacion, type Ubicacion } from '../../domain/message/ubicacion';
 import { avanceDelPedido, leerLectura, mezclar, type LecturaModelo } from './lectura';
 import {
   aplicar,
@@ -149,6 +150,12 @@ export class SalesStrategy {
     lectura: { v?: LecturaVenta },
   ): Promise<StrategyReply | null> {
     const texto = message.body.trim();
+    // Un audio llega sin texto: antes el bot se quedaba callado y el cliente
+    // creía que nadie lo atendía. Hasta que haya transcripción, se le pide
+    // por escrito.
+    if (texto === '' && message.kind === 'AUDIO') {
+      return { text: 'Perdón, todavía no puedo escuchar audios 🙏 ¿Me lo escribes, por favor?', awaiting: 'CLIENTE' };
+    }
     if (texto === '') return null;
     const ahora = new Date();
 
@@ -160,6 +167,10 @@ export class SalesStrategy {
       if (confirmaPedido(texto)) return this.enviar(orden, pedido, negocio, lectura, ahora);
       await this.prisma.order.update({ where: { id: orden.id }, data: { confirmPending: false } });
     }
+
+    // El pin de WhatsApp: no hace falta el modelo para entenderlo.
+    const ubicacion = leerUbicacion(texto);
+    if (ubicacion) return this.recibirUbicacion(ubicacion, orden, pedido, negocio, ctx, lectura);
 
     const recientes = await this.prisma.order.findMany({
       where: {
@@ -290,6 +301,43 @@ export class SalesStrategy {
     }
     if (r.cambio && pedido.items.length > 0) partes.push('Llevas:\n' + resumen(pedido));
     return { text: partes.join('\n\n'), awaiting: 'CLIENTE' };
+  }
+
+  /**
+   * Regla del negocio: con la ubicación, una persona confirma el envío (si se
+   * llega y cuánto cuesta) y termina el pedido. El bot la guarda en el pedido,
+   * se lo dice al cliente y se calla, para no prometer nada que no sabe.
+   */
+  private async recibirUbicacion(
+    ubicacion: Ubicacion,
+    orden: Order | null,
+    pedido: Pedido,
+    negocio: Negocio,
+    ctx: StrategyContext,
+    lectura: { v?: LecturaVenta },
+  ): Promise<StrategyReply> {
+    if (!negocio.reglas.deliveryModes.includes('DOMICILIO')) {
+      return { text: 'Por ahora no hacemos envíos a domicilio 🙏 ¿Te lo dejamos listo para recoger?', awaiting: 'CLIENTE' };
+    }
+    const direccion = `${ubicacion.descripcion ? ubicacion.descripcion + ' ' : ''}(${ubicacion.url})`.slice(0, 300);
+    const conUbicacion: Pedido = { ...pedido, deliveryMode: 'DOMICILIO', address: direccion, zone: null, deliveryCents: 0 };
+    await this.guardar(orden, conUbicacion, negocio.organizationId, ctx, false);
+    await this.tickets.abrirEscalado({
+      conversationId: ctx.conversationId,
+      contactId: ctx.contactId,
+      organizationId: negocio.organizationId,
+      subject: `Confirmar envío: ${ubicacion.descripcion ?? ubicacion.url}`.slice(0, 120),
+      slots: {
+        venta: true,
+        ubicacion: ubicacion.url,
+        lleva: conUbicacion.items.map((i) => `${i.cantidad} × ${i.nombre}${i.nota ? ` (${i.nota})` : ''}`),
+      },
+      reason: 'seguimiento',
+    });
+    lectura.v = { salesEmotion: 'interesado', salesIntensity: 3, salesStage: 'cerrando', salesScore: 85, salesSignal: 'mandó su ubicación' };
+    const partes = ['¡Gracias! Ya tengo tu ubicación 📍 En cuanto podamos te confirmamos el costo del envío y tu pedido.'];
+    if (conUbicacion.items.length > 0) partes.push('Llevas:\n' + resumen(conUbicacion));
+    return { text: partes.join('\n\n'), awaiting: 'AGENTE', silencioMs: SILENCIO_ESCALADO_MS };
   }
 
   /** Segundo intento de texto, ya sabiendo qué se rechazó. Null si tampoco sirve. */
@@ -598,7 +646,8 @@ function preguntaPor(f: Faltante, p: Pedido, n: Negocio, ahora: Date): string {
       const modos = reglas.deliveryModes.map((m) => NOMBRE_ENTREGA[m]);
       return modos.length > 1 ? `¿Lo quieres ${modos.slice(0, -1).join(', ')} o ${modos[modos.length - 1]}?` : `Sería ${modos[0] ?? 'para recoger'}, ¿va?`;
     }
-    case 'direccion': return '¿A qué dirección te lo llevamos? Calle, número y colonia.';
+    case 'direccion': return '¡Va, a domicilio! 🛵 Pásame tu ubicación donde quieres que te llegue el pedido 📍 y en cuanto ' +
+        'podamos te confirmamos el costo del envío.\nPara mandarla: toca el clip 📎 → *Ubicación* → *Enviar tu ubicación actual*.';
     case 'zona': return `¿En qué zona queda? Llegamos a: ${reglas.zonas.map((z) => z.nombre).join(', ')}.`;
     case 'nombre': return '¿A nombre de quién lo dejo?';
     case 'minimo': return `El pedido mínimo es de ${pesos(reglas.minOrderCents)}. ¿Le agregamos algo más?`;

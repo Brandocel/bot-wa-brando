@@ -5,6 +5,7 @@ import type {
   MessageKind,
 } from '../../domain/message/incoming-message';
 import { LINEA_PRINCIPAL, chatDeLinea } from '../../domain/message/linea';
+import { textoDeUbicacion } from '../../domain/message/ubicacion';
 
 /**
  * ANTI-CORRUPTION LAYER.
@@ -28,6 +29,8 @@ function mapKind(rawType: string | null): MessageKind {
   switch (rawType) {
     case 'chat':
     case 'text':
+    // La ubicación (pin) se vuelve texto: ver domain/message/ubicacion.ts.
+    case 'location':
       return 'TEXT';
     case 'ptt':
     case 'audio':
@@ -39,6 +42,13 @@ function mapKind(rawType: string | null): MessageKind {
     default:
       return 'UNSUPPORTED';
   }
+}
+
+function deUbicacion(raw: RawMessage): string {
+  const lat = Number(raw['lat']);
+  const lng = Number(raw['lng']);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return '';
+  return textoDeUbicacion(lat, lng, str(raw['loc']));
 }
 
 @Injectable()
@@ -116,10 +126,14 @@ export class OpenWaMessageMapper {
      * anticorrupción: el dominio no tiene por qué saber que open-wa mete
      * archivos en un campo llamado `body`.
      */
+    // En una ubicación, `body` es la miniatura del mapa en base64: lo que
+    // importa son las coordenadas.
+    const ubicacion = str(raw['type']) === 'location' ? deUbicacion(raw) : null;
     const body =
-      kind === 'TEXT'
+      ubicacion ??
+      (kind === 'TEXT'
         ? (str(raw['body']) ?? '')
-        : (str(raw['caption']) ?? '');
+        : (str(raw['caption']) ?? ''));
 
     // `t` viene en segundos, no en milisegundos. Confundirlos deja todos los
     // mensajes en 1970.
