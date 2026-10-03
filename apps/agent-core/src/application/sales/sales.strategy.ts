@@ -193,6 +193,27 @@ export class SalesStrategy {
     const r = aplicar(pedido, modelo.acciones, negocio.catalogo, negocio.reglas, ahora);
     pedido = r.pedido;
 
+    // Reclamo de un pedido: disculpa, ticket urgente y el bot se calla. No se
+    // deja al modelo improvisar: ni promesas de reembolso ni excusas.
+    if (r.reclamo) {
+      const ultimo = recientes[0];
+      await this.tickets.abrirEscalado({
+        conversationId: ctx.conversationId,
+        contactId: ctx.contactId,
+        organizationId: negocio.organizationId,
+        subject: `Reclamo${ultimo ? ` P-${ultimo.number}` : ''}: ${r.reclamo}`.slice(0, 120),
+        slots: { venta: true, reclamo: r.reclamo, mensaje: texto, pedidos: recientes.map((o) => `P-${o.number} ${o.status}`) },
+        reason: 'queja',
+      });
+      await this.guardarLectura(lectura, orden?.id ?? null, modelo.lectura, pedido, false, { cancelo: false, enviado: false });
+      return {
+        text: `Lamento mucho lo que pasó${ultimo ? ` con tu pedido P-${ultimo.number}` : ''} 🙏 ` +
+          `Ya se lo pasé a ${negocio.nombre} como urgente; una persona te escribe por aquí para resolverlo.`,
+        awaiting: 'AGENTE',
+        silencioMs: SILENCIO_ESCALADO_MS,
+      };
+    }
+
     // Una persona: la plática sigue en el panel, con todo lo que llevaba.
     if (r.persona) {
       await this.tickets.abrirEscalado({
@@ -221,7 +242,13 @@ export class SalesStrategy {
       ? await this.guardar(orden, pedido, negocio.organizationId, ctx, false)
       : null;
 
-    if (r.listo) {
+    // El cierre lo decide el código, no el modelo: en cuanto el pedido tiene
+    // todo (productos, entrega, nombre) y acaba de cambiar, se le muestra el
+    // resumen y se le pide el "sí". Antes el modelo decía "Listo, Brando, tu
+    // paquete en 25 minutos" sin resumen ni confirmación, y nada se enviaba.
+    const completo = r.cambio && r.rechazos.length === 0 &&
+      faltantes(pedido, negocio.reglas, ahora, negocio.catalogo).length === 0;
+    if (r.listo || completo) {
       const falta = faltantes(pedido, negocio.reglas, ahora, negocio.catalogo);
       if (falta.length === 0 && guardado) {
         await this.prisma.order.update({ where: { id: guardado.id }, data: { confirmPending: true } });
@@ -243,9 +270,14 @@ export class SalesStrategy {
     // el mismo mensaje). Y si trae montos que no salen de la carta, tampoco
     // sale. En los dos casos se pide un texto nuevo con lo que de verdad quedó.
     const propio = modelo.respuesta.trim();
-    let respuesta: string | null = propio && r.rechazos.length === 0 && !inventaMontos(propio, permitidos) ? propio : null;
+    const avisos = [...r.avisos];
+    // Dar el pedido por cerrado sin el "sí" al resumen es prometer algo que no
+    // pasó: el cliente se va creyendo que pidió.
+    if (propio && afirmaCierre(propio)) avisos.push('El pedido todavía no está confirmado ni enviado.');
+    let respuesta: string | null =
+      propio && r.rechazos.length === 0 && avisos.length === r.avisos.length && !inventaMontos(propio, permitidos) ? propio : null;
     if (respuesta === null) {
-      respuesta = await this.corregir(negocio, pedido, recientes, turnos, texto, ahora, presupuesto, r.avisos, propio, permitidos);
+      respuesta = await this.corregir(negocio, pedido, recientes, turnos, texto, ahora, presupuesto, avisos, propio, permitidos);
     }
 
     const partes: string[] = [];
@@ -404,7 +436,7 @@ function validarRespuesta(raw: unknown): RespuestaModelo | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const r = raw as Record<string, unknown>;
   if (typeof r.respuesta !== 'string' || !Array.isArray(r.acciones)) return null;
-  const tipos = ['agregar', 'quitar', 'cantidad', 'entrega', 'programar', 'nombre', 'nota', 'listo', 'cancelar', 'persona'];
+  const tipos = ['agregar', 'quitar', 'cantidad', 'entrega', 'programar', 'nombre', 'nota', 'listo', 'cancelar', 'persona', 'reclamo'];
   const modos = ['', 'RECOGER', 'DOMICILIO', 'PAQUETERIA', 'DIGITAL'];
   const acciones: Accion[] = [];
   for (const a of r.acciones.slice(0, 20)) {
@@ -420,6 +452,12 @@ function validarRespuesta(raw: unknown): RespuestaModelo | null {
     });
   }
   return { respuesta: r.respuesta.slice(0, 1200), acciones, lectura: leerLectura(r.lectura) };
+}
+
+/** "Listo, tu pedido está…", "confirmado", "en 25 minutos": hablar como si ya se hubiera enviado. */
+export function afirmaCierre(texto: string): boolean {
+  const t = texto.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  return /\b(pedido (esta|quedo|ya esta) (confirmado|listo|hecho|enviado)|ya (quedo|esta) (confirmado|tu pedido)|confirmado|te lo (tenemos|llevamos|entregamos) en \d+|(listo|llega|estara)[^.?!]{0,40}en \d+ min|\btu (pedido|paquete|pollo|orden)[^.?!]{0,50}en \d+ min|^listo\b[^?]{0,60}\btu (pedido|paquete|pollo|orden))/.test(t);
 }
 
 /** El texto del modelo, salvo que mencione un monto que no sale del catálogo. */
@@ -489,7 +527,8 @@ function contexto(
         ? `\nZONAS A DOMICILIO (solo estas; cualquier otro lugar = no llegamos): ` +
           reglas.zonas.map((z) => `${z.nombre} ${pesos(z.costoCents)}`).join(', ')
         : '') +
-      `\nTIEMPO DE PREPARACIÓN: unos ${reglas.prepMinutes} minutos` +
+      `\nTIEMPO DE PREPARACIÓN (APROXIMADO): ${tiempoAproximado(reglas.prepMinutes)}. Nunca prometas un ` +
+        'tiempo exacto: di "aproximadamente" y que se le confirma cuando el negocio acepte el pedido.' +
       (reglas.minOrderCents ? `\nPEDIDO MÍNIMO: ${pesos(reglas.minOrderCents)}` : ''),
     `CARTA (usa SOLO estos id):\n${carta.join('\n')}`,
     `PEDIDO EN CURSO: ${lleva}` +
@@ -517,7 +556,7 @@ function resumenFinal(p: Pedido, n: Negocio, ahora: Date): string {
       : p.deliveryMode === 'DIGITAL' ? 'Entrega digital' : `Para recoger en ${n.nombre}`;
   const cuando = p.scheduledFor
     ? `Para ${cuandoEnPalabras(p.scheduledFor, ahora, reglas.timezone)}`
-    : `Lo antes posible (unos ${reglas.prepMinutes} min)`;
+    : `Lo antes posible (aproximadamente ${tiempoAproximado(reglas.prepMinutes)}; te confirmamos la hora al aceptarlo)`;
 
   return [
     'Así quedaría tu pedido:',
@@ -525,6 +564,16 @@ function resumenFinal(p: Pedido, n: Negocio, ahora: Date): string {
     `${entrega}\n${cuando}\nA nombre de: ${p.customerName}` + (p.notes ? `\nNota: ${p.notes}` : ''),
     '¿Lo confirmo así? Responde *sí* o dime qué cambio.',
   ].join('\n\n');
+}
+
+/**
+ * "entre 25 y 40 minutos". El tiempo de preparación es un promedio, no una
+ * promesa: "en 25 minutos" se lee como compromiso y la cocina no siempre llega.
+ */
+export function tiempoAproximado(prepMinutes: number): string {
+  const desde = Math.max(5, prepMinutes);
+  const holgura = Math.max(10, Math.round((desde * 0.5) / 5) * 5);
+  return `entre ${desde} y ${desde + holgura} minutos`;
 }
 
 /** La pregunta que sigue cuando no hay texto del modelo que se pueda mandar. */

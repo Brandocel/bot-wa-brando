@@ -75,7 +75,9 @@ test('entrega a domicilio cobra la zona; una zona que no existe no se acepta', (
 
 test('programar: solo hoy o mañana, a horas en que abre, y no en el pasado', () => {
   const base = pedidoVacio();
-  assert.equal(aplicar(base, [accion({ tipo: 'programar', texto: '2026-10-02T12:00' })], carta, reglas, viernesMediodia).pedido.scheduledFor, null, 'ya pasó');
+  const pasada = aplicar(base, [accion({ tipo: 'programar', texto: '2026-10-02T12:00' })], carta, reglas, viernesMediodia);
+  assert.equal(pasada.pedido.scheduledFor, null, 'ya pasó');
+  assert.deepEqual(pasada.rechazos, ['horario'], 'una hora pasada también frena el texto del modelo');
   const ok = aplicar(base, [accion({ tipo: 'programar', texto: '2026-10-03T14:00' })], carta, reglas, viernesMediodia);
   assert.equal(ok.pedido.scheduledFor?.toISOString(), '2026-10-03T19:00:00.000Z', 'mañana sí');
 
@@ -339,4 +341,72 @@ test('al pasar a una persona, el bot pide callarse en el hilo', async (t) => {
   const r = await decir('soy alérgico, ¿qué trae el postre?');
   assert.equal(r!.awaiting, 'AGENTE');
   assert.ok((r!.silencioMs ?? 0) > 0);
+});
+
+test('el tiempo de preparación se dice como aproximado, nunca exacto', async () => {
+  const { tiempoAproximado } = await import('./sales.strategy');
+  assert.equal(tiempoAproximado(25), 'entre 25 y 40 minutos');
+  assert.equal(tiempoAproximado(10), 'entre 10 y 20 minutos');
+});
+
+// ── Cierre y reclamos ────────────────────────────────────────────────────
+
+const accionModelo = (a: Partial<Accion> & { tipo: Accion['tipo'] }) =>
+  ({ productoId: '', cantidad: 0, texto: '', modo: '', zona: '', ...a });
+
+test('con todo completo, el código muestra el resumen y pide el "sí" aunque el modelo diga "listo, en 25 minutos"', async (t) => {
+  const { h, decir } = await ventasDePrueba(t);
+  h.guion.push({
+    analisis,
+    respuesta: 'Listo, Brando. Tu pollo entero en 25 minutos 👍',
+    acciones: [
+      accionModelo({ tipo: 'agregar', productoId: 'entero', cantidad: 1, texto: 'Axiote' }),
+      accionModelo({ tipo: 'entrega', modo: 'RECOGER' }),
+      accionModelo({ tipo: 'nombre', texto: 'Brando' }),
+    ],
+    lectura: lectura(80, 'cerrando'),
+  });
+  const r = await decir('un pollo entero axiote, paso por él, soy Brando');
+  assert.match(r!.text, /Así quedaría tu pedido[\s\S]*Pollo entero \(Axiote\) — \$215[\s\S]*¿Lo confirmo así\?/);
+  assert.doesNotMatch(r!.text, /en 25 minutos/);
+  assert.equal(h.ordenes[0]!.confirmPending, true);
+  assert.equal(h.ordenes[0]!.status, 'ARMANDO', 'sin el "sí" no se envía');
+
+  const r2 = await decir('sí');
+  assert.match(r2!.text, /P-1042/);
+  assert.equal(h.ordenes[0]!.status, 'POR_ACEPTAR');
+
+  // Ya enviado, lo que pida después es OTRO pedido.
+  h.guion.push({ analisis, respuesta: 'Va, armamos otro pedido.', acciones: [accionModelo({ tipo: 'agregar', productoId: 'tortillas', cantidad: 1 })], lectura: lectura(50) });
+  await decir('y unas tortillas');
+  assert.equal(h.ordenes.length, 2);
+  assert.deepEqual((h.ordenes[1]!.items as Array<{ productId: string }>).map((i) => i.productId), ['tortillas']);
+  assert.equal(h.ordenes[0]!.status, 'POR_ACEPTAR', 'el pedido cerrado no se toca');
+});
+
+test('si el modelo da el pedido por hecho sin estar completo, ese texto no sale', async (t) => {
+  const { afirmaCierre } = await import('./sales.strategy');
+  assert.equal(afirmaCierre('Listo, Brando. Tu Paquete Sorpresa con Axiote en 25 minutos.'), true);
+  assert.equal(afirmaCierre('Tu pedido está confirmado.'), true);
+  assert.equal(afirmaCierre('¿Te late el Paquete Amigo?'), false);
+
+  const { h, decir } = await ventasDePrueba(t);
+  h.guion.push({ analisis, respuesta: 'Tu pedido está confirmado 👍', acciones: [accionModelo({ tipo: 'agregar', productoId: 'medio', cantidad: 1 })], lectura: lectura(60) });
+  const r = await decir('medio pollo');
+  assert.doesNotMatch(r!.text, /confirmado/);
+});
+
+test('un reclamo abre ticket urgente con el pedido, se disculpa y el bot se calla', async (t) => {
+  const abiertos: Array<Record<string, unknown>> = [];
+  const tickets = { abrirEscalado: async (x: Record<string, unknown>) => { abiertos.push(x); return { ticket: {}, agente: null }; } };
+  const { h, decir } = await ventasDePrueba(t, tickets);
+  (h.prisma.order as { findMany: unknown }).findMany = async () => [{ number: 1042, status: "ACEPTADO", etaAt: null, rejectReason: null }];
+  h.guion.push({ analisis, respuesta: 'Uy, qué raro, seguro ya salió.', acciones: [accionModelo({ tipo: 'reclamo', texto: 'pasó a recoger y no estaba; pide reembolso' })], lectura: lectura(10) });
+  const r = await decir('Ya pasé y no está. ¿Y el reembolso?');
+  assert.match(r!.text, /^Lamento mucho lo que pasó con tu pedido P-1042/);
+  assert.doesNotMatch(r!.text, /seguro ya salió|reembolso/);
+  assert.equal(r!.awaiting, 'AGENTE');
+  assert.ok((r!.silencioMs ?? 0) > 0);
+  assert.equal(abiertos[0]!.reason, 'queja');
+  assert.match(String(abiertos[0]!.subject), /^Reclamo P-1042/);
 });

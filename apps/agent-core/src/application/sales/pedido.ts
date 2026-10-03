@@ -54,7 +54,8 @@ export interface ReglasVenta {
 }
 
 export type TipoAccion =
-  | 'agregar' | 'quitar' | 'cantidad' | 'entrega' | 'programar' | 'nombre' | 'nota' | 'listo' | 'cancelar' | 'persona';
+  | 'agregar' | 'quitar' | 'cantidad' | 'entrega' | 'programar' | 'nombre' | 'nota' | 'listo' | 'cancelar' | 'persona'
+  | 'reclamo';
 
 /** Una acción tal como la propone el modelo: campos planos, "" o 0 si no aplican. */
 export interface Accion {
@@ -118,6 +119,8 @@ export interface Resultado {
   listo: boolean;
   cancelar: boolean;
   persona: boolean;
+  /** Qué reclama el cliente (pedido que no llegó, mal, reembolso), o null. */
+  reclamo: string | null;
 }
 
 /**
@@ -132,7 +135,7 @@ export function aplicar(
   ahora: Date,
 ): Resultado {
   const p: Pedido = { ...inicial, items: inicial.items.map((r) => ({ ...r })) };
-  const r: Resultado = { pedido: p, cambio: false, avisos: [], rechazos: [], listo: false, cancelar: false, persona: false };
+  const r: Resultado = { pedido: p, cambio: false, avisos: [], rechazos: [], listo: false, cancelar: false, persona: false, reclamo: null };
   const producto = (id: string) => catalogo.find((c) => c.id === id);
 
   for (const a of acciones) {
@@ -208,7 +211,10 @@ export function aplicar(
         const cuando = desdeLocal(a.texto, reglas.timezone);
         if (!cuando) break;
         if (cuando.getTime() < ahora.getTime() + 10 * 60 * 1000) {
-          r.avisos.push('Esa hora ya casi pasó; dime otra.');
+          // También es un rechazo: "hoy a las 11:00" dicho a las 11:49 salía
+          // como "Listo, en 25 minutos" porque el texto del modelo pasaba.
+          r.avisos.push('Esa hora ya pasó.');
+          r.rechazos.push('horario');
           break;
         }
         const limite = sumarDias(enZona(ahora, reglas.timezone).fecha, MAX_DIAS_PROGRAMA);
@@ -239,6 +245,7 @@ export function aplicar(
       case 'listo': r.listo = true; break;
       case 'cancelar': r.cancelar = true; break;
       case 'persona': r.persona = true; break;
+      case 'reclamo': r.reclamo = a.texto.trim().slice(0, 200) || 'reclamo sin detalle'; break;
     }
   }
 
