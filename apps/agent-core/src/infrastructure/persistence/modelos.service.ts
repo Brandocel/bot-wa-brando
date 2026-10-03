@@ -53,8 +53,13 @@ export const MODELOS_DISPONIBLES: ModeloDisponible[] = [
   },
 ];
 
+/**
+ * La conversación de venta razona (qué pidió, qué ya se sabe, qué regla
+ * aplica): con Haiku confundía preguntar con pedir. Lo que se elija en el
+ * panel manda sobre esto.
+ */
 export const MODELOS_DEFECTO: Modelos = {
-  conversacion: 'claude-haiku-4-5-20251001',
+  conversacion: 'claude-sonnet-5-5',
   redaccion: 'claude-haiku-4-5-20251001',
   clasificacion: 'claude-sonnet-5-5',
 };

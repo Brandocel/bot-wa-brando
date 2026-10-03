@@ -18,6 +18,11 @@ const MAX_PRESUPUESTO_CENTS = 20000_00;
 const CON_SIGNO = /\$\s?(\d{2,6})(?:\.\d{1,2})?/;
 const CON_PALABRA = /\b(\d{2,6})\s*(?:pesos|varos|mxn|baros)\b/i;
 const CON_VERBO = /\b(?:tengo|traigo|cuento con|presupuesto(?: de| es)?|me alcanza con|solo (?:tengo|traigo)|nada mas|nomas)\s*(?:de\s*)?\$?\s*(\d{2,6})\b/i;
+/**
+ * Un monto suelto ("¿el de $99 qué trae?") es un precio, no un presupuesto.
+ * Solo cuenta si la frase habla de lo que trae o le alcanza.
+ */
+const HABLA_DE_PRESUPUESTO = /\b(tengo|traigo|cuento con|presupuesto|alcanza|no tengo mas|nada mas|nomas|solo (?:tengo|traigo)|maximo|gastar)\b/i;
 
 /**
  * El presupuesto más reciente que dijo el cliente, en centavos, o null.
@@ -26,7 +31,7 @@ const CON_VERBO = /\b(?:tengo|traigo|cuento con|presupuesto(?: de| es)?|me alcan
 export function leerPresupuesto(textos: readonly string[]): number | null {
   for (const texto of textos) {
     const t = texto.normalize('NFD').replace(/[̀-ͯ]/g, '');
-    const m = CON_VERBO.exec(t) ?? CON_SIGNO.exec(t) ?? CON_PALABRA.exec(t);
+    const m = CON_VERBO.exec(t) ?? (HABLA_DE_PRESUPUESTO.test(t) ? CON_SIGNO.exec(t) ?? CON_PALABRA.exec(t) : null);
     if (!m) continue;
     const cents = Number(m[1]) * 100;
     if (cents > 0 && cents <= MAX_PRESUPUESTO_CENTS) return cents;

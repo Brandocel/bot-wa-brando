@@ -44,11 +44,12 @@ const VIGENCIA_ARMANDO_MS = 6 * 60 * 60 * 1000;
 /** Cuánto atrás se le recuerda al modelo un pedido ya enviado (postventa). */
 const VENTANA_POSTVENTA_MS = 24 * 60 * 60 * 1000;
 /**
- * Al pasar la plática a una persona, el bot se calla este tiempo (lo mismo que
- * "Atender yo" en el panel). Antes abría el ticket y seguía contestando: el
- * cliente tenía dos voces en el chat y no sabía a quién hacerle caso.
+ * Al pasar la plática a una persona, el bot se calla un rato para no hablar
+ * encima de ella. Corto a propósito: con 4 horas, si nadie del equipo tomaba
+ * el caso, el cliente se quedaba sin respuesta toda la tarde. Si una persona
+ * lo toma con "Atender yo", el panel alarga el silencio por su cuenta.
  */
-const SILENCIO_ESCALADO_MS = 4 * 60 * 60 * 1000;
+const SILENCIO_ESCALADO_MS = 20 * 60 * 1000;
 
 const NOMBRE_ENTREGA: Record<DeliveryMode, string> = {
   RECOGER: 'pasar a recoger',
@@ -159,6 +160,19 @@ export class SalesStrategy {
     if (texto === '') return null;
     const ahora = new Date();
 
+    // Hay un caso con una persona (envío, reclamo, alergia) y nadie lo ha
+    // tomado todavía: se le vuelve a avisar al equipo y al cliente se le dice
+    // que sigue en manos de alguien, en vez de seguir vendiendo como si nada.
+    const caso = await this.tickets.casoEnRevision(ctx.conversationId);
+    if (caso) {
+      await this.tickets.insistir(caso.id, 'seguimiento', texto);
+      return {
+        text: 'Ya le volví a avisar al equipo 🙏 Te escriben por aquí en un momento.',
+        awaiting: 'AGENTE',
+        silencioMs: SILENCIO_ESCALADO_MS,
+      };
+    }
+
     const orden = await this.pedidoEnCurso(ctx.conversationId, negocio.organizationId);
     let pedido = orden ? desdeOrden(orden) : pedidoVacio();
 
@@ -249,6 +263,13 @@ export class SalesStrategy {
       return { text: textoSeguro(modelo.respuesta, 'Va, lo dejo así. Aquí estoy si se te antoja algo después.', pedido, negocio), awaiting: 'NADIE' };
     }
 
+    // Sin zonas configuradas no hay contra qué validar una dirección escrita:
+    // la confirma una persona, igual que la ubicación de WhatsApp.
+    if (pedido.deliveryMode === 'DOMICILIO' && pedido.address && negocio.reglas.zonas.length === 0 &&
+        pedido.address !== (orden?.address ?? null)) {
+      return this.confirmarEnvio(pedido.address, null, orden, pedido, negocio, ctx, lectura);
+    }
+
     const guardado = r.cambio || r.listo || orden
       ? await this.guardar(orden, pedido, negocio.organizationId, ctx, false)
       : null;
@@ -319,29 +340,44 @@ export class SalesStrategy {
     if (!negocio.reglas.deliveryModes.includes('DOMICILIO')) {
       return { text: 'Por ahora no hacemos envíos a domicilio 🙏 ¿Te lo dejamos listo para recoger?', awaiting: 'CLIENTE' };
     }
-    const direccion = `${ubicacion.descripcion ? ubicacion.descripcion + ' ' : ''}(${ubicacion.url})`.slice(0, 300);
-    const conUbicacion: Pedido = { ...pedido, deliveryMode: 'DOMICILIO', address: direccion, zone: null, deliveryCents: 0 };
-    await this.guardar(orden, conUbicacion, negocio.organizationId, ctx, false);
+    const direccion = `${ubicacion.descripcion ? ubicacion.descripcion + ' ' : ''}(${ubicacion.url})`;
+    return this.confirmarEnvio(direccion, ubicacion.url, orden, pedido, negocio, ctx, lectura);
+  }
+
+  /** Guarda la entrega a domicilio, abre "Confirmar envío" para el equipo y se lo dice al cliente. */
+  private async confirmarEnvio(
+    direccion: string,
+    url: string | null,
+    orden: Order | null,
+    pedido: Pedido,
+    negocio: Negocio,
+    ctx: StrategyContext,
+    lectura: { v?: LecturaVenta },
+  ): Promise<StrategyReply> {
+    const conDireccion: Pedido = { ...pedido, deliveryMode: 'DOMICILIO', address: direccion.slice(0, 300), zone: null, deliveryCents: 0 };
+    await this.guardar(orden, conDireccion, negocio.organizationId, ctx, false);
     await this.tickets.abrirEscalado({
       conversationId: ctx.conversationId,
       contactId: ctx.contactId,
       organizationId: negocio.organizationId,
-      subject: `Confirmar envío: ${ubicacion.descripcion ?? ubicacion.url}`.slice(0, 120),
+      subject: `Confirmar envío: ${direccion}`.slice(0, 120),
       slots: {
         venta: true,
-        ubicacion: ubicacion.url,
-        lleva: conUbicacion.items.map((i) => `${i.cantidad} × ${i.nombre}${i.nota ? ` (${i.nota})` : ''}`),
+        ...(url ? { ubicacion: url } : { direccion }),
+        lleva: conDireccion.items.map((i) => `${i.cantidad} × ${i.nombre}${i.nota ? ` (${i.nota})` : ''}`),
       },
       reason: 'seguimiento',
     });
-    lectura.v = { salesEmotion: 'interesado', salesIntensity: 3, salesStage: 'cerrando', salesScore: 85, salesSignal: 'mandó su ubicación' };
+    lectura.v = { salesEmotion: 'interesado', salesIntensity: 3, salesStage: 'cerrando', salesScore: 85, salesSignal: url ? 'mandó su ubicación' : 'dio su dirección' };
     // Con la liga, el cliente la abre y confirma que el pin quedó donde es:
     // "y dónde es, solo para confirmar" no tenía respuesta.
     const partes = [
-      `¡Gracias! Recibí esta ubicación 📍\n${ubicacion.url}\n` +
-        'Ábrela para revisar que sea ahí; si no, mándame otra. En cuanto podamos te confirmamos el costo del envío.',
+      url
+        ? `¡Gracias! Recibí esta ubicación 📍\n${url}\n` +
+          'Ábrela para revisar que sea ahí; si no, mándame otra. En cuanto podamos te confirmamos el costo del envío.'
+        : `¡Gracias! Anoté: *${direccion.slice(0, 200)}* 📍\nEn cuanto podamos te confirmamos el costo del envío.`,
     ];
-    if (conUbicacion.items.length > 0) partes.push('Llevas:\n' + resumen(conUbicacion));
+    if (conDireccion.items.length > 0) partes.push('Llevas:\n' + resumen(conDireccion));
     return { text: partes.join('\n\n'), awaiting: 'AGENTE', silencioMs: SILENCIO_ESCALADO_MS };
   }
 
@@ -510,7 +546,9 @@ function validarRespuesta(raw: unknown): RespuestaModelo | null {
 /** "Listo, tu pedido está…", "confirmado", "en 25 minutos": hablar como si ya se hubiera enviado. */
 export function afirmaCierre(texto: string): boolean {
   const t = texto.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  return /\b(pedido (esta|quedo|ya esta) (confirmado|listo|hecho|enviado)|ya (quedo|esta) (confirmado|tu pedido)|confirmado|te lo (tenemos|llevamos|entregamos) en \d+|(listo|llega|estara)[^.?!]{0,40}en \d+ min|\btu (pedido|paquete|pollo|orden)[^.?!]{0,50}en \d+ min|^listo\b[^?]{0,60}\btu (pedido|paquete|pollo|orden))/.test(t);
+  // "todavía no está confirmado" dice lo contrario: no es dar el pedido por hecho.
+  if (/\b(no|aun no|todavia no|sin)\b[^.?!]{0,25}\b(confirmad|enviad|listo)/.test(t)) return false;
+  return /\b(pedido (esta|quedo|ya esta) (confirmado|listo|hecho|enviado)|ya (quedo|esta) (confirmado|tu pedido)|(queda|quedo|esta) confirmado|te lo (tenemos|llevamos|entregamos) en \d+|(listo|llega|estara)[^.?!]{0,40}en \d+ min|\btu (pedido|paquete|pollo|orden)[^.?!]{0,50}en \d+ min|^listo\b[^?]{0,60}\btu (pedido|paquete|pollo|orden))/.test(t);
 }
 
 /** El texto del modelo, salvo que mencione un monto que no sale del catálogo. */

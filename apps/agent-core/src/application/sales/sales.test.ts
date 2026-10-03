@@ -152,6 +152,9 @@ function arnes() {
   return { prisma, llm, guion, ordenes, mensajes, borradores };
 }
 
+/** Tickets de prueba: sin caso abierto con una persona. */
+const sinCaso = { casoEnRevision: async () => null };
+
 const lectura = (probabilidad: number, etapa = 'decidiendo') =>
   ({ emocion: 'interesado', intensidad: 3, etapa, probabilidad, senal: 'pide producto concreto' });
 
@@ -159,7 +162,7 @@ test('venta completa: recomienda, arma, resume con precios reales y solo con "s�
   t.mock.timers.enable({ apis: ['Date'], now: viernesMediodia });
   const { SalesStrategy } = await import('./sales.strategy');
   const h = arnes();
-  const ventas = new SalesStrategy(h.prisma as never, h.llm as never, { recent: async () => [] } as never, {} as never);
+  const ventas = new SalesStrategy(h.prisma as never, h.llm as never, { recent: async () => [] } as never, sinCaso as never);
   const ctx = { contactId: 'c1', conversationId: 'conv1' };
   const msg = (body: string, id: string) => ({ id, chatId: 'linea:pollos:521555@c.us', senderId: '521555@c.us', body, kind: 'TEXT' }) as never;
   const negocio = (await ventas.negocioDe('linea:pollos:521555@c.us'))!;
@@ -202,7 +205,7 @@ test('si el modelo inventa un precio, ese texto no sale', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: viernesMediodia });
   const { SalesStrategy } = await import('./sales.strategy');
   const h = arnes();
-  const ventas = new SalesStrategy(h.prisma as never, h.llm as never, { recent: async () => [] } as never, {} as never);
+  const ventas = new SalesStrategy(h.prisma as never, h.llm as never, { recent: async () => [] } as never, sinCaso as never);
   const negocio = (await ventas.negocioDe('linea:pollos:521555@c.us'))!;
   h.guion.push({ respuesta: 'Hoy te lo dejo en $150, oferta especial.', acciones: [], lectura: lectura(40, 'explorando') });
   const r = await ventas.handle({ id: 'm1', chatId: 'linea:pollos:5@c.us', senderId: '5@c.us', body: '¿precio del pollo?', kind: 'TEXT' } as never,
@@ -286,7 +289,7 @@ async function ventasDePrueba(
   t.mock.timers.enable({ apis: ['Date'], now: viernesMediodia });
   const { SalesStrategy } = await import('./sales.strategy');
   const h = arnes();
-  const ventas = new SalesStrategy(h.prisma as never, h.llm as never, { recent: async () => [] } as never, tickets as never);
+  const ventas = new SalesStrategy(h.prisma as never, h.llm as never, { recent: async () => [] } as never, { ...sinCaso, ...(tickets as object) } as never);
   const negocio = (await ventas.negocioDe('linea:pollos:521555@c.us'))!;
   let n = 0;
   const decir = (body: string) =>
@@ -447,9 +450,70 @@ test('un audio sin texto recibe respuesta en vez de silencio', async (t) => {
   const { SalesStrategy } = await import('./sales.strategy');
   t.mock.timers.enable({ apis: ['Date'], now: viernesMediodia });
   const h = arnes();
-  const ventas = new SalesStrategy(h.prisma as never, h.llm as never, { recent: async () => [] } as never, {} as never);
+  const ventas = new SalesStrategy(h.prisma as never, h.llm as never, { recent: async () => [] } as never, sinCaso as never);
   const negocio = (await ventas.negocioDe('linea:pollos:521555@c.us'))!;
   const r = await ventas.handle({ id: 'a1', chatId: 'linea:pollos:521555@c.us', senderId: '521555@c.us', body: '', kind: 'AUDIO' } as never,
     { contactId: 'c1', conversationId: 'conv1' }, negocio);
   assert.match(r!.text, /no puedo escuchar audios/);
+});
+
+// ── Riesgos de la auditoría ─────────────────────────────────────────────
+
+test('un precio suelto no es presupuesto ("¿el de $99 qué trae?")', () => {
+  assert.equal(leerPresupuesto(['¿El de $99 qué trae?']), null);
+  assert.equal(leerPresupuesto(['¿cuánto el de 360 pesos?']), null);
+  assert.equal(leerPresupuesto(['no tengo más de $150']), 15000);
+});
+
+test('"todavía no está confirmado" no cuenta como dar el pedido por hecho', async () => {
+  const { afirmaCierre } = await import('./sales.strategy');
+  assert.equal(afirmaCierre('Tu pedido todavía no está confirmado, ¿te muestro el resumen?'), false);
+  assert.equal(afirmaCierre('Aún no queda confirmado.'), false);
+  assert.equal(afirmaCierre('Listo, tu pedido quedó confirmado.'), true);
+});
+
+test('si hay un caso abierto con una persona, se le vuelve a avisar al equipo en vez de seguir vendiendo', async (t) => {
+  const avisos: string[] = [];
+  const tickets = {
+    casoEnRevision: async () => ({ id: 't1', number: 246 }),
+    insistir: async (_id: string, _r: string, texto: string) => { avisos.push(texto); return null; },
+  };
+  const { h, decir } = await ventasDePrueba(t, tickets);
+  const r = await decir('¿ya mero?');
+  assert.match(r!.text, /volví a avisar al equipo/);
+  assert.equal(r!.awaiting, 'AGENTE');
+  assert.ok((r!.silencioMs ?? 0) > 0 && (r!.silencioMs ?? 0) <= 30 * 60 * 1000, 'silencio corto, no de horas');
+  assert.deepEqual(avisos, ['¿ya mero?']);
+  assert.equal(h.guion.length, 0, 'no gasta llamada al modelo');
+});
+
+test('sin zonas configuradas, una dirección escrita la confirma una persona', async (t) => {
+  const abiertos: Array<Record<string, unknown>> = [];
+  const tickets = { abrirEscalado: async (x: Record<string, unknown>) => { abiertos.push(x); return { ticket: {}, agente: null }; } };
+  t.mock.timers.enable({ apis: ['Date'], now: viernesMediodia });
+  const { SalesStrategy } = await import('./sales.strategy');
+  const h = arnes();
+  const original = h.prisma.organization.findUnique;
+  h.prisma.organization.findUnique = async () => {
+    const o = await original();
+    return { ...o, sales: { ...o.sales, zones: [] } };
+  };
+  const ventas = new SalesStrategy(h.prisma as never, h.llm as never, { recent: async () => [] } as never, { ...sinCaso, ...tickets } as never);
+  const negocio = (await ventas.negocioDe('linea:pollos:521555@c.us'))!;
+  h.guion.push({
+    analisis,
+    respuesta: 'Perfecto, te lo llevamos ahí.',
+    acciones: [
+      accionModelo({ tipo: 'agregar', productoId: 'medio', cantidad: 1 }),
+      accionModelo({ tipo: 'entrega', modo: 'DOMICILIO', texto: 'Calle 28 Pte 93, SM 93' }),
+    ],
+    lectura: lectura(70),
+  });
+  const r = await ventas.handle({ id: 'z1', chatId: 'linea:pollos:521555@c.us', senderId: '521555@c.us', body: 'medio pollo a calle 28 pte 93', kind: 'TEXT' } as never,
+    { contactId: 'c1', conversationId: 'conv1' }, negocio);
+  assert.match(r!.text, /^¡Gracias! Anoté: \*Calle 28 Pte 93, SM 93\*/);
+  assert.match(r!.text, /te confirmamos el costo del envío/);
+  assert.doesNotMatch(r!.text, /te lo llevamos ahí/);
+  assert.equal(abiertos[0]!.reason, 'seguimiento');
+  assert.match(String(abiertos[0]!.subject), /^Confirmar envío: Calle 28 Pte 93/);
 });
