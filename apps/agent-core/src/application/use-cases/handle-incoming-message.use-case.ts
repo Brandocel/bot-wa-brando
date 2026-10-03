@@ -286,6 +286,15 @@ export class HandleIncomingMessageUseCase {
       if (strategyReply?.clasificacion) {
         await etiquetar(tx, message.id, strategyReply.clasificacion);
       }
+
+      // Con tx: este renglón ya lo tiene tomado esta transacción.
+      if (strategyReply?.lecturaVenta) {
+        await tx.message.update({
+          where: { id: message.id },
+          data: strategyReply.lecturaVenta,
+          select: { id: true },
+        });
+      }
     });
 
     // Fuera de la transacción: la red no va dentro de un lock.

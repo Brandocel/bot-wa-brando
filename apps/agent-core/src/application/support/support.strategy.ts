@@ -111,6 +111,20 @@ export interface StrategyReply {
   topic?: DocCategory | null;
   /** Qué clase de mensaje era: se guarda en el mensaje entrante. */
   clasificacion?: Clasificacion;
+  /**
+   * Cómo se lee al cliente en una venta. Se guarda en el mensaje entrante
+   * con la transacción del turno: escribirlo desde otra conexión bloqueaba
+   * el turno entero (ver SalesStrategy.guardarLectura).
+   */
+  lecturaVenta?: LecturaVenta;
+}
+
+export interface LecturaVenta {
+  salesEmotion: string;
+  salesIntensity: number;
+  salesStage: string;
+  salesScore: number;
+  salesSignal: string | null;
 }
 
 export interface StrategyContext {

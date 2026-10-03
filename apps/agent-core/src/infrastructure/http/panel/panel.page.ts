@@ -1671,7 +1671,8 @@ const VISTAS = {
       return cambiar + (o.sourceType === 'PC'
         ? '<button class="mini" data-codigo-pc="' + o.id + '" data-nombre="' + esc(o.name) + '">Conectar PC</button>'
         : '<button class="mini" data-guardar="' + o.id + '">Guardar</button>') +
-        ' <button class="mini" data-accesos="' + o.id + '">Accesos al panel</button>';
+        ' <button class="mini" data-accesos="' + o.id + '">Accesos al panel</button>' +
+        ' <button class="mini peligro" data-borrar-empresa="' + o.id + '" data-nombre="' + esc(o.name) + '" title="Eliminar empresa">Eliminar</button>';
     };
 
     // El estado de cada conector se pide después de pintar la tabla: son
@@ -2121,6 +2122,25 @@ document.addEventListener('click', async (e) => {
       await enviar('empresas/whatsapp/desconectar', { id: desconectarWa.dataset.desconectarWa });
       if (qrWa?.id === desconectarWa.dataset.desconectarWa) { qrWa = null; clearInterval(qrWaTimer); }
       aviso('Número desconectado');
+      pintar('empresas');
+    } catch (err) { aviso(err.message, 'error'); }
+    return;
+  }
+
+  // Borrar una empresa se lleva todo lo suyo: se pide el nombre escrito,
+  // no un clic, para que no pase por accidente.
+  const borrarEmpresa = e.target.closest('[data-borrar-empresa]');
+  if (borrarEmpresa) {
+    const nombre = borrarEmpresa.dataset.nombre;
+    const escrito = prompt('Vas a eliminar "' + nombre + '" para siempre: sus números autorizados, documentos indexados, ' +
+      'usuarios de panel, catálogo y pedidos. Su WhatsApp propio se desvincula. Los archivos en Drive o en la PC no se tocan.\\n\\n' +
+      'Escribe el nombre de la empresa para confirmar:');
+    if (escrito === null) return;
+    if (escrito.trim() !== nombre.trim()) { aviso('El nombre no coincide: no se eliminó nada', 'error'); return; }
+    try {
+      await enviar('empresas/borrar', { id: borrarEmpresa.dataset.borrarEmpresa, confirmar: escrito });
+      if (vtEmpresa === borrarEmpresa.dataset.borrarEmpresa) vtEmpresa = null;
+      aviso('Empresa eliminada');
       pintar('empresas');
     } catch (err) { aviso(err.message, 'error'); }
     return;

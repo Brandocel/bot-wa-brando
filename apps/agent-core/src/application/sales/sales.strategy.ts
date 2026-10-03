@@ -6,7 +6,7 @@ import type { IncomingMessage } from '../../domain/message/incoming-message';
 import { LLM_PORT, type LlmPort } from '../ports/llm.port';
 import { ConversationHistoryService } from '../support/conversation-history.service';
 import { TicketService } from '../support/ticket.service';
-import type { StrategyContext, StrategyReply } from '../support/support.strategy';
+import type { LecturaVenta, StrategyContext, StrategyReply } from '../support/support.strategy';
 import { ESQUEMA_VENTA, SISTEMA_VENTA } from './guion-venta';
 import {
   abiertoEn,
@@ -128,6 +128,17 @@ export class SalesStrategy {
     ctx: StrategyContext,
     negocio: Negocio,
   ): Promise<StrategyReply | null> {
+    const lectura: { v?: LecturaVenta } = {};
+    const reply = await this.atender(message, ctx, negocio, lectura);
+    return reply && lectura.v ? { ...reply, lecturaVenta: lectura.v } : reply;
+  }
+
+  private async atender(
+    message: IncomingMessage,
+    ctx: StrategyContext,
+    negocio: Negocio,
+    lectura: { v?: LecturaVenta },
+  ): Promise<StrategyReply | null> {
     const texto = message.body.trim();
     if (texto === '') return null;
     const ahora = new Date();
@@ -137,7 +148,7 @@ export class SalesStrategy {
 
     // El resumen ya se le mostró: un "sí" claro lo manda a la empresa.
     if (orden?.confirmPending) {
-      if (confirmaPedido(texto)) return this.enviar(orden, pedido, negocio, message, ahora);
+      if (confirmaPedido(texto)) return this.enviar(orden, pedido, negocio, lectura, ahora);
       await this.prisma.order.update({ where: { id: orden.id }, data: { confirmPending: false } });
     }
 
@@ -178,13 +189,13 @@ export class SalesStrategy {
         slots: { venta: true, lleva: pedido.items.map((i) => `${i.cantidad} × ${i.nombre}`) },
         reason: 'pidio_humano',
       });
-      await this.guardarLectura(message.id, orden?.id ?? null, modelo.lectura, pedido, false, { cancelo: false, enviado: false });
+      await this.guardarLectura(lectura, orden?.id ?? null, modelo.lectura, pedido, false, { cancelo: false, enviado: false });
       return { text: `Claro, le paso tu mensaje a alguien de ${negocio.nombre} y te escribe por aquí.`, awaiting: 'AGENTE' };
     }
 
     if (r.cancelar) {
       if (orden) await this.prisma.order.update({ where: { id: orden.id }, data: { status: 'CANCELADO', confirmPending: false } });
-      await this.guardarLectura(message.id, orden?.id ?? null, modelo.lectura, pedido, false, { cancelo: true, enviado: false });
+      await this.guardarLectura(lectura, orden?.id ?? null, modelo.lectura, pedido, false, { cancelo: true, enviado: false });
       return { text: textoSeguro(modelo.respuesta, 'Va, lo dejo así. Aquí estoy si se te antoja algo después.', pedido, negocio), awaiting: 'NADIE' };
     }
 
@@ -196,15 +207,15 @@ export class SalesStrategy {
       const falta = faltantes(pedido, negocio.reglas, ahora, negocio.catalogo);
       if (falta.length === 0 && guardado) {
         await this.prisma.order.update({ where: { id: guardado.id }, data: { confirmPending: true } });
-        await this.guardarLectura(message.id, guardado.id, modelo.lectura, pedido, true, { cancelo: false, enviado: false });
+        await this.guardarLectura(lectura, guardado.id, modelo.lectura, pedido, true, { cancelo: false, enviado: false });
         return { text: resumenFinal(pedido, negocio, ahora), awaiting: 'CLIENTE' };
       }
       // El modelo lo dio por listo antes de tiempo: se pide lo que falta.
-      await this.guardarLectura(message.id, guardado?.id ?? null, modelo.lectura, pedido, false, { cancelo: false, enviado: false });
+      await this.guardarLectura(lectura, guardado?.id ?? null, modelo.lectura, pedido, false, { cancelo: false, enviado: false });
       return { text: preguntaPor(falta[0]!, pedido, negocio, ahora), awaiting: 'CLIENTE' };
     }
 
-    await this.guardarLectura(message.id, guardado?.id ?? null, modelo.lectura, pedido, false, { cancelo: false, enviado: false });
+    await this.guardarLectura(lectura, guardado?.id ?? null, modelo.lectura, pedido, false, { cancelo: false, enviado: false });
 
     const partes = [textoSeguro(modelo.respuesta, '¿Qué más te gustaría agregar?', pedido, negocio)];
     if (r.avisos.length) partes.push(r.avisos.join(' '));
@@ -217,7 +228,7 @@ export class SalesStrategy {
     orden: Order,
     pedido: Pedido,
     negocio: Negocio,
-    message: IncomingMessage,
+    lectura: { v?: LecturaVenta },
     ahora: Date,
   ): Promise<StrategyReply> {
     // Entre el resumen y el sí pudo cerrar el negocio o cambiar algo.
@@ -231,10 +242,7 @@ export class SalesStrategy {
       where: { id: orden.id },
       data: { status: 'POR_ACEPTAR', confirmPending: false, submittedAt: ahora, buyingScore: 100 },
     });
-    await this.prisma.message.updateMany({
-      where: { id: message.id },
-      data: { salesEmotion: 'entusiasmado', salesIntensity: 3, salesStage: 'cerrando', salesScore: 100, salesSignal: 'confirmó el resumen' },
-    });
+    lectura.v = { salesEmotion: 'entusiasmado', salesIntensity: 3, salesStage: 'cerrando', salesScore: 100, salesSignal: 'confirmó el resumen' };
 
     const nombre = pedido.customerName?.split(' ')[0] ?? '';
     return {
@@ -282,9 +290,18 @@ export class SalesStrategy {
         });
   }
 
-  /** La lectura va al mensaje y al pedido. Si falla, la venta sigue. */
+  /**
+   * La lectura va al pedido aquí, y al mensaje por el caso de uso.
+   *
+   * La del mensaje NO se escribe con this.prisma: la transacción del turno
+   * ya tiene tomado ese renglón (lo marcó atendido), así que un UPDATE desde
+   * otra conexión esperaba a que la transacción terminara, y la transacción
+   * esperaba a este UPDATE. A los 60 s se vencía, se deshacía todo —también
+   * la respuesta— y el cliente nunca recibía nada. Se deja en `destino` y
+   * el caso de uso la escribe con su propia transacción.
+   */
   private async guardarLectura(
-    messageId: string,
+    destino: { v?: LecturaVenta },
     orderId: string | null,
     lectura: LecturaModelo,
     pedido: Pedido,
@@ -292,20 +309,18 @@ export class SalesStrategy {
     opciones: { cancelo: boolean; enviado: boolean },
   ): Promise<void> {
     const score = mezclar(lectura, avanceDelPedido(pedido, confirmPending), opciones);
+    destino.v = {
+      salesEmotion: lectura.emocion,
+      salesIntensity: lectura.intensidad,
+      salesStage: lectura.etapa,
+      salesScore: score,
+      salesSignal: lectura.senal || null,
+    };
+    if (!orderId) return;
     try {
-      await this.prisma.message.updateMany({
-        where: { id: messageId },
-        data: {
-          salesEmotion: lectura.emocion,
-          salesIntensity: lectura.intensidad,
-          salesStage: lectura.etapa,
-          salesScore: score,
-          salesSignal: lectura.senal || null,
-        },
-      });
-      if (orderId) await this.prisma.order.update({ where: { id: orderId }, data: { buyingScore: score } });
+      await this.prisma.order.update({ where: { id: orderId }, data: { buyingScore: score } });
     } catch (err) {
-      this.logger.warn(`no se guardó la lectura de ${messageId}: ${String(err)}`);
+      this.logger.warn(`no se guardó la probabilidad del pedido ${orderId}: ${String(err)}`);
     }
   }
 }

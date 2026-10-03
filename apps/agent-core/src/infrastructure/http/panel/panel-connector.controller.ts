@@ -149,6 +149,36 @@ export class PanelConnectorController {
     return { ok: true };
   }
 
+  /**
+   * Elimina una empresa para siempre.
+   *
+   * Se lleva en cascada lo que solo existe por ella: números autorizados,
+   * índice de documentos (los archivos en Drive o en la PC no se tocan),
+   * conectores, usuarios de panel, catálogo, configuración de ventas y
+   * pedidos. Los tickets se quedan, sin empresa, para no perder el
+   * historial de lo que se atendió. Su WhatsApp propio se desvincula antes.
+   *
+   * Hay que escribir el nombre exacto: un clic suelto no puede borrar una
+   * empresa con todo lo suyo.
+   */
+  @Post('borrar')
+  async deleteOrganization(@Req() req: PanelRequest, @Body() body: { id?: string; confirmar?: string }) {
+    this.requireAdmin(req);
+    if (!body.id) throw new BadRequestException('falta el id');
+    const org = await this.prisma.organization.findUnique({
+      where: { id: body.id },
+      select: { name: true, waLineId: true },
+    });
+    if (!org) throw new BadRequestException('no existe esa empresa');
+    if ((body.confirmar ?? '').trim() !== org.name.trim()) {
+      throw new BadRequestException('escribe el nombre exacto de la empresa para confirmar');
+    }
+
+    if (org.waLineId) await this.lineas.borrar(org.waLineId).catch(() => undefined);
+    await this.prisma.organization.delete({ where: { id: body.id } });
+    return { ok: true };
+  }
+
   private requireAdmin(req: PanelRequest): void {
     if (req.panelUser?.role !== 'ADMIN') {
       throw new ForbiddenException('hace falta ser ADMIN');

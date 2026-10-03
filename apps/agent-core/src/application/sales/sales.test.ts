@@ -161,7 +161,10 @@ test('venta completa: recomienda, arma, resume con precios reales y solo con "s�
   });
   const r1 = await ventas.handle(msg('quiero pollo para 4', 'm1'), ctx, negocio);
   assert.match(r1!.text, /Llevas:[\s\S]*Pollo entero — \$215/);
-  assert.equal(h.mensajes[0]!.salesStage, 'decidiendo');
+  // La lectura viaja en la respuesta y la escribe el caso de uso con su
+  // transacción: escribirla aquí bloqueaba el turno (el renglón ya está tomado).
+  assert.equal(r1!.lecturaVenta?.salesStage, 'decidiendo');
+  assert.equal(h.mensajes.length, 0, 'ventas no escribe el mensaje por su cuenta');
 
   h.guion.push({
     respuesta: 'Perfecto, lo dejo listo.',
