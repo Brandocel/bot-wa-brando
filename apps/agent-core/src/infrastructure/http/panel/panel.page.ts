@@ -212,7 +212,11 @@ const TITULOS = {
 const api = async (ruta) => {
   const res = await fetch('/panel/api/' + ruta);
   if (res.status === 401) { location.href = '/panel/login'; return null; }
-  return res.json();
+  // Un error del servidor llega como objeto ({ statusCode, message }); sin
+  // esto, la vista lo trataba como lista y tronaba con "x.map is not a function".
+  const datos = await res.json().catch(() => null);
+  if (!res.ok) throw new Error((datos && datos.message) || 'el servidor respondió ' + res.status);
+  return datos;
 };
 
 const enviar = async (ruta, cuerpo) => {
@@ -465,13 +469,25 @@ async function abrirHilo(chatId, silencioso) {
 
   pintarEstadoHilo(datos);
 
+  // Por qué número escribió. La misma persona por el número principal y
+  // por el de una empresa son dos chats distintos (como en WhatsApp), y sin
+  // esta etiqueta se veían como un chat duplicado.
+  const lineaHilo = separarLinea(chatId).linea;
+  if (lineaHilo && !nombresDeLinea[lineaHilo]) await cargarLineas().catch(() => {});
+  const empresaLinea = lineaHilo ? (nombresDeLinea[lineaHilo] ?? 'otra empresa') : null;
+  const pillLinea = empresaLinea
+    ? '<span class="pill linea" title="Escribió al WhatsApp de esta empresa">WhatsApp de ' + esc(empresaLinea) + '</span>'
+    : '<span class="pill" title="Escribió al número principal">número principal</span>';
+
   const membresias = datos.contact?.memberships ?? [];
-  document.getElementById('hilo-meta').innerHTML = membresias.length
+  document.getElementById('hilo-meta').innerHTML = pillLinea + (membresias.length
     ? membresias.map((m) =>
         '<span class="pill">' + esc(m.organization.name) + ' · ' + m.role.toLowerCase() +
         (m.verifiedAt ? '' : ' · <span class="warn-text">sin verificar</span>') + '</span>',
       ).join('')
-    : '<span class="pill warn">sin acceso a ninguna empresa</span>';
+    : empresaLinea
+      ? '<span class="pill">cliente nuevo de la empresa</span>'
+      : '<span class="pill warn">sin acceso a ninguna empresa</span>');
 
   // Los tickets van en un cajón lateral, no encima del chat: son casos de
   // soporte, y la mayoría de las conversaciones no tienen ninguno.
@@ -1211,10 +1227,43 @@ function pillScore(score) {
   return '<span class="pill ' + color + '" title="Probabilidad de que termine en compra">' + score + '% compra</span>';
 }
 
+/**
+ * La empresa que se ve en Ventas.
+ *
+ * Antes abría en la primera por orden alfabético, y el catálogo de una
+ * pollería acabó capturado en una constructora. Ahora recuerda la última
+ * que elegiste y, si no hay, abre en una que de verdad vende: con WhatsApp
+ * propio y ventas activas.
+ */
 function empresaVentas(empresas) {
   if (yo?.role === 'EMPRESA') return yo.organizationId;
-  if (!empresas.some((o) => o.id === vtEmpresa)) vtEmpresa = empresas[0]?.id ?? null;
+  if (!empresas.some((o) => o.id === vtEmpresa)) {
+    let guardada = null;
+    try { guardada = localStorage.getItem('vt-empresa'); } catch {}
+    vtEmpresa = (empresas.find((o) => o.id === guardada)
+      ?? empresas.find((o) => o.waLineId && o.sales?.enabled)
+      ?? empresas.find((o) => o.waLineId)
+      ?? empresas[0])?.id ?? null;
+  }
   return vtEmpresa;
+}
+
+/** Qué empresa estás viendo y si de verdad puede vender, antes de capturar nada. */
+function vtFicha(o) {
+  const vende = o.sales?.enabled;
+  const productos = o._count?.products ?? 0;
+  const pills =
+    (o.waLineId
+      ? '<span class="pill ok">WhatsApp ' + esc(o.waNumber ? '+' + o.waNumber : 'conectado') + '</span>'
+      : '<span class="pill warn">sin WhatsApp propio</span>') +
+    (vende ? '<span class="pill ok">ventas activas</span>' : '<span class="pill">ventas apagadas</span>') +
+    '<span class="pill">' + productos + (productos === 1 ? ' producto' : ' productos') + '</span>';
+  const alerta = !o.waLineId
+    ? '<p class="alert">' + esc(o.name) + ' no tiene WhatsApp propio. Las ventas solo entran por el número de la empresa: ' +
+        'conéctalo en Empresas. Mientras tanto, el bot no ofrece nada de lo que captures aquí.</p>'
+    : '';
+  return '<div class="card vt-ficha"><div class="vt-ficha-nombre"><span class="muted small">Estás viendo</span>' +
+    '<strong>' + esc(o.name) + '</strong></div><div class="fila-pills">' + pills + '</div></div>' + alerta;
 }
 
 const conEmpresa = (ruta) => ruta + (yo?.role === 'EMPRESA' ? '' : (ruta.includes('?') ? '&' : '?') + 'empresa=' + encodeURIComponent(vtEmpresa));
@@ -1223,13 +1272,21 @@ async function vistaVentas() {
   const empresas = await api('empresas');
   if (!empresaVentas(empresas)) return '<p class="vacio">No hay empresas registradas.</p>';
 
-  const selector = yo?.role === 'EMPRESA' ? '' : '<select class="compacto" id="vt-empresa">' + empresas.map((o) =>
-    '<option value="' + o.id + '"' + (o.id === vtEmpresa ? ' selected' : '') + '>' + esc(o.name) + '</option>').join('') + '</select>';
+  // Las que venden primero: son las que el equipo viene a revisar.
+  const orden = [...empresas].sort((a, b) =>
+    Number(!!b.sales?.enabled) - Number(!!a.sales?.enabled) ||
+    Number(!!b.waLineId) - Number(!!a.waLineId) ||
+    a.name.localeCompare(b.name, 'es'));
+  const selector = yo?.role === 'EMPRESA' ? '' :
+    '<label class="campo en-linea vt-selector">Empresa<select id="vt-empresa">' + orden.map((o) =>
+      '<option value="' + o.id + '"' + (o.id === vtEmpresa ? ' selected' : '') + '>' + esc(o.name) +
+        (o.sales?.enabled ? ' · vende' : o.waLineId ? ' · WhatsApp propio' : '') + '</option>').join('') + '</select></label>';
   const tabs = [['pedidos', 'Pedidos'], ['catalogo', 'Catálogo'], ['config', 'Configuración']].map(([v, t]) =>
     '<button class="chip' + (vtTab === v ? ' activo' : '') + '" data-vt-tab="' + v + '">' + t + '</button>').join('');
 
+  const actual = empresas.find((o) => o.id === vtEmpresa);
   const cuerpo = vtTab === 'catalogo' ? await vtCatalogo() : vtTab === 'config' ? await vtConfig() : await vtPedidos();
-  return '<div class="dir-barra">' + selector + tabs + '</div>' + cuerpo;
+  return '<div class="dir-barra">' + selector + tabs + '</div>' + (actual ? vtFicha(actual) : '') + cuerpo;
 }
 
 async function vtPedidos() {
@@ -1416,7 +1473,12 @@ document.addEventListener('click', async (e) => {
 });
 
 document.addEventListener('change', (e) => {
-  if (e.target.id === 'vt-empresa') { vtEmpresa = e.target.value; vtProducto = null; repintarVentas(); }
+  if (e.target.id === 'vt-empresa') {
+    vtEmpresa = e.target.value;
+    vtProducto = null;
+    try { localStorage.setItem('vt-empresa', vtEmpresa); } catch {}
+    repintarVentas();
+  }
 });
 
 document.addEventListener('submit', async (e) => {
@@ -1515,7 +1577,12 @@ const VISTAS = {
                 (separarLinea(c.chatId).linea
                   ? ' <span class="pill linea" title="Llegó al WhatsApp de esta empresa">' +
                       esc(nombresDeLinea[separarLinea(c.chatId).linea] ?? 'otra línea') + '</span>'
-                  : '') +
+                  // Con empresas en su propio número, también se marca el
+                  // principal: si no, la misma persona en los dos parecía
+                  // un chat duplicado.
+                  : Object.keys(nombresDeLinea).length
+                    ? ' <span class="pill" title="Llegó al número principal">número principal</span>'
+                    : '') +
                 (c.topic ? ' <span class="pill">' + esc(c.topic) + '</span>' : '') +
                 (c.quejas ? ' <span class="pill tipo-queja">queja</span>' : '') +
                 (c.tickets[0] ? ' <span class="folio">#' + c.tickets[0].number + '</span>' : '') +
@@ -2944,6 +3011,12 @@ const STYLES = `<link rel="preconnect" href="https://fonts.googleapis.com">
   .vt-acciones { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; }
   .vt-acciones .campo.en-linea { flex-direction: row; align-items: center; gap: 6px; }
   .vt-acciones .campo.en-linea input { width: 72px; }
+  .vt-selector { flex-direction: row; align-items: center; gap: 8px; font-weight: 600; }
+  .vt-selector select { min-width: 220px; }
+  .vt-ficha { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin: 12px 0; }
+  .vt-ficha-nombre { display: flex; flex-direction: column; }
+  .vt-ficha-nombre strong { font-size: 18px; }
+  .vt-ficha .fila-pills { margin-top: 0; }
   .vt-motivo {
     flex: 1 1 140px; background: var(--caja); border: 1px solid var(--borde); border-radius: 9px;
     padding: 7px 10px; color: var(--texto); font: inherit; font-size: 13px;

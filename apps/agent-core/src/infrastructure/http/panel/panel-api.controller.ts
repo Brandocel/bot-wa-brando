@@ -524,8 +524,12 @@ export class PanelApiController {
         active: true,
         waLineId: true,
         waNumber: true,
+        // Para que Ventas abra en la empresa que de verdad vende, y no en
+        // la primera por orden alfabético.
+        sales: { select: { enabled: true } },
         _count: {
           select: {
+            products: { where: { active: true } },
             memberships: true,
             // Los borrados se guardan para la auditoría, pero contarlos
             // aquí hacía creer que la empresa tenía documentos que ya no están.

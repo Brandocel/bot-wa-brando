@@ -29,7 +29,6 @@ CREATE TABLE "Product" (
     "description" TEXT NOT NULL DEFAULT '',
     "section" TEXT NOT NULL DEFAULT '',
     "priceCents" INTEGER NOT NULL,
-    "availableDays" TEXT[] DEFAULT ARRAY[]::TEXT[],
     "active" BOOLEAN NOT NULL DEFAULT true,
     "sortOrder" INTEGER NOT NULL DEFAULT 0,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
