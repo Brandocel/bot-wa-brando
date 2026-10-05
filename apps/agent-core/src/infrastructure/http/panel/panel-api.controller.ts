@@ -529,7 +529,7 @@ export class PanelApiController {
         sales: { select: { enabled: true } },
         // Para la tarjeta de configuración de cada empresa en el panel.
         invoicing: { select: { enabled: true, sandbox: true } },
-        memberships: { where: { canInvoice: true, revokedAt: null }, select: { id: true } },
+        memberships: { where: { canInvoice: true, revokedAt: null }, select: { id: true, fullName: true, contact: { select: { displayName: true } } } },
         _count: {
           select: {
             products: { where: { active: true } },

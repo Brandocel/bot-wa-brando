@@ -20,6 +20,7 @@
  * de que un tercero esté arriba para dibujar un menú.
  */
 const TRAZOS: Record<string, string> = {
+  bandeja: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
   chat: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
   ticket: '<path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="M13 5v2"/><path d="M13 17v2"/><path d="M13 11v2"/>',
   usuarios: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
@@ -102,7 +103,8 @@ export function panelPage(): string {
       <button class="icon nav-text" id="nav-plegar" title="Plegar menú">${icono('panel')}</button>
     </div>
     <nav class="nav-items">
-      <button data-view="bandeja" class="active" title="Conversaciones">${icono('chat')}<span class="nav-text">Conversaciones</span><span class="badge nav-text" id="badge-persona" hidden></span></button>
+      <button data-view="pendientes" class="active" title="Pendientes">${icono('bandeja')}<span class="nav-text">Pendientes</span><span class="badge nav-text" id="badge-pendientes" hidden></span></button>
+      <button data-view="bandeja" title="Conversaciones">${icono('chat')}<span class="nav-text">Conversaciones</span><span class="badge nav-text" id="badge-persona" hidden></span></button>
       <button data-view="tickets" title="Tickets">${icono('ticket')}<span class="nav-text">Tickets</span></button>
       <button data-view="directorio" title="Directorio">${icono('usuarios')}<span class="nav-text">Directorio</span></button>
       <button data-view="empresas" title="Empresas">${icono('empresa')}<span class="nav-text">Empresas</span></button>
@@ -136,6 +138,14 @@ export function panelPage(): string {
     </header>
     <main id="contenido"><p class="muted">Cargando…</p></main>
   </div>
+
+  <!-- Panel lateral: formularios y avisos, sin sacarte de donde estás -->
+  <div id="cajon-velo" class="cajon-velo" hidden></div>
+  <aside id="cajon" class="cajon" hidden role="dialog" aria-modal="true" aria-labelledby="cajon-titulo">
+    <div class="cajon-head"><strong id="cajon-titulo"></strong><span class="spacer"></span>
+      <button class="icon" id="cajon-cerrar" title="Cerrar">${icono('cerrar')}</button></div>
+    <div id="cajon-cuerpo" class="cajon-cuerpo"></div>
+  </aside>
 
   <!-- Hilo -->
   <aside id="hilo" hidden>
@@ -189,7 +199,7 @@ export function panelPage(): string {
 <script>
 const contenido = document.getElementById('contenido');
 const app = document.getElementById('app');
-let vistaActual = 'bandeja';
+let vistaActual = 'pendientes';
 let filtroBandeja = 'todas';
 // Lo que se escribió en el buscador de conversaciones. Filtra las filas ya
 // pintadas, así no se pierde el foco ni se pide nada al servidor.
@@ -205,7 +215,7 @@ let chatAbierto = null;
 let ultimoHilo = null;
 
 const TITULOS = {
-  bandeja: 'Conversaciones', tickets: 'Tickets', directorio: 'Directorio',
+  pendientes: 'Pendientes', bandeja: 'Conversaciones', tickets: 'Tickets', directorio: 'Directorio',
   empresas: 'Empresas', ventas: 'Ventas', documentos: 'Documentos', cuarentena: 'Cuarentena', auditoria: 'Auditoría', ajustes: 'Ajustes',
 };
 
@@ -762,7 +772,8 @@ document.addEventListener('click', async (e) => {
 
   const ir = e.target.closest('[data-ir]');
   if (ir) {
-    if (ir.dataset.irFiltro) filtroBandeja = ir.dataset.irFiltro;
+    if (ir.dataset.ir === 'pendientes') { pendFiltro = ir.dataset.irFiltro || 'todo'; pendSel = null; }
+    else if (ir.dataset.irFiltro) filtroBandeja = ir.dataset.irFiltro;
     if (ir.dataset.ir === 'cuarentena') filtroCuarentena = 'revision';
     pintar(ir.dataset.ir);
     return;
@@ -1021,10 +1032,12 @@ function fichaNuevo(empresas) {
     '</form>';
 }
 
-async function vistaDirectorio() {
+/** Con "fija", es la pestaña Personas de esa empresa: sin selector de empresa. */
+async function vistaDirectorio(fija) {
   const [filas, empresas] = await Promise.all([api('numeros'), api('empresas')]);
-  const deEmpresa = yo?.role === 'EMPRESA';
-  if (deEmpresa) dirEmpresa = yo.organizationId;
+  const deEmpresa = yo?.role === 'EMPRESA' || !!fija;
+  if (fija) dirEmpresa = fija;
+  else if (yo?.role === 'EMPRESA') dirEmpresa = yo.organizationId;
   else if (!empresas.some((o) => o.id === dirEmpresa)) dirEmpresa = empresas[0]?.id ?? null;
   if (!dirEmpresa) return '<p class="vacio">No hay empresas registradas.</p>';
 
@@ -1099,7 +1112,8 @@ function directorioOcupado() {
   return vistaActual === 'directorio' && (dirSeleccion === 'nuevo' || dirAccion !== null);
 }
 
-const repintarDirectorio = () => pintar('directorio', true);
+// Dentro de Empresas el directorio es la pestaña Personas: se repinta ahí.
+const repintarDirectorio = () => pintar(vistaActual === 'empresas' ? 'empresas' : 'directorio', true);
 
 document.addEventListener('input', (e) => {
   if (e.target.id === 'dir-buscar') {
@@ -1615,7 +1629,10 @@ document.addEventListener('click', (e) => {
   modo.textContent = aDias ? 'Mismo horario todos los días' : 'Horario distinto por día';
 });
 
-const repintarVentas = () => pintar('ventas', true);
+const repintarVentas = () => {
+  if (cajonTipo) { cerrarCajon(true); return pintar(vistaActual, true); }
+  return pintar('ventas', true);
+};
 
 /** Con un formulario de ventas abierto, el refresco automático espera. */
 function ventasOcupado() {
@@ -1859,7 +1876,40 @@ async function vtFacturacion() {
   '</form>';
 }
 
-const repintarFacturas = () => pintar('ventas', true);
+/**
+ * Si el formulario se abrió en el panel lateral (desde Empresas), al
+ * guardarlo se cierra el panel y se repinta donde estabas; si se abrió en
+ * Ventas, se queda en Ventas como siempre.
+ */
+const repintarFacturas = () => {
+  if (cajonTipo === 'facturacion') return llenarCajon(vtFacturacion);
+  return pintar('ventas', true);
+};
+
+let empSel = null;
+let empTab = 'config';
+let formAltaEmpresa = '';
+
+document.addEventListener('click', (e) => {
+  const sel = e.target.closest('[data-emp-sel]');
+  if (sel) {
+    empSel = sel.dataset.empSel; empTab = 'config'; dirSeleccion = null; dirAccion = null;
+    try { sessionStorage.setItem('emp-sel', empSel); } catch {}
+    return pintar('empresas', true);
+  }
+  const tab = e.target.closest('[data-emp-tab]:not([data-emp-ir])');
+  if (tab) { empTab = tab.dataset.empTab; dirSeleccion = null; dirAccion = null; return pintar('empresas', true); }
+  if (e.target.closest('[data-emp-nueva]')) return abrirCajon('empresa', 'Nueva empresa', formAltaEmpresa);
+  const cajon = e.target.closest('[data-emp-cajon]');
+  if (cajon) {
+    vtEmpresa = empSel;
+    ftSeries = null;
+    const nombre = document.querySelector('.emp2-cabeza h2')?.textContent ?? '';
+    return cajon.dataset.empCajon === 'ventas'
+      ? abrirCajon('ventas', 'Ventas · ' + nombre, vtConfig)
+      : abrirCajon('facturacion', 'Facturación · ' + nombre, vtFacturacion);
+  }
+});
 
 document.addEventListener('click', (e) => {
   const ir = e.target.closest('[data-emp-ir]');
@@ -1957,11 +2007,230 @@ document.addEventListener('submit', async (e) => {
       maxDaysAfterSale: Number(document.getElementById('ft-c-dias').value),
     });
     aviso('Facturación guardada');
-    repintarFacturas();
+    if (cajonTipo === 'facturacion') { cerrarCajon(true); pintar(vistaActual, true); }
+    else repintarFacturas();
   } catch (err) { aviso(err.message, 'error'); }
 });
 
+// ── Pendientes: todo lo que pide acción, en una lista ──────────────────
+
+let pendFiltro = 'todo';
+let pendSel = null;
+let pendItems = [];
+const TIPO_PEND = {
+  persona: 'Quiere hablar con alguien', sin_responder: 'Espera respuesta', pedido: 'Pedido por aceptar',
+  factura: 'Factura', documentos: 'Por revisar',
+};
+const GRUPO_PEND = { persona: 'personas', sin_responder: 'personas', pedido: 'pedidos', factura: 'facturas', documentos: 'documentos' };
+const avatarDe = (n, grande) => '<span class="av' + (grande ? ' grande' : '') + '" style="--h:' + tono(n) + '">' + esc(iniciales(n)) + '</span>';
+
+function saludoPend(n) {
+  const h = new Date().getHours();
+  const parte = h < 12 ? 'Buenos días' : h < 19 ? 'Buenas tardes' : 'Buenas noches';
+  const nombre = String(yo?.name ?? '').trim().split(/ +/)[0];
+  return '<div class="pend-saludo"><h2>' + parte + (nombre ? ', ' + esc(nombre) : '') + '.</h2><p>' + (n
+    ? 'Tienes <strong>' + n + (n === 1 ? ' cosa' : ' cosas') + '</strong> por atender. Empieza por la de arriba: es la que más ha esperado.'
+    : 'No hay nada esperando por ti. Cuando alguien escriba, llegue un pedido o haya algo por aprobar, aparece aquí.') + '</p></div>';
+}
+
+async function vistaPendientes() {
+  const r = await api('pendientes');
+  pendItems = r?.items ?? [];
+  const badge = document.getElementById('badge-pendientes');
+  badge.textContent = pendItems.length; badge.hidden = pendItems.length === 0;
+
+  const cuenta = (g) => pendItems.filter((i) => GRUPO_PEND[i.tipo] === g).length;
+  const chips = [['todo', 'Todo', pendItems.length], ['personas', 'Personas', cuenta('personas')], ['pedidos', 'Pedidos', cuenta('pedidos')],
+    ['facturas', 'Facturas', cuenta('facturas')], ['documentos', 'Documentos', cuenta('documentos')]]
+    .filter(([v, , n]) => v === 'todo' || n > 0 || pendFiltro === v)
+    .map(([v, t, n]) => '<button class="chip' + (pendFiltro === v ? ' activo' : '') + '" data-pend-filtro="' + v + '">' + t +
+      ' <span class="muted">' + n + '</span></button>').join('');
+
+  const vis = pendItems.filter((i) => pendFiltro === 'todo' || GRUPO_PEND[i.tipo] === pendFiltro);
+  if (!vis.some((i) => i.id === pendSel)) pendSel = vis[0]?.id ?? null;
+  const sel = vis.find((i) => i.id === pendSel);
+
+  if (!pendItems.length) return saludoPend(0);
+
+  const lista = '<div class="emp2-lista"><div class="pend-chips">' + chips + '</div>' + (vis.map((i) =>
+    '<button class="emp2-fila' + (i.id === pendSel ? ' activa' : '') + '" data-pend-sel="' + esc(i.id) + '">' + avatarDe(i.quien) +
+      '<span class="emp2-fila-texto"><span class="pend-kind ' + i.tipo + (i.urgente ? ' urgente' : '') + '">' + TIPO_PEND[i.tipo] + (i.urgente ? ' · urgente' : '') + '</span>' +
+        '<strong>' + esc(i.titulo) + '</strong><small>' + esc(i.empresa) + ' · ' + hace(i.desde) + '</small></span></button>').join('') ||
+    '<p class="vacio">Nada de esto por ahora.</p>') + '</div>';
+
+  return saludoPend(pendItems.length) + '<div class="emp2 pend">' + lista + '<div class="emp2-detalle">' + (sel ? detallePend(sel) : '') + '</div></div>';
+}
+
+function detallePend(i) {
+  const cab = '<div class="emp2-cabeza">' + avatarDe(i.quien, true) + '<div class="emp2-cabeza-texto">' +
+    '<span class="pend-kind ' + i.tipo + (i.urgente ? ' urgente' : '') + '">' + TIPO_PEND[i.tipo] + (i.urgente ? ' · urgente' : '') + '</span>' +
+    '<h2>' + esc(i.titulo) + '</h2><span class="muted small">' + esc(i.empresa) + ' · ' + hace(i.desde) + '</span></div></div>';
+  const ref = i.ref || {};
+  const burbuja = i.detalle ? '<div class="pend-burbuja">' + ligasMaps(esc(i.detalle)) + '</div>' : '';
+  const acc = (html) => '<div class="pend-acciones">' + html + '</div>';
+
+  if (i.tipo === 'persona' || i.tipo === 'sin_responder') {
+    return cab + burbuja +
+      (ref.ticket ? '<div class="muted small">Ticket #' + ref.ticket + '</div>' : '') +
+      acc('<button class="primario" data-pend-chat="' + esc(ref.chatId) + '">Abrir el chat</button>' +
+        (i.tipo === 'persona' ? '<button class="mini" data-pend-atender="' + esc(ref.chatId) + '">Atender yo</button>' : '') +
+        (ref.ticketId ? '<button class="mini" data-pend-resolver="' + esc(ref.ticketId) + '">Ya quedó resuelto</button>' : ''));
+  }
+  if (i.tipo === 'pedido') {
+    const entrega = ENTREGAS_VT[ref.entrega]?.[0] ?? 'Entrega sin elegir';
+    return cab + burbuja +
+      '<div class="pend-total"><span>Total</span><strong>' + dinero(ref.totalCents) + '</strong></div>' +
+      '<div class="muted small">' + esc(entrega) + (ref.programado ? ' · para ' + fecha(ref.programado) : ' · lo antes posible') + '</div>' +
+      acc((ref.programado ? '' : '<label class="campo en-linea">Listo en <input type="number" min="0" max="600" id="pend-minutos" value="' + (ref.minutos ?? 30) + '"> min</label>') +
+        '<button class="primario" data-pend-aceptar="' + esc(ref.orderId) + '" data-org="' + esc(i.organizationId) + '">Aceptar pedido</button>') +
+      acc('<input class="vt-motivo" id="pend-motivo" placeholder="Motivo si lo rechazas (se le dice al cliente)">' +
+        '<button class="mini peligro" data-pend-rechazar="' + esc(ref.orderId) + '" data-org="' + esc(i.organizationId) + '">Rechazar</button>');
+  }
+  if (i.tipo === 'factura') {
+    const atorada = ref.status === 'TIMBRANDO';
+    return cab + burbuja +
+      '<div class="pend-total"><span>Total</span><strong>' + dinero(ref.totalCents) + '</strong></div>' +
+      (ref.sandbox ? '<div class="muted small">Modo prueba: no tiene validez fiscal.</div>' : '') +
+      (ref.error ? '<p class="alert">' + esc(ref.error) + '</p>' : '') +
+      (atorada
+        ? acc('<span class="muted small">Factura.com no contestó. Búscala en su panel antes de reintentar.</span>' +
+            '<button class="mini" data-pend-liberar="' + esc(ref.invoiceId) + '" data-org="' + esc(i.organizationId) + '">Ya revisé: no se timbró</button>')
+        : acc('<button class="primario" data-pend-timbrar="' + esc(ref.invoiceId) + '" data-org="' + esc(i.organizationId) + '">' +
+            (ref.status === 'ERROR' ? 'Reintentar timbrado' : 'Aprobar y timbrar') + '</button>') +
+          acc('<input class="vt-motivo" id="pend-motivo" placeholder="Motivo si la rechazas (se le dice al cliente)">' +
+            '<button class="mini peligro" data-pend-rechazar-f="' + esc(ref.invoiceId) + '" data-org="' + esc(i.organizationId) + '">Rechazar</button>'));
+  }
+  return cab + burbuja + acc('<button class="primario" data-ir="cuarentena">Revisar ahora</button>');
+}
+
+/** Corre una acción con el botón en "Un momento…", avisa y repinta. */
+async function accionPend(boton, fn, ok) {
+  boton.disabled = true;
+  const antes = boton.textContent;
+  boton.textContent = 'Un momento…';
+  try {
+    const r = await fn();
+    aviso(typeof ok === 'function' ? ok(r) : ok);
+    pendSel = null;
+    pintar('pendientes', true);
+    pintarResumen();
+  } catch (err) {
+    aviso(err.message, 'error');
+    boton.disabled = false;
+    boton.textContent = antes;
+  }
+}
+
+document.addEventListener('click', async (e) => {
+  const filtro = e.target.closest('[data-pend-filtro]');
+  if (filtro) { pendFiltro = filtro.dataset.pendFiltro; pendSel = null; return pintar('pendientes', true); }
+  const sel = e.target.closest('[data-pend-sel]');
+  if (sel) { pendSel = sel.dataset.pendSel; return pintar('pendientes', true); }
+  const chat = e.target.closest('[data-pend-chat]');
+  if (chat) return abrirHilo(chat.dataset.pendChat);
+
+  const org = (b) => (yo?.role === 'EMPRESA' ? {} : { organizationId: b.dataset.org });
+  const motivo = () => document.getElementById('pend-motivo')?.value?.trim() ?? '';
+
+  const atender = e.target.closest('[data-pend-atender]');
+  if (atender) return accionPend(atender, async () => {
+    await enviar('conversacion/atender', { chatId: atender.dataset.pendAtender, activo: true });
+    abrirHilo(atender.dataset.pendAtender);
+  }, 'Lo atiendes tú: el bot se calla en ese chat');
+
+  const resolver = e.target.closest('[data-pend-resolver]');
+  if (resolver) return accionPend(resolver, () => enviar('ticket/cerrar', { id: resolver.dataset.pendResolver }), 'Ticket resuelto');
+
+  const aceptar = e.target.closest('[data-pend-aceptar]');
+  if (aceptar) return accionPend(aceptar, () => enviar('ventas/pedidos/aceptar', {
+    ...org(aceptar), id: aceptar.dataset.pendAceptar, minutos: Number(document.getElementById('pend-minutos')?.value ?? 0),
+  }), 'Pedido aceptado: ya le avisé al cliente');
+
+  const rechazar = e.target.closest('[data-pend-rechazar]');
+  if (rechazar) {
+    if (motivo().length < 3) { document.getElementById('pend-motivo')?.focus(); return aviso('Escribe el motivo: se le dice al cliente', 'error'); }
+    return accionPend(rechazar, () => enviar('ventas/pedidos/rechazar', { ...org(rechazar), id: rechazar.dataset.pendRechazar, motivo: motivo() }),
+      'Pedido rechazado; el cliente ya lo sabe');
+  }
+
+  const timbrar = e.target.closest('[data-pend-timbrar]');
+  if (timbrar) return accionPend(timbrar, () => enviar('facturas/aprobar', { ...org(timbrar), id: timbrar.dataset.pendTimbrar }),
+    (f) => f?.status === 'TIMBRADA' ? 'Factura timbrada y enviada al cliente' : 'No se timbró: ' + (f?.error ?? 'revisa el detalle'));
+
+  const rechazarF = e.target.closest('[data-pend-rechazar-f]');
+  if (rechazarF) {
+    if (motivo().length < 3) { document.getElementById('pend-motivo')?.focus(); return aviso('Escribe el motivo: se le dice al cliente', 'error'); }
+    return accionPend(rechazarF, () => enviar('facturas/rechazar', { ...org(rechazarF), id: rechazarF.dataset.pendRechazarF, motivo: motivo() }),
+      'Factura rechazada; el cliente ya lo sabe');
+  }
+
+  const liberar = e.target.closest('[data-pend-liberar]');
+  if (liberar) return accionPend(liberar, () => enviar('facturas/liberar', { ...org(liberar), id: liberar.dataset.pendLiberar }), 'Lista para reintentar');
+});
+
+// ── Panel lateral ──────────────────────────────────────────────────────
+
+let cajonTipo = null;
+let cajonSucio = false;
+
+/** Abre el panel lateral con un título y su contenido (texto o función que lo arma). */
+async function abrirCajon(tipo, titulo, contenido) {
+  cajonTipo = tipo;
+  cajonSucio = false;
+  document.getElementById('cajon-titulo').textContent = titulo;
+  document.getElementById('cajon').hidden = false;
+  document.getElementById('cajon-velo').hidden = false;
+  await llenarCajon(contenido);
+  setTimeout(() => (document.querySelector('#cajon-cuerpo input:not([type=hidden]):not([type=checkbox]), #cajon-cuerpo textarea') ??
+    document.getElementById('cajon-cerrar')).focus(), 50);
+}
+
+async function llenarCajon(contenido) {
+  const cuerpo = document.getElementById('cajon-cuerpo');
+  if (typeof contenido === 'function') {
+    cuerpo.innerHTML = '<span class="sk sk-linea" style="width:60%"></span><span class="sk sk-linea" style="width:90%"></span><span class="sk sk-linea" style="width:75%"></span>';
+    try { cuerpo.innerHTML = await contenido(); } catch (err) { cuerpo.innerHTML = '<p class="alert">No se pudo cargar: ' + esc(err.message) + '</p>'; }
+  } else {
+    cuerpo.innerHTML = contenido;
+  }
+}
+
+/** Cierra el panel. Con cambios sin guardar, primero pregunta ahí mismo. */
+function cerrarCajon(forzar) {
+  if (!cajonTipo) return true;
+  if (cajonSucio && !forzar) {
+    if (!document.getElementById('cajon-confirmar')) {
+      document.getElementById('cajon-cuerpo').insertAdjacentHTML('afterbegin',
+        '<div class="cajon-confirmar" id="cajon-confirmar">Tienes cambios sin guardar.' +
+        '<button class="mini" data-cajon-descartar>Descartar</button><button class="mini ghost" data-cajon-seguir>Seguir editando</button></div>');
+    }
+    document.getElementById('cajon-cuerpo').scrollTop = 0;
+    return false;
+  }
+  cajonTipo = null;
+  cajonSucio = false;
+  document.getElementById('cajon').hidden = true;
+  document.getElementById('cajon-velo').hidden = true;
+  return true;
+}
+
+document.getElementById('cajon-cerrar').addEventListener('click', () => cerrarCajon());
+document.getElementById('cajon-velo').addEventListener('click', () => cerrarCajon());
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && cajonTipo) cerrarCajon(); });
+const marcarCajon = (e) => { if (e.target.closest && e.target.closest('#cajon') && e.target.type !== 'search') cajonSucio = true; };
+document.addEventListener('input', marcarCajon);
+document.addEventListener('change', marcarCajon);
+// Al enviar un formulario del panel ya no hay cambios "sin guardar".
+document.addEventListener('submit', (e) => { if (e.target.closest('#cajon')) cajonSucio = false; }, true);
+document.addEventListener('click', (e) => {
+  if (e.target.closest('[data-cajon-descartar]')) return cerrarCajon(true);
+  if (e.target.closest('[data-cajon-seguir]')) return document.getElementById('cajon-confirmar')?.remove();
+  // Ir a otra vista desde un aviso cierra el panel.
+  if (e.target.closest('#cajon [data-ir]')) cerrarCajon(true);
+});
+
 const VISTAS = {
+  pendientes: vistaPendientes,
   async bandeja() {
     const consulta = filtroBandeja === 'todas' ? 'bandeja' : 'bandeja?esperando=' + filtroBandeja;
     const [filas] = await Promise.all([api(consulta), cargarLineas()]);
@@ -2100,74 +2369,84 @@ const VISTAS = {
         : '<button class="mini" data-guardar="' + o.id + '">Guardar</button>');
     };
 
-    /**
-     * Un paso de la configuración de la empresa: qué es, cómo está y qué
-     * hacer. Así se ve de un vistazo qué le falta a cada una para vender,
-     * facturar y atender por WhatsApp.
-     */
-    const paso = (listo, titulo, estado, detalle, accion) =>
-      '<div class="emp-paso' + (listo ? ' listo' : '') + '">' +
-        '<div class="emp-paso-cabeza"><span class="emp-paso-marca">' + (listo ? '✓' : '') + '</span><strong>' + titulo + '</strong></div>' +
-        '<div class="emp-paso-estado">' + estado + '</div>' +
-        (detalle ? '<small class="muted">' + detalle + '</small>' : '') +
-        (accion ? '<div class="emp-paso-accion">' + accion + '</div>' : '') +
-      '</div>';
-
-    const irA = (o, vista, tab, texto) =>
-      '<button class="mini" data-emp-ir="' + vista + '" data-emp-tab="' + (tab ?? '') + '" data-emp-id="' + o.id + '">' + texto + '</button>';
-
-    const tarjeta = (o) => {
-      const vende = !!o.sales?.enabled;
-      const fact = o.invoicing;
-      const facturan = (o.memberships ?? []).length;
-      const productos = o._count?.products ?? 0;
-      return '<article class="card emp-card">' +
-        '<div class="emp-cabeza">' +
-          '<div class="emp-nombre"><h3>' + esc(o.name) + (o.active ? '' : ' <span class="pill warn">inactiva</span>') + '</h3>' +
-            '<span class="muted small">' + (o.taxId ? esc(o.taxId) + ' · ' : '') + o._count.memberships + ' números · ' +
-              o._count.documents + ' documentos · ' + o._count.tickets + ' tickets</span></div>' +
-          '<span class="spacer"></span>' +
-          (esAdmin ? '<button class="mini" data-accesos="' + o.id + '">Accesos al panel</button>' +
-            '<button class="mini peligro" data-borrar-empresa="' + o.id + '" data-nombre="' + esc(o.name) + '" title="Eliminar empresa">Eliminar</button>' : '') +
-        '</div>' +
-        '<div class="emp-pasos">' +
-          paso(!!o.waLineId, 'WhatsApp propio',
-            '<span data-estado-wa="' + o.id + '">' + celdaWa(o, null) + '</span>',
-            'Su número para vender y facturar. Sin él atiende el número principal.') +
-          paso(o.sourceType === 'PC' || !!o.driveFolderId, 'Documentos', origen(o), '', accionesDocs(o)) +
-          paso(vende, 'Ventas',
-            vende ? '<span class="pill ok">activas</span> <span class="muted small">' + productos + ' productos</span>'
-              : '<span class="pill">apagadas</span>' + (productos ? ' <span class="muted small">' + productos + ' productos</span>' : ''),
-            vende ? '' : 'Catálogo, horario y entregas.',
-            irA(o, 'ventas', vende ? 'pedidos' : 'config', vende ? 'Ver pedidos' : 'Configurar')) +
-          paso(!!fact?.enabled, 'Facturación',
-            fact?.enabled ? '<span class="pill ok">activa</span>' + (fact.sandbox ? ' <span class="pill warn">modo prueba</span>' : '')
-              : '<span class="pill">apagada</span>',
-            fact?.enabled ? '' : 'Llaves de Factura.com, serie y claves del SAT.',
-            irA(o, 'ventas', 'facturacion', fact?.enabled ? 'Ajustar' : 'Configurar') + (fact?.enabled ? irA(o, 'ventas', 'facturas', 'Ver facturas') : '')) +
-          paso(facturan > 0, 'Quién factura por WhatsApp',
-            facturan > 0 ? '<strong>' + facturan + '</strong> ' + (facturan === 1 ? 'número puede' : 'números pueden') + ' emitir facturas'
-              : '<span class="muted">nadie todavía</span>',
-            'Su personal le escribe al bot "factura para…" y se timbra con su "sí".',
-            irA(o, 'directorio', '', 'Elegir en Directorio')) +
-        '</div>' +
-      '</article>';
-    };
-
     // El estado de cada conector se pide después de pintar la tabla: son
     // consultas aparte y no deben frenar la vista.
     setTimeout(() => {
-      for (const o of filas.filter((x) => x.sourceType === 'PC')) pintarEstadoPc(o.id);
-      for (const o of filas.filter((x) => x.waLineId)) pintarEstadoWa(o.id, o.name);
+      const o = filas.find((x) => x.id === empSel);
+      if (o?.sourceType === 'PC') pintarEstadoPc(o.id);
+      if (o?.waLineId) pintarEstadoWa(o.id, o.name);
     }, 0);
 
-    const accesos = esAdmin && accesosEmpresa ? await tarjetaAccesos(filas.find((o) => o.id === accesosEmpresa)) : '';
+    formAltaEmpresa = formulario;
+    if (!filas.some((o) => o.id === empSel)) empSel = filas[0]?.id ?? null;
+    const actual = filas.find((o) => o.id === empSel);
+    const accesos = esAdmin && accesosEmpresa && accesosEmpresa === empSel ? await tarjetaAccesos(actual) : '';
 
-    return formulario + accesos + '<div id="codigo-pc">' + codigoPcVigente() + '</div>' +
-      '<div id="qr-wa">' + qrWaVigente() + '</div>' +
-      (filas.length
-        ? '<div class="emp-lista">' + filas.map(tarjeta).join('') + '</div>'
-        : '<p class="vacio">No hay empresas registradas. Da de alta la primera arriba.</p>');
+    const nombresPasos = ['su WhatsApp', 'Ventas', 'Facturación', 'quién factura', 'sus documentos'];
+    const pasosDe = (o) => [!!o.waLineId, !!o.sales?.enabled, !!o.invoicing?.enabled, (o.memberships ?? []).length > 0,
+      o.sourceType === 'PC' || !!o.driveFolderId];
+    const nombreDe = (m) => (m.fullName || m.contact?.displayName || 'alguien').split(' ')[0];
+    const juntar = (xs) => xs.length <= 1 ? xs.join('') : xs.slice(0, -1).join(', ') + ' y ' + xs[xs.length - 1];
+    const avatar = (n, grande) => '<span class="av' + (grande ? ' grande' : '') + '" style="--h:' + tono(n) + '">' + esc(iniciales(n)) + '</span>';
+
+    const lista = '<div class="emp2-lista">' +
+      (esAdmin ? '<div class="emp2-lista-cabeza"><button class="primario" data-emp-nueva>+ Nueva empresa</button></div>' : '') +
+      filas.map((o) => {
+        const n = pasosDe(o).filter(Boolean).length;
+        return '<button class="emp2-fila' + (o.id === empSel ? ' activa' : '') + '" data-emp-sel="' + o.id + '">' + avatar(o.name) +
+          '<span class="emp2-fila-texto"><strong>' + esc(o.name) + (o.active ? '' : ' <span class="pill warn">inactiva</span>') + '</strong>' +
+            '<small>' + (n === 5 ? 'Lista para trabajar' : 'Le faltan ' + (5 - n) + ' pasos') + '</small>' +
+            '<span class="emp2-barra' + (n === 5 ? ' llena' : '') + '"><i style="width:' + (n * 20) + '%"></i></span></span></button>';
+      }).join('') + '</div>';
+
+    if (!actual) {
+      return '<div class="emp2">' + lista + '<div class="emp2-detalle"><p class="vacio">No hay empresas registradas. Da de alta la primera.</p></div></div>';
+    }
+
+    const o = actual;
+    const listos = pasosDe(o);
+    const faltan = listos.map((ok, i) => ok ? null : nombresPasos[i]).filter(Boolean);
+    const facturan = (o.memberships ?? []).map(nombreDe);
+    const productos = o._count?.products ?? 0;
+    const boton = (attrs, texto) => '<button class="mini" ' + attrs + '>' + texto + '</button>';
+    let nPaso = 0;
+    const paso = (listo, titulo, estado, accion) => '<div class="emp2-paso' + (listo ? ' listo' : '') + '">' +
+      '<span class="emp2-num">' + (++nPaso) + '</span>' +
+      '<div class="emp2-paso-texto"><strong>' + titulo + '</strong><div class="emp2-estado">' + (listo ? '<span class="ok-text">Listo</span> · ' : '') + estado + '</div></div>' +
+      (accion ? '<div class="emp2-accion">' + accion + '</div>' : '') + '</div>';
+
+    const cabeza = '<div class="emp2-cabeza">' + avatar(o.name, true) +
+      '<div class="emp2-cabeza-texto"><h2>' + esc(o.name) + '</h2><span class="muted small">' +
+        (o.taxId ? '<span class="mono">' + esc(o.taxId) + '</span> · ' : '') + (o.waNumber ? '+' + esc(o.waNumber) : 'sin número propio') + '</span></div>' +
+      '<span class="spacer"></span>' +
+      (esAdmin ? boton('data-accesos="' + o.id + '"', 'Accesos al panel') +
+        '<button class="mini peligro" data-borrar-empresa="' + o.id + '" data-nombre="' + esc(o.name) + '">Eliminar</button>' : '') +
+    '</div>' +
+    '<div class="emp2-tabs"><button class="' + (empTab === 'config' ? 'activa' : '') + '" data-emp-tab="config">Configuración</button>' +
+      '<button class="' + (empTab === 'personas' ? 'activa' : '') + '" data-emp-tab="personas">Personas <span class="emp2-n">' + o._count.memberships + '</span></button></div>';
+
+    let cuerpo;
+    if (empTab === 'personas') {
+      cuerpo = await vistaDirectorio(o.id);
+    } else {
+      cuerpo = '<p class="emp2-resumen">' + (faltan.length
+          ? 'A ' + esc(o.name) + ' le ' + (faltan.length === 1 ? 'falta' : 'faltan') + ' <strong>' + juntar(faltan) + '</strong>.'
+          : esc(o.name) + ' ya está lista para vender, facturar y atender.') + '</p>' +
+        '<div class="emp2-pasos">' +
+          paso(listos[0], 'Su WhatsApp', '<span data-estado-wa="' + o.id + '">' + celdaWa(o, null) + '</span>', '') +
+          paso(listos[1], 'Ventas', listos[1] ? 'Vende ' + productos + ' productos' : 'El bot todavía no vende',
+            boton('data-emp-cajon="ventas"', listos[1] ? 'Ajustar' : 'Configurar') + (productos || listos[1] ? boton('data-emp-ir="ventas" data-emp-tab="catalogo" data-emp-id="' + o.id + '"', 'Catálogo') : '')) +
+          paso(listos[2], 'Facturación', listos[2] ? (o.invoicing.sandbox ? 'En modo prueba' : 'Factura de verdad') : 'Aún no factura',
+            boton('data-emp-cajon="facturacion"', listos[2] ? 'Ajustar' : 'Configurar') + (listos[2] ? boton('data-emp-ir="ventas" data-emp-tab="facturas" data-emp-id="' + o.id + '"', 'Facturas') : '')) +
+          paso(listos[3], 'Quién factura por WhatsApp', facturan.length ? esc(juntar(facturan)) : 'Nadie todavía',
+            boton('data-emp-tab="personas"', 'Elegir')) +
+          paso(listos[4], 'Sus documentos', origen(o) + ' ' + accionesDocs(o), '') +
+        '</div>';
+    }
+
+    return '<div class="emp2">' + lista + '<div class="emp2-detalle">' + accesos +
+      '<div id="codigo-pc">' + codigoPcVigente() + '</div><div id="qr-wa">' + qrWaVigente() + '</div>' +
+      cabeza + cuerpo + '</div></div>';
   },
 
   async documentos() {
@@ -2527,6 +2806,8 @@ document.addEventListener('submit', async (e) => {
         sourceType,
         driveFolderId: document.getElementById('emp-drive').value,
       });
+      cerrarCajon(true);
+      if (r?.id) { empSel = r.id; empTab = 'config'; }
       if (sourceType === 'PC') {
         aviso('Empresa creada. Ahora conecta su computadora con el código.');
         await pintar('empresas');
@@ -2861,6 +3142,22 @@ function mostrarCodigoPc(id, nombre) {
 
 // ── Armazón ─────────────────────────────────────────────────────────────
 
+let ultimosAvisos = { pendientes: [], r: null };
+
+function cajonAvisos() {
+  const { pendientes, r } = ultimosAvisos;
+  const filas = pendientes.map(([n, texto, color, vista, filtro]) =>
+    '<button class="aviso-fila ' + color + '" data-ir="pendientes" data-ir-filtro="' + (vista === 'cuarentena' ? 'documentos' : 'personas') + '">' +
+      '<span class="aviso-n">' + n + '</span><span>' + esc(texto) + '</span><span class="aviso-ir">Ver</span></button>').join('');
+  return (filas || '<p class="vacio">Todo al día: nadie espera respuesta.</p>') +
+    (r ? '<p class="muted small cajon-pie">' + r.entregas24h + ' entregas y ' + r.denegados24h + ' negadas en 24 h · ' +
+      r.mensajesHora + ' de ' + r.topeHora + ' mensajes esta hora</p>' : '');
+}
+
+document.addEventListener('click', (e) => {
+  if (e.target.closest('#avisos-boton')) abrirCajon('avisos', 'Avisos', cajonAvisos());
+});
+
 async function pintarResumen() {
   // Las cifras de la portada son de toda la operación: a una empresa no se
   // le enseñan (el servidor tampoco se las daría).
@@ -2882,12 +3179,15 @@ async function pintarResumen() {
     [r.cuarentena, r.cuarentena === 1 ? 'documento por revisar' : 'documentos por revisar', 'violeta', 'cuarentena', ''],
   ].filter(([n]) => n > 0);
 
+  // Un solo botón de Avisos en vez de una pastilla por cosa: el detalle
+  // vive en el panel lateral.
+  ultimosAvisos = { pendientes, r };
+  const totalAvisos = pendientes.reduce((n, [x]) => n + x, 0);
   document.getElementById('resumen').innerHTML =
-    (pendientes.length
-      ? '<span class="muted">Ahora tienes</span>' + pendientes.map(([n, texto, color, vista, filtro]) =>
-          '<button class="dato ' + color + '" data-ir="' + vista + '" data-ir-filtro="' + filtro + '">' + n + ' ' + texto + '</button>',
-        ).join('')
+    (totalAvisos
+      ? '<button class="avisos-boton" id="avisos-boton">Avisos <b>' + totalAvisos + '</b></button>'
       : '<span class="muted">Todo al día: nadie espera respuesta.</span>') +
+    '<span hidden>' +
     '<span class="muted small">· ' + r.entregas24h + ' entrega' + (r.entregas24h === 1 ? '' : 's') +
       ' y ' + r.denegados24h + ' negada' + (r.denegados24h === 1 ? '' : 's') + ' en 24 h</span>' +
     // Cuántos mensajes lleva en la hora contra el tope general. Se pone en
@@ -2896,8 +3196,10 @@ async function pintarResumen() {
       ? '<button class="dato ' + (r.mensajesHora >= r.topeHora ? 'rojo' : r.mensajesHora >= r.topeHora * 0.8 ? 'ambar' : 'neutro') +
           '" data-ir="ajustes" title="Tope general de mensajes por hora">' +
           r.mensajesHora + ' de ' + r.topeHora + ' mensajes esta hora</button>'
-      : '');
+      : '') + '</span>';
 
+  const bpe = document.getElementById('badge-pendientes');
+  bpe.textContent = totalAvisos; bpe.hidden = !(totalAvisos > 0);
   const bp = document.getElementById('badge-persona');
   bp.textContent = r.revision; bp.hidden = !(r.revision > 0);
   const bc = document.getElementById('badge-cuarentena');
@@ -2907,7 +3209,7 @@ async function pintarResumen() {
 /** La forma de la vista mientras carga: filas, tarjetas o tabla de mentira. */
 function skeletonVista(vista) {
   const linea = (ancho, alto) => '<span class="sk sk-linea" style="width:' + ancho + ';height:' + (alto || 12) + 'px"></span>';
-  if (vista === 'bandeja') {
+  if (vista === 'bandeja' || vista === 'pendientes') {
     const fila = (i) => '<div class="fila sk-fila">' +
       '<div class="sk sk-avatar"></div>' +
       '<div class="fila-cuerpo">' +
@@ -2976,7 +3278,7 @@ function claveCampo(el) {
   return dato ? 'd:' + dato.name + '=' + dato.value : null;
 }
 
-const guardable = (el) => el.closest && el.closest('#contenido') &&
+const guardable = (el) => el.closest && el.closest('#contenido, #cajon') &&
   ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) && el.type !== 'password' && el.type !== 'search' && el.type !== 'file';
 
 function guardarCampo(el) {
@@ -3043,17 +3345,19 @@ api('me').then((usuario) => {
 
   if (usuario?.role === 'EMPRESA') {
     document.querySelectorAll('.nav-items button').forEach((b) => {
-      b.hidden = !['directorio', 'ventas', 'documentos'].includes(b.dataset.view);
+      b.hidden = !['pendientes', 'directorio', 'ventas', 'documentos'].includes(b.dataset.view);
     });
     TITULOS.directorio = 'Clientes';
     document.getElementById('hilo').hidden = true;
     pintarResumen();
-    pintar(vistaGuardada(['directorio', 'ventas', 'documentos'], 'directorio'));
+    pintar(vistaGuardada(['pendientes', 'directorio', 'ventas', 'documentos'], 'pendientes'));
     return;
   }
 
+  document.querySelector('.nav-items [data-view="directorio"]').hidden = true;
+  try { empSel = sessionStorage.getItem('emp-sel') || null; } catch {}
   pintarResumen();
-  pintar(vistaGuardada(Object.keys(VISTAS), 'bandeja')).then(() => {
+  pintar(vistaGuardada(Object.keys(VISTAS), 'pendientes')).then(() => {
     const chat = leerSesion(ESTADO_KEY).chat;
     if (chat) abrirHilo(chat).catch(() => {});
   });
@@ -3104,7 +3408,7 @@ setInterval(() => {
 
 const STYLES = `<link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap">
 <style>
   /*
    * Paleta y medidas en variables: todo lo de abajo las usa, así un
@@ -3112,15 +3416,16 @@ const STYLES = `<link rel="preconnect" href="https://fonts.googleapis.com">
    */
   :root {
     color-scheme: dark;
-    --fondo: #0c0e15;
-    --caja: #12151e;
-    --caja2: #181c27;
-    --caja3: #1f2433;
-    --borde: #232838;
-    --borde2: #2e3446;
-    --texto: #eef0f6;
-    --suave: #8b92a6;
-    --tenue: #5f6679;
+    --fondo: #121013;
+    --caja: #19161a;
+    --caja2: #201c21;
+    --caja3: #2a252b;
+    --borde: #2d282e;
+    --borde2: #3b353c;
+    --texto: #f3eef0;
+    --suave: #a59aa1;
+    --tenue: #6d646a;
+    --display: 'Bricolage Grotesque', 'Plus Jakarta Sans', system-ui, sans-serif;
     --acento: #7c6cf6;
     --acento-fuerte: #6a5ae8;
     --acento-suave: rgba(124, 108, 246, .14);
@@ -3465,6 +3770,122 @@ const STYLES = `<link rel="preconnect" href="https://fonts.googleapis.com">
     padding: 0 16px 12px; border-bottom: 1px solid var(--borde);
   }
   .hilo-estado, .hilo-meta { display: contents; }
+
+  /* Pendientes */
+  .pend-saludo { margin: 0 0 16px; }
+  .pend-saludo h2 { font-family: var(--display); font-size: 24px; font-weight: 700; letter-spacing: -.01em; margin: 0 0 2px; }
+  .pend-saludo p { margin: 0; color: var(--suave); max-width: 70ch; }
+  .pend-saludo strong { color: var(--texto); }
+  .pend-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 12px; border-bottom: 1px solid var(--borde); }
+  .pend-kind { font-size: 11px; font-weight: 800; color: var(--ambar); letter-spacing: .02em; }
+  .pend-kind.sin_responder { color: var(--celeste); }
+  .pend-kind.documentos { color: #c9c1ff; }
+  .pend-kind.urgente { color: var(--rojo); }
+  .pend-burbuja { background: var(--caja2); border: 1px solid var(--borde); border-radius: 14px 14px 14px 4px; padding: 12px 14px;
+    max-width: 560px; white-space: pre-wrap; word-break: break-word; }
+  .pend-total { display: flex; gap: 12px; align-items: baseline; }
+  .pend-total span { color: var(--suave); }
+  .pend-total strong { font: 700 22px var(--display); }
+  .pend-acciones { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .pend-acciones .vt-motivo { flex: 1 1 240px; }
+  .pend .emp2-detalle { gap: 14px; }
+
+  /* Títulos con carácter */
+  #titulo, .emp2-cabeza h2, #cajon-titulo { font-family: var(--display); letter-spacing: -.01em; }
+
+  /* Panel lateral */
+  .cajon-velo { position: fixed; inset: 0; background: rgba(8, 6, 9, .55); z-index: 59; }
+  .cajon {
+    position: fixed; top: 0; right: 0; bottom: 0; width: min(480px, 100%); z-index: 60; background: var(--caja);
+    border-left: 1px solid var(--borde); box-shadow: -18px 0 48px rgba(0, 0, 0, .45); display: flex; flex-direction: column;
+    animation: cajon-entra .2s cubic-bezier(.2, .8, .2, 1);
+  }
+  @keyframes cajon-entra { from { transform: translateX(40px); opacity: 0; } }
+  .cajon-head { display: flex; align-items: center; gap: 8px; padding: 16px 20px; border-bottom: 1px solid var(--borde); }
+  #cajon-titulo { font-size: 18px; font-weight: 700; }
+  .cajon-cuerpo { padding: 18px 20px 28px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 12px; }
+  .cajon-cuerpo .card { background: none; border: none; padding: 0; }
+  .cajon-cuerpo .vt-cols { grid-template-columns: 1fr; }
+  .cajon-cuerpo .vt-sec, .cajon-cuerpo .vt-activar-card { background: var(--caja2); border: 1px solid var(--borde); border-radius: var(--radio); padding: 14px 16px; }
+  .cajon-cuerpo .fila-botones { position: sticky; bottom: -28px; background: var(--caja); padding: 12px 0; margin-bottom: -28px; border-top: 1px solid var(--borde); }
+  .cajon-confirmar {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; border-radius: 10px;
+    background: var(--ambar-suave); color: var(--ambar); font-weight: 600; font-size: 13px;
+  }
+  .cajon-pie { margin-top: 8px; }
+
+  /* Avisos */
+  .avisos-boton {
+    display: inline-flex; align-items: center; gap: 8px; background: var(--caja2); border: 1px solid var(--borde2);
+    color: var(--texto); border-radius: 999px; padding: 4px 6px 4px 14px; font-weight: 700; cursor: pointer;
+  }
+  .avisos-boton b { background: var(--rojo); color: #1b0f10; border-radius: 999px; padding: 1px 8px; font-size: 12px; }
+  .avisos-boton:hover { border-color: var(--suave); }
+  .aviso-fila {
+    display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 12px; align-items: center; width: 100%; text-align: left;
+    background: var(--caja2); border: 1px solid var(--borde); border-radius: var(--radio); padding: 12px 14px; color: var(--texto); cursor: pointer; font-weight: 600;
+  }
+  .aviso-fila:hover { border-color: var(--borde2); }
+  .aviso-n { font: 700 18px var(--display); text-align: center; }
+  .aviso-fila.ambar .aviso-n { color: var(--ambar); }
+  .aviso-fila.rojo .aviso-n { color: var(--rojo); }
+  .aviso-fila.violeta .aviso-n { color: #c9c1ff; }
+  .aviso-ir { color: var(--suave); font-size: 13px; }
+
+  /* Avatares con color propio */
+  .av { --h: 260; width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; display: grid; place-items: center;
+    font-weight: 800; font-size: 13px; background: hsl(var(--h) 30% 24%); color: hsl(var(--h) 75% 84%); }
+  .av.grande { width: 48px; height: 48px; font-size: 16px; }
+
+  /* Empresas: lista + detalle */
+  .emp2 { display: grid; grid-template-columns: minmax(0, 280px) minmax(0, 1fr); gap: 0; background: var(--caja);
+    border: 1px solid var(--borde); border-radius: var(--radio); overflow: hidden; min-height: 520px; }
+  .emp2-lista { border-right: 1px solid var(--borde); display: flex; flex-direction: column; }
+  .emp2-lista-cabeza { padding: 12px; border-bottom: 1px solid var(--borde); }
+  .emp2-lista-cabeza button { width: 100%; }
+  .emp2-fila { display: flex; gap: 12px; align-items: center; padding: 12px 14px; border: 0; border-bottom: 1px solid var(--borde);
+    background: none; color: var(--texto); text-align: left; cursor: pointer; position: relative; }
+  .emp2-fila:hover { background: var(--caja2); }
+  .emp2-fila.activa { background: var(--caja3); }
+  .emp2-fila.activa::before { content: ''; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: 0 3px 3px 0; background: var(--acento); }
+  .emp2-fila-texto { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+  .emp2-fila-texto strong { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .emp2-fila-texto small { color: var(--suave); font-size: 12px; }
+  .emp2-barra { height: 4px; border-radius: 999px; background: var(--caja3); overflow: hidden; margin-top: 6px; }
+  .emp2-barra i { display: block; height: 100%; border-radius: 999px; background: var(--acento); }
+  .emp2-barra.llena i { background: var(--verde); }
+  .emp2-detalle { padding: 22px 26px; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+  .emp2-cabeza { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+  .emp2-cabeza h2 { margin: 0; font-size: 22px; font-weight: 700; }
+  .emp2-cabeza-texto { display: flex; flex-direction: column; min-width: 0; }
+  .emp2-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--borde); }
+  .emp2-tabs button { background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; padding: 8px 12px;
+    color: var(--suave); font-weight: 700; cursor: pointer; display: flex; gap: 6px; align-items: center; }
+  .emp2-tabs button:hover { color: var(--texto); }
+  .emp2-tabs button.activa { color: var(--texto); border-color: var(--acento); }
+  .emp2-n { font-size: 11px; background: var(--caja3); color: var(--suave); border-radius: 999px; padding: 0 7px; }
+  .emp2-resumen { margin: 0; color: var(--suave); }
+  .emp2-resumen strong { color: var(--texto); }
+  .emp2-pasos { border: 1px solid var(--borde); border-radius: var(--radio); }
+  .emp2-paso { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--borde); }
+  .emp2-paso:last-child { border-bottom: 0; }
+  .emp2-num { width: 28px; height: 28px; border-radius: 50%; border: 1.5px solid var(--borde2); display: grid; place-items: center;
+    font-size: 12px; font-weight: 700; color: var(--suave); }
+  .emp2-paso.listo .emp2-num { border-color: var(--verde); background: var(--verde-suave); color: var(--verde); }
+  .emp2-paso-texto { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .emp2-estado { color: var(--suave); font-size: 13px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .ok-text { color: var(--verde); font-weight: 700; }
+  .emp2-accion { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  .emp2-detalle .dir-barra { margin-top: 0; }
+  @media (max-width: 1100px) {
+    .emp2 { grid-template-columns: 1fr; }
+    .emp2-lista { border-right: 0; border-bottom: 1px solid var(--borde); max-height: 260px; overflow-y: auto; }
+  }
+  @media (max-width: 640px) {
+    .emp2-detalle { padding: 18px 16px; }
+    .emp2-paso { grid-template-columns: 30px minmax(0, 1fr); }
+    .emp2-accion { grid-column: 2; justify-content: flex-start; }
+  }
 
   /* Empresas: una tarjeta por empresa con sus pasos de configuración */
   .emp-lista { display: flex; flex-direction: column; gap: 14px; }

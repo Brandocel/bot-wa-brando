@@ -39,6 +39,7 @@ import { FacturaChatService } from './application/facturacion/factura-chat.servi
 import { FacturaEquipoService } from './application/facturacion/factura-equipo.service';
 import { FacturaComAdapter } from './infrastructure/facturacion/factura-com.adapter';
 import { PanelFacturasController } from './infrastructure/http/panel/panel-facturas.controller';
+import { PanelPendientesController } from './infrastructure/http/panel/panel-pendientes.controller';
 import { HandleIncomingMessageUseCase } from './application/use-cases/handle-incoming-message.use-case';
 
 import { ConnectorService } from './application/support/connector.service';
@@ -76,6 +77,7 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     PanelConnectorController,
     PanelVentasController,
     PanelFacturasController,
+    PanelPendientesController,
     ConnectorController,
   ],
   providers: [
