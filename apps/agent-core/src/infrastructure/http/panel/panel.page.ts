@@ -595,6 +595,7 @@ async function abrirHilo(chatId, silencioso) {
   pintarMensajes(datos, nuevo);
   ultimoHilo = datos;
   hiloPintado = chatId;
+  if (nuevo) guardarEstado();
 
   if (!silencioso) {
     document.querySelectorAll('[data-chat]').forEach((el) =>
@@ -605,6 +606,7 @@ async function abrirHilo(chatId, silencioso) {
 
 function cerrarHilo() {
   turnoHilo++;
+  setTimeout(guardarEstado, 0);
   hiloPintado = null;
   chatAbierto = null;
   ultimoHilo = null;
@@ -2934,7 +2936,83 @@ async function pintar(vista, silencioso) {
     contenido.innerHTML = '<p class="alert">No se pudo cargar: ' + esc(err.message) + '</p>';
   }
   document.getElementById('reloj').textContent = 'actualizado ' + hora(new Date().toISOString());
+  guardarEstado();
+  restaurarBorrador();
 }
+
+// ── Recordar dónde estabas y lo que estabas capturando ─────────────────
+//
+// Al recargar la página, el panel abría siempre en Conversaciones y lo que
+// llevabas capturado se perdía. Se guarda en la pestaña (sessionStorage):
+// sobrevive a recargar, no a cerrar la pestaña, y no sale del navegador.
+// Las contraseñas y llaves de API nunca se guardan.
+
+const ESTADO_KEY = 'panel-estado';
+const BORRADOR_KEY = 'panel-borrador';
+
+function leerSesion(clave) {
+  try { return JSON.parse(sessionStorage.getItem(clave) ?? 'null') ?? {}; } catch { return {}; }
+}
+function escribirSesion(clave, valor) {
+  try { sessionStorage.setItem(clave, JSON.stringify(valor)); } catch {}
+}
+
+function guardarEstado() {
+  escribirSesion(ESTADO_KEY, {
+    vista: vistaActual, vtTab, ftEstado, filtroBandeja, chat: chatAbierto,
+  });
+}
+
+/** El borrador es por pantalla: cada pestaña de Ventas y cada empresa por su lado. */
+function claveBorrador() {
+  return vistaActual + (vistaActual === 'ventas' ? '|' + vtTab + '|' + vtEmpresa + '|' + (vtProducto ?? '') : '');
+}
+
+/** Cómo reconocer el mismo campo después de repintar: id, nombre+valor o su data-*. */
+function claveCampo(el) {
+  if (el.id) return '#' + el.id;
+  if (el.name) return 'n:' + el.name + '=' + el.value;
+  const dato = [...el.attributes].find((a) => a.name.startsWith('data-'));
+  return dato ? 'd:' + dato.name + '=' + dato.value : null;
+}
+
+const guardable = (el) => el.closest && el.closest('#contenido') &&
+  ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) && el.type !== 'password' && el.type !== 'search' && el.type !== 'file';
+
+function guardarCampo(el) {
+  const clave = claveCampo(el);
+  if (!clave) return;
+  const todos = leerSesion(BORRADOR_KEY);
+  const pantalla = todos[claveBorrador()] ?? {};
+  pantalla[clave] = el.type === 'checkbox' || el.type === 'radio' ? { c: el.checked } : { v: el.value };
+  todos[claveBorrador()] = pantalla;
+  escribirSesion(BORRADOR_KEY, todos);
+}
+
+function restaurarBorrador() {
+  const pantalla = leerSesion(BORRADOR_KEY)[claveBorrador()];
+  if (!pantalla) return;
+  let algo = false;
+  document.querySelectorAll('#contenido input, #contenido textarea, #contenido select').forEach((el) => {
+    if (!guardable(el) || el.disabled) return;
+    const guardado = pantalla[claveCampo(el)];
+    if (!guardado) return;
+    if ('c' in guardado) el.checked = guardado.c;
+    else el.value = guardado.v;
+    algo = true;
+  });
+  if (algo && typeof vtAjustarEntrega === 'function' && document.getElementById('vt-form-config')) vtAjustarEntrega();
+}
+
+document.addEventListener('input', (e) => { if (guardable(e.target)) guardarCampo(e.target); });
+document.addEventListener('change', (e) => { if (guardable(e.target)) guardarCampo(e.target); });
+// Al guardar el formulario, su borrador ya no hace falta.
+document.addEventListener('submit', (e) => {
+  if (!e.target.closest('#contenido')) return;
+  const todos = leerSesion(BORRADOR_KEY);
+  delete todos[claveBorrador()];
+  escribirSesion(BORRADOR_KEY, todos);
+}, true);
 
 document.querySelectorAll('.nav-items button').forEach((boton) => {
   boton.addEventListener('click', () => {
@@ -2970,13 +3048,25 @@ api('me').then((usuario) => {
     TITULOS.directorio = 'Clientes';
     document.getElementById('hilo').hidden = true;
     pintarResumen();
-    pintar('directorio');
+    pintar(vistaGuardada(['directorio', 'ventas', 'documentos'], 'directorio'));
     return;
   }
 
   pintarResumen();
-  pintar('bandeja');
+  pintar(vistaGuardada(Object.keys(VISTAS), 'bandeja')).then(() => {
+    const chat = leerSesion(ESTADO_KEY).chat;
+    if (chat) abrirHilo(chat).catch(() => {});
+  });
 });
+
+/** La vista donde estabas antes de recargar, si te toca verla. */
+function vistaGuardada(permitidas, porOmision) {
+  const e = leerSesion(ESTADO_KEY);
+  if (e.vtTab) vtTab = e.vtTab;
+  if (e.ftEstado) ftEstado = e.ftEstado;
+  if (e.filtroBandeja) filtroBandeja = e.filtroBandeja;
+  return permitidas.includes(e.vista) ? e.vista : porOmision;
+}
 
 // Refresco de la lista cada 20 s, sin recargar debajo de un formulario a
 // medio llenar. El hilo abierto tiene su propio refresco más frecuente.
