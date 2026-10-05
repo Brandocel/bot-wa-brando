@@ -1627,7 +1627,7 @@ async function vtFacturacion() {
     : '<label class="campo">Serie <span class="muted">(usa "Probar conexión" para elegirla)</span><input id="ft-c-serie" type="number" value="' + (c.serieId ?? '') + '" placeholder="SerieID"' + d + '></label>';
 
   return '<form id="ft-form-config" class="card alta vt-form">' +
-    (c.cifradoDisponible ? '' : '<p class="alert">Falta FACTURACION_SECRET en el servidor: sin ella no se pueden guardar las llaves.</p>') +
+    (c.cifradoDisponible ? '' : '<p class="alert">Falta FACTURACION_SECRET en el servidor, o no tiene 64 caracteres hexadecimales (revísala en Render): sin ella no se pueden guardar las llaves.</p>') +
     '<label class="check vt-activar"><input type="checkbox" id="ft-c-activo"' + (c.enabled ? ' checked' : '') + d + '>' +
       ' <span><strong>Facturar por WhatsApp</strong><small class="muted"> El cliente pide su factura, el bot junta sus datos y aquí la apruebas antes de timbrar.</small></span></label>' +
     '<label class="check"><input type="checkbox" id="ft-c-sandbox"' + (c.sandbox ? ' checked' : '') + d + '> Modo prueba (sandbox de Factura.com, sin validez fiscal)</label>' +

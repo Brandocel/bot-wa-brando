@@ -76,7 +76,7 @@ export const config = {
    * empresa. 64 caracteres hex. Vacío = la facturación queda apagada.
    * Si se pierde, hay que volver a capturar las llaves de todas las empresas.
    */
-  facturacionSecret: process.env.FACTURACION_SECRET || null,
+  facturacionSecret: parseFacturacionSecret(process.env.FACTURACION_SECRET),
 
   queue: {
     /**
@@ -89,6 +89,24 @@ export const config = {
     workers: Math.max(1, Number(process.env.INCOMING_WORKERS ?? 4)),
   },
 } as const;
+
+/**
+ * Al pegarla en el panel de Render se cuelan espacios, saltos de línea o
+ * comillas. Se limpian; si aun así no son 64 hex, se apaga la facturación
+ * y se grita en el log, igual que con Drive: no tumba el bot entero.
+ */
+function parseFacturacionSecret(raw: string | undefined): string | null {
+  const limpio = (raw ?? '').trim().replace(/^["']|["']$/g, '').trim();
+  if (!limpio) return null;
+  if (!/^[0-9a-fA-F]{64}$/.test(limpio)) {
+    console.error(
+      `[config] FACTURACION_SECRET inválida: trae ${limpio.length} caracteres y deben ser 64 hexadecimales. ` +
+        'La facturación queda apagada; el resto del bot sigue.',
+    );
+    return null;
+  }
+  return limpio;
+}
 
 interface ServiceAccount {
   client_email: string;
