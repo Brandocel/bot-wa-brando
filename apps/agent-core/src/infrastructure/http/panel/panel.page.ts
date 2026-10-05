@@ -1374,8 +1374,7 @@ function vtFicha(o) {
     ? '<p class="alert">' + esc(o.name) + ' no tiene WhatsApp propio. Las ventas solo entran por el número de la empresa: ' +
         'conéctalo en Empresas. Mientras tanto, el bot no ofrece nada de lo que captures aquí.</p>'
     : '';
-  return '<div class="card vt-ficha"><div class="vt-ficha-nombre"><span class="muted small">Estás viendo</span>' +
-    '<strong>' + esc(o.name) + '</strong></div><div class="fila-pills">' + pills + '</div></div>' + alerta;
+  return '<div class="fila-pills vt-estado">' + pills + '</div>' + alerta;
 }
 
 const conEmpresa = (ruta) => ruta + (yo?.role === 'EMPRESA' ? '' : (ruta.includes('?') ? '&' : '?') + 'empresa=' + encodeURIComponent(vtEmpresa));
@@ -1463,12 +1462,12 @@ async function vtCatalogo() {
     ? '<form id="vt-form-producto" class="card alta vt-form">' +
         '<h3>' + (editando ? 'Editar producto' : 'Nuevo producto') + '</h3>' +
         '<div class="fila-alta">' +
-          '<label class="campo">Nombre<input id="vt-p-nombre" required value="' + escAttr(p.name) + '" placeholder="Pollo entero"></label>' +
-          '<label class="campo">Sección<input id="vt-p-seccion" value="' + escAttr(p.section) + '" placeholder="Pollos, Complementos, Bebidas"></label>' +
+          '<label class="campo">Nombre<input id="vt-p-nombre" required value="' + escAttr(p.name) + '" placeholder="Ej. Plan Pro mensual, Pollo entero"></label>' +
+          '<label class="campo">Sección<input id="vt-p-seccion" value="' + escAttr(p.section) + '" placeholder="Ej. Planes, Extras"></label>' +
           '<label class="campo">Precio (pesos)<input id="vt-p-precio" type="number" min="0" step="0.5" required value="' + (p.priceCents / 100) + '"></label>' +
         '</div>' +
-        '<label class="campo">Descripción <span class="muted">(el bot la usa para recomendar: para cuántos rinde, qué lleva)</span>' +
-          '<input id="vt-p-desc" value="' + escAttr(p.description) + '" placeholder="Rinde para 4 personas, incluye salsa"></label>' +
+        '<label class="campo">Descripción <span class="muted">(el bot la usa para recomendar: qué incluye, para quién es)</span>' +
+          '<input id="vt-p-desc" value="' + escAttr(p.description) + '" placeholder="Qué incluye y para quién es"></label>' +
         '<fieldset class="tipo"><legend>Qué días se vende <span class="muted">(sin marcar = todos)</span></legend><div class="permisos-lista">' +
           DIAS_VT.map(([d, n]) => '<label class="permiso"><input type="checkbox" name="vt-p-dia" value="' + d + '"' +
             ((p.availableDays ?? []).includes(d) ? ' checked' : '') + '> ' + n + '</label>').join('') + '</div></fieldset>' +
@@ -1491,46 +1490,128 @@ async function vtCatalogo() {
     form + tabla(['Producto', 'Sección', 'Precio', 'Estado', ''], filas, 'Todavía no hay productos. El bot solo vende lo que esté aquí.');
 }
 
+const ZONAS_VT = [
+  ['America/Mexico_City', 'Centro (CDMX, Guadalajara, Monterrey)'],
+  ['America/Cancun', 'Quintana Roo (Cancún)'],
+  ['America/Chihuahua', 'Chihuahua'],
+  ['America/Hermosillo', 'Sonora'],
+  ['America/Mazatlan', 'Pacífico (Sinaloa, Nayarit, BCS)'],
+  ['America/Tijuana', 'Baja California'],
+];
+const DIA_CORTO = { lun: 'Lun', mar: 'Mar', mie: 'Mié', jue: 'Jue', vie: 'Vie', sab: 'Sáb', dom: 'Dom' };
+
+/**
+ * El mismo horario todos los días abiertos se captura una vez: siete
+ * renglones iguales era lo que más estorbaba. Solo si de verdad cambia por
+ * día se abren los renglones.
+ */
+function horarioSimple(horas) {
+  const abiertos = DIAS_VT.map(([d]) => d).filter((d) => (horas[d] ?? []).length > 0);
+  if (abiertos.some((d) => horas[d].length !== 1)) return null;
+  const rangos = new Set(abiertos.map((d) => horas[d][0][0] + '-' + horas[d][0][1]));
+  if (rangos.size > 1) return null;
+  const [de, a] = abiertos.length ? horas[abiertos[0]][0] : ['09:00', '19:00'];
+  return { dias: abiertos, de, a };
+}
+
 async function vtConfig() {
   const c = await api(conEmpresa('ventas/config'));
   const horas = c.hours ?? {};
+  const d = puedeGestionar() ? '' : ' disabled';
+  const simple = horarioSimple(horas);
+  const modos = c.deliveryModes ?? [];
+
   const fila = ([dia, nombre]) => {
     const tramo = (horas[dia] ?? [])[0];
     return '<div class="vt-dia"><span>' + nombre + '</span>' +
-      '<label class="check"><input type="checkbox" data-vt-abre-dia="' + dia + '"' + (tramo ? ' checked' : '') + '> Abre</label>' +
-      '<input type="time" data-vt-de="' + dia + '" value="' + (tramo?.[0] ?? '11:00') + '">' +
-      '<span class="muted">a</span><input type="time" data-vt-a="' + dia + '" value="' + (tramo?.[1] ?? '21:00') + '"></div>';
+      '<label class="check"><input type="checkbox" data-vt-abre-dia="' + dia + '"' + (tramo ? ' checked' : '') + d + '> Abre</label>' +
+      '<input type="time" data-vt-de="' + dia + '" value="' + (tramo?.[0] ?? '09:00') + '"' + d + '>' +
+      '<span class="muted">a</span><input type="time" data-vt-a="' + dia + '" value="' + (tramo?.[1] ?? '19:00') + '"' + d + '></div>';
   };
   const zonas = (c.zones ?? []).map((z) => z.nombre + ', ' + z.costo).join(SALTO);
-  const deshabilitado = puedeGestionar() ? '' : ' disabled';
 
-  return '<form id="vt-form-config" class="card alta vt-form">' +
-    '<label class="check vt-activar"><input type="checkbox" id="vt-c-activo"' + (c.enabled ? ' checked' : '') + deshabilitado + '>' +
-      ' <span><strong>Vender por WhatsApp</strong><small class="muted"> Quien escriba al WhatsApp de la empresa y no sea cliente registrado podrá hacer pedidos.</small></span></label>' +
-    '<div class="fila-alta">' +
-      '<label class="campo">Qué venden<input id="vt-c-giro" value="' + escAttr(c.businessType) + '" placeholder="Pollos asados al carbón"' + deshabilitado + '></label>' +
-      '<label class="campo">Zona horaria<select id="vt-c-tz"' + deshabilitado + '>' +
-        ['America/Mexico_City', 'America/Cancun', 'America/Monterrey', 'America/Chihuahua', 'America/Hermosillo', 'America/Tijuana'].map((z) =>
-          '<option' + (z === c.timezone ? ' selected' : '') + '>' + z + '</option>').join('') + '</select></label>' +
-    '</div>' +
+  const negocio = '<section class="card vt-sec vt-sec-ancha">' +
+    '<h3>El negocio</h3>' +
+    '<label class="campo">Qué vende, en una frase' +
+      '<input id="vt-c-giro" value="' + escAttr(c.businessType) + '" placeholder="Ej. comida para llevar, equipo de cómputo, servicios digitales"' + d + '></label>' +
     '<label class="campo">Lo que el bot debe saber para recomendar' +
-      '<textarea id="vt-c-pitch" rows="4" placeholder="Especialidades, para cuántos rinde cada cosa, promociones vigentes, qué recomendar a quien no sabe qué pedir."' + deshabilitado + '>' + esc(c.pitch) + '</textarea>' +
-      '<small class="muted">El bot no inventa promociones: solo menciona las que escribas aquí.</small></label>' +
-    '<fieldset class="tipo"><legend>Horario</legend>' + DIAS_VT.map(fila).join('') + '</fieldset>' +
-    '<fieldset class="tipo"><legend>Formas de entrega</legend><div class="permisos-lista">' +
-      Object.entries(ENTREGAS_VT).map(([m, [t, d]]) =>
-        '<label class="permiso" title="' + escAttr(d) + '"><input type="checkbox" name="vt-entrega" value="' + m + '"' +
-          ((c.deliveryModes ?? []).includes(m) ? ' checked' : '') + deshabilitado + '> ' + t + '</label>').join('') +
-    '</div></fieldset>' +
-    '<label class="campo">Zonas a domicilio <span class="muted">(una por renglón: nombre, costo en pesos)</span>' +
-      '<textarea id="vt-c-zonas" rows="3" placeholder="Centro, 30' + SALTO + 'Región 100, 45"' + deshabilitado + '>' + esc(zonas) + '</textarea></label>' +
-    '<div class="fila-alta">' +
-      '<label class="campo">Minutos para tener listo un pedido<input id="vt-c-prep" type="number" min="5" value="' + c.prepMinutes + '"' + deshabilitado + '></label>' +
-      '<label class="campo">Pedido mínimo (pesos, 0 = sin mínimo)<input id="vt-c-min" type="number" min="0" value="' + c.minOrder + '"' + deshabilitado + '></label>' +
+      '<textarea id="vt-c-pitch" rows="7" placeholder="Qué es lo más pedido, para quién es cada cosa, promociones vigentes y qué recomendar a quien no sabe qué elegir."' + d + '>' + esc(c.pitch) + '</textarea>' +
+      '<small class="muted">El bot no inventa promociones ni precios: solo usa lo que escribas aquí y lo que esté en el Catálogo.</small></label>' +
+  '</section>';
+
+  const horario = '<section class="card vt-sec">' +
+    '<h3>Horario</h3>' +
+    '<label class="campo">Zona horaria<select id="vt-c-tz"' + d + '>' +
+      ZONAS_VT.map(([z, t]) => '<option value="' + z + '"' + (z === c.timezone ? ' selected' : '') + '>' + t + '</option>').join('') +
+      (ZONAS_VT.some(([z]) => z === c.timezone) ? '' : '<option value="' + escAttr(c.timezone) + '" selected>' + esc(c.timezone) + '</option>') +
+    '</select></label>' +
+    '<div id="vt-horario-simple"' + (simple ? '' : ' hidden') + '>' +
+      '<div class="vt-dias-chips">' + DIAS_VT.map(([dia]) =>
+        '<label class="dia-chip"><input type="checkbox" data-vt-dia-simple="' + dia + '"' +
+          ((simple?.dias ?? []).includes(dia) ? ' checked' : '') + d + '><span>' + DIA_CORTO[dia] + '</span></label>').join('') + '</div>' +
+      '<div class="vt-rango">De <input type="time" id="vt-h-de" value="' + (simple?.de ?? '09:00') + '"' + d + '> a ' +
+        '<input type="time" id="vt-h-a" value="' + (simple?.a ?? '19:00') + '"' + d + '></div>' +
     '</div>' +
+    '<div id="vt-horario-dias"' + (simple ? ' hidden' : '') + '>' + DIAS_VT.map(fila).join('') + '</div>' +
+    (puedeGestionar() ? '<button type="button" class="enlace" data-vt-horario-modo>' +
+      (simple ? 'Horario distinto por día' : 'Mismo horario todos los días') + '</button>' : '') +
+  '</section>';
+
+  const entrega = '<section class="card vt-sec">' +
+    '<h3>Entrega</h3>' +
+    '<div class="vt-modos">' + Object.entries(ENTREGAS_VT).map(([m, [t, desc]]) =>
+      '<label class="vt-modo"><input type="checkbox" name="vt-entrega" value="' + m + '"' + (modos.includes(m) ? ' checked' : '') + d + '>' +
+        '<span><strong>' + t + '</strong><small class="muted">' + desc + '</small></span></label>').join('') + '</div>' +
+    '<label class="campo" data-vt-si="DOMICILIO">Zonas a domicilio <span class="muted">(una por renglón: nombre, costo)</span>' +
+      '<textarea id="vt-c-zonas" rows="3" placeholder="Centro, 30' + SALTO + 'Región 100, 45"' + d + '>' + esc(zonas) + '</textarea></label>' +
+    '<div class="fila-alta">' +
+      '<label class="campo" data-vt-si="FISICO">Minutos para tener listo un pedido<input id="vt-c-prep" type="number" min="5" max="1440" value="' + c.prepMinutes + '"' + d + '></label>' +
+      '<label class="campo">Pedido mínimo <span class="muted">(pesos, 0 = sin mínimo)</span><input id="vt-c-min" type="number" min="0" value="' + c.minOrder + '"' + d + '></label>' +
+    '</div>' +
+  '</section>';
+
+  setTimeout(vtAjustarEntrega, 0);
+  return '<form id="vt-form-config" class="vt-config">' +
+    '<label class="card vt-activar-card"><input type="checkbox" id="vt-c-activo"' + (c.enabled ? ' checked' : '') + d + '>' +
+      '<span><strong>Vender por WhatsApp</strong><small class="muted">Quien escriba al WhatsApp de la empresa y no sea cliente registrado podrá cotizar y hacer pedidos.</small></span></label>' +
+    '<div class="vt-cols">' + negocio + horario + entrega + '</div>' +
     (puedeGestionar() ? '<div class="fila-botones"><button type="submit">Guardar configuración</button></div>' : '') +
   '</form>';
 }
+
+/** Zonas solo con domicilio; tiempo de preparación solo si hay algo físico que preparar. */
+function vtAjustarEntrega() {
+  const marcados = [...document.querySelectorAll('input[name="vt-entrega"]:checked')].map((c) => c.value);
+  document.querySelectorAll('[data-vt-si]').forEach((el) => {
+    const si = el.dataset.vtSi;
+    el.hidden = si === 'FISICO' ? !marcados.some((m) => m !== 'DIGITAL') : !marcados.includes(si);
+  });
+}
+
+document.addEventListener('change', (e) => {
+  if (e.target.name === 'vt-entrega') vtAjustarEntrega();
+});
+
+document.addEventListener('click', (e) => {
+  const modo = e.target.closest('[data-vt-horario-modo]');
+  if (!modo) return;
+  const simple = document.getElementById('vt-horario-simple');
+  const dias = document.getElementById('vt-horario-dias');
+  const aDias = !simple.hidden;
+  if (aDias) {
+    // Lo capturado en el modo simple se copia a los renglones.
+    const de = document.getElementById('vt-h-de').value;
+    const a = document.getElementById('vt-h-a').value;
+    for (const [dia] of DIAS_VT) {
+      document.querySelector('[data-vt-abre-dia="' + dia + '"]').checked = document.querySelector('[data-vt-dia-simple="' + dia + '"]').checked;
+      document.querySelector('[data-vt-de="' + dia + '"]').value = de;
+      document.querySelector('[data-vt-a="' + dia + '"]').value = a;
+    }
+  }
+  simple.hidden = aDias;
+  dias.hidden = !aDias;
+  modo.textContent = aDias ? 'Mismo horario todos los días' : 'Horario distinto por día';
+});
 
 const repintarVentas = () => pintar('ventas', true);
 
@@ -1621,11 +1702,18 @@ document.addEventListener('submit', async (e) => {
   if (e.target.id === 'vt-form-config') {
     e.preventDefault();
     const hours = {};
+    const porDia = !document.getElementById('vt-horario-dias').hidden;
     for (const [dia] of DIAS_VT) {
-      const abre = document.querySelector('[data-vt-abre-dia="' + dia + '"]').checked;
-      hours[dia] = abre
-        ? [[document.querySelector('[data-vt-de="' + dia + '"]').value, document.querySelector('[data-vt-a="' + dia + '"]').value]]
-        : [];
+      if (porDia) {
+        const abre = document.querySelector('[data-vt-abre-dia="' + dia + '"]').checked;
+        hours[dia] = abre
+          ? [[document.querySelector('[data-vt-de="' + dia + '"]').value, document.querySelector('[data-vt-a="' + dia + '"]').value]]
+          : [];
+      } else {
+        hours[dia] = document.querySelector('[data-vt-dia-simple="' + dia + '"]').checked
+          ? [[document.getElementById('vt-h-de').value, document.getElementById('vt-h-a').value]]
+          : [];
+      }
     }
     const zones = document.getElementById('vt-c-zonas').value.split(SALTO).map((l) => l.split(','))
       .filter((p) => p[0] && p[0].trim()).map((p) => ({ nombre: p[0].trim(), costo: Number((p[1] ?? '0').trim()) || 0 }));
@@ -2892,9 +2980,28 @@ api('me').then((usuario) => {
 
 // Refresco de la lista cada 20 s, sin recargar debajo de un formulario a
 // medio llenar. El hilo abierto tiene su propio refresco más frecuente.
+/**
+ * ¿Hay algo capturado y sin guardar en la pantalla? Se compara cada campo
+ * contra el valor con el que se pintó. Antes solo se respetaba el campo con
+ * el cursor: si capturabas y dabas clic fuera, el refresco lo borraba.
+ */
+function hayCapturaSinGuardar() {
+  return [...document.querySelectorAll('#contenido input, #contenido textarea, #contenido select')].some((el) => {
+    if (el.type === 'search' || el.disabled) return false;
+    if (el.type === 'checkbox' || el.type === 'radio') return el.checked !== el.defaultChecked;
+    if (el.tagName === 'SELECT') {
+      // Sin opción marcada en el HTML, el navegador muestra la primera.
+      const inicial = Math.max(0, [...el.options].findIndex((o) => o.defaultSelected));
+      return el.selectedIndex !== inicial;
+    }
+    return el.value !== el.defaultValue;
+  });
+}
+
 setInterval(() => {
   // Ni un formulario a medio llenar ni el buscador mientras se escribe.
   if (document.querySelector('#contenido input:focus, #contenido select:focus, #contenido textarea:focus')) return;
+  if (hayCapturaSinGuardar()) return;
   if (directorioOcupado()) return;
   if (ventasOcupado()) return;
   if (vistaActual === 'empresas' && claveNueva) return;
@@ -3496,6 +3603,34 @@ const STYLES = `<link rel="preconnect" href="https://fonts.googleapis.com">
     padding: 7px 10px; color: var(--texto); font: inherit; font-size: 13px;
   }
   .vt-form { max-width: 860px; }
+  .vt-estado { margin: 4px 0 14px; }
+  .vt-config { display: flex; flex-direction: column; gap: 14px; }
+  .vt-cols { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); align-items: start; }
+  .vt-sec { display: flex; flex-direction: column; gap: 12px; padding: 18px; }
+  .vt-sec h3 { margin: 0; font-size: 15px; }
+  .vt-sec-ancha { grid-column: 1 / -1; }
+  .vt-activar-card { display: flex; flex-direction: row; gap: 12px; align-items: flex-start; padding: 16px 18px; cursor: pointer; }
+  .vt-activar-card input { margin-top: 3px; }
+  .vt-activar-card span, .vt-modo span { display: flex; flex-direction: column; gap: 2px; }
+  .vt-dias-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .dia-chip { position: relative; cursor: pointer; }
+  .dia-chip input { position: absolute; opacity: 0; pointer-events: none; }
+  .dia-chip span {
+    display: inline-block; min-width: 46px; text-align: center; padding: 6px 10px; border-radius: 999px;
+    border: 1px solid var(--borde2); color: var(--suave); font-size: 13px; font-weight: 700;
+  }
+  .dia-chip input:checked + span { background: var(--acento-suave); border-color: var(--acento-borde); color: #c9c1ff; }
+  .dia-chip input:focus-visible + span { outline: 2px solid var(--acento); outline-offset: 2px; }
+  .vt-rango { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; color: var(--suave); }
+  .vt-modos { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+  .vt-modo {
+    display: flex; flex-direction: row; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: var(--radio);
+    border: 1px solid var(--borde); background: var(--caja2); cursor: pointer; font-size: 13px;
+  }
+  .vt-modo:has(input:checked) { border-color: var(--acento-borde); background: var(--acento-suave); }
+  .vt-modo input { margin-top: 2px; }
+  button.enlace { background: none; border: none; padding: 0; color: #b3a9ff; font-weight: 600; cursor: pointer; align-self: flex-start; }
+  button.enlace:hover { text-decoration: underline; }
   .vt-form h3 { margin: 0; }
   .vt-activar { align-items: flex-start; }
   .vt-activar span { display: flex; flex-direction: column; gap: 2px; }
