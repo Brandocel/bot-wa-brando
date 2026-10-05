@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { FlagsService } from '../../infrastructure/persistence/flags.service';
+import { normalizePhone } from '../../domain/contact/phone';
 import { PrismaService } from '../../infrastructure/persistence/prisma.service';
 import type { IncomingMessage } from '../../domain/message/incoming-message';
 import { DriveCommandsService } from './drive-commands.service';
@@ -98,6 +99,11 @@ export class OwnerCommandsService {
         },
       },
 
+      solo: {
+        help: 'el bot solo contesta a estos números: /solo 9981234567 9987654321 · /solo todos para quitarlo · /solo para ver',
+        run: async (args) => this.solo(args),
+      },
+
       reanuda: {
         help: 'reactiva las respuestas automáticas',
         run: async () => {
@@ -110,8 +116,9 @@ export class OwnerCommandsService {
         help: 'resumen de qué está pasando',
         run: async () => {
           const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
-          const [paused, contacts, replies24h, pending] = await Promise.all([
+          const [paused, solo, contacts, replies24h, pending] = await Promise.all([
             this.flags.isPaused(),
+            this.flags.soloNumeros(),
             this.prisma.contact.count({ where: { role: 'PROSPECT' } }),
             this.prisma.message.count({
               where: { direction: 'OUT', createdAt: { gte: since } },
@@ -120,7 +127,7 @@ export class OwnerCommandsService {
           ]);
 
           return [
-            `Estado: ${paused ? '⏸️ EN PAUSA' : '▶️ activo'}`,
+            `Estado: ${paused ? '⏸️ EN PAUSA' : '▶️ activo'}${solo.length ? ` · 🔒 solo ${solo.length} número(s)` : ''}`,
             `Prospectos: ${contacts}`,
             `Respuestas en 24h: ${replies24h}`,
             `Pendientes de enviar: ${pending}`,
@@ -160,6 +167,38 @@ export class OwnerCommandsService {
           ].join('\n'),
       },
     };
+  }
+
+  /**
+   * Lista de números que reciben respuesta. Se guarda ya normalizada
+   * (5219981234567@c.us), que es como llega el remitente: un número mal
+   * tecleado se rechaza aquí y no deja la lista a medias.
+   */
+  private async solo(args: string): Promise<string> {
+    const texto = args.trim();
+    if (!texto) {
+      const lista = await this.flags.soloNumeros();
+      return lista.length
+        ? `🔒 Solo contesto a:\n${lista.map((w) => `• ${w.replace(/@c\.us$/, '')}`).join('\n')}\n\n/solo todos para contestar a todos.`
+        : '🔓 Contesto a todos. Para limitarlo: /solo 9981234567 9987654321';
+    }
+    if (/^(todos|off|nadie|quitar)$/i.test(texto)) {
+      await this.flags.setSoloNumeros([]);
+      return '🔓 Listo: contesto a todos otra vez.';
+    }
+
+    const waIds: string[] = [];
+    for (const parte of texto.split(/[\s,;]+/).filter(Boolean)) {
+      try {
+        waIds.push(normalizePhone(parte).waId);
+      } catch {
+        return `No entendí el número "${parte}". No cambié nada.`;
+      }
+    }
+    const unicos = [...new Set(waIds)];
+    await this.flags.setSoloNumeros(unicos);
+    return `🔒 Listo: solo contesto a ${unicos.map((w) => w.replace(/@c\.us$/, '')).join(', ')}. ` +
+      'A cualquier otro número no le respondo nada (tú siempre).\n/solo todos para quitarlo.';
   }
 
   /**

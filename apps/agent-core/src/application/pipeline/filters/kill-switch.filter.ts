@@ -10,6 +10,10 @@ import { type MessageFilter, type Next, type PipelineContext, stop } from '../pi
  * `/reanuda` y el bot quedaría apagado hasta entrar al servidor a mano.
  *
  * Va después de Authorization justamente para poder distinguir quién escribe.
+ *
+ * También el modo "solo estos números" (/solo): mientras haya lista, a
+ * cualquier otro número no se le contesta nada, en ninguna línea. Sirve para
+ * probar en producción sin que un desconocido hable con el bot a medias.
  */
 @Injectable()
 export class KillSwitchFilter implements MessageFilter {
@@ -22,6 +26,11 @@ export class KillSwitchFilter implements MessageFilter {
 
     if (await this.flags.isPaused()) {
       return stop(ctx, this.name, 'bot en pausa');
+    }
+
+    const solo = await this.flags.soloNumeros();
+    if (solo.length > 0 && !solo.includes(ctx.message.senderId)) {
+      return stop(ctx, this.name, 'número fuera de la lista de /solo');
     }
 
     await next();

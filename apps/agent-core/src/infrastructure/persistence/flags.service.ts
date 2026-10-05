@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
 
 export const FLAG_PAUSED = 'paused';
+/** Lista de números (waId) que reciben respuesta. Vacía = todos. */
+export const FLAG_SOLO_NUMEROS = 'solo_numeros';
 
 /**
  * Banderas de operación, persistidas en `SystemFlag`.
@@ -48,5 +50,14 @@ export class FlagsService {
 
   setPaused(paused: boolean): Promise<void> {
     return this.set(FLAG_PAUSED, paused);
+  }
+
+  async soloNumeros(): Promise<string[]> {
+    const v = await this.get<unknown>(FLAG_SOLO_NUMEROS, []);
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  }
+
+  setSoloNumeros(waIds: string[]): Promise<void> {
+    return this.set(FLAG_SOLO_NUMEROS, waIds);
   }
 }
