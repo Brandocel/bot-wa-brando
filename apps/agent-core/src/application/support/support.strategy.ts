@@ -22,6 +22,7 @@ import {
   type Solicitud,
 } from './solicitud.service';
 import { TicketService, type EscalationReason } from './ticket.service';
+import { FacturaEquipoService } from '../facturacion/factura-equipo.service';
 import {
   ACUSE,
   esCierre,
@@ -163,6 +164,7 @@ export class SupportStrategy {
     private readonly history: ConversationHistoryService,
     private readonly writer: ReplyWriterService,
     @Optional() private readonly ventas?: SalesStrategy,
+    @Optional() private readonly facturasEquipo?: FacturaEquipoService,
   ) {}
 
   /**
@@ -173,6 +175,14 @@ export class SupportStrategy {
     message: IncomingMessage,
     ctx: StrategyContext,
   ): Promise<StrategyReply | null> {
+    // El personal de una empresa emitiendo una factura ("factura para…"):
+    // su propia plática de preguntas cerradas, antes que buscar documentos.
+    // Solo números con el permiso "puede facturar"; a los demás no les cambia nada.
+    if (this.facturasEquipo) {
+      const factura = await this.facturasEquipo.atender(message, ctx);
+      if (factura) return factura;
+    }
+
     // Qué clase de mensaje es se decide primero: cambia qué se hace con él.
     const clasificacion = clasificar(message.body);
 

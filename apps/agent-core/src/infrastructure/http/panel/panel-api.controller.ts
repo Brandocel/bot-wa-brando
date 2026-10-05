@@ -527,6 +527,9 @@ export class PanelApiController {
         // Para que Ventas abra en la empresa que de verdad vende, y no en
         // la primera por orden alfabético.
         sales: { select: { enabled: true } },
+        // Para la tarjeta de configuración de cada empresa en el panel.
+        invoicing: { select: { enabled: true, sandbox: true } },
+        memberships: { where: { canInvoice: true, revokedAt: null }, select: { id: true } },
         _count: {
           select: {
             products: { where: { active: true } },
@@ -555,6 +558,7 @@ export class PanelApiController {
         id: true,
         role: true,
         verifiedAt: true,
+        canInvoice: true,
         fullName: true,
         nameConfirmedAt: true,
         validUntil: true,
@@ -1085,6 +1089,27 @@ export class PanelApiController {
       throw new BadRequestException(err instanceof Error ? err.message : String(err));
     }
     await this.auditarPanel(m.contact.waId, 'PANEL_CONFIRMAR_NOMBRE', gestor.email, nota);
+    return { ok: true };
+  }
+
+  /**
+   * Permiso de EMITIR facturas de la empresa por WhatsApp. Solo a números
+   * verificados: quien lo tiene timbra a nombre de la empresa con su "sí".
+   */
+  @UseGuards(PanelGuard)
+  @ParaEmpresa()
+  @Post('numeros/facturar')
+  async setCanInvoice(@Req() req: PanelRequest, @Body() body: { id?: string; enabled?: boolean }) {
+    const gestor = this.gestor(req);
+    const m = await this.membresiaDe(gestor, body.id);
+    const enabled = body.enabled === true;
+    if (enabled) {
+      const v = await this.prisma.membership.findUnique({ where: { id: m.id }, select: { verifiedAt: true } });
+      if (!v?.verifiedAt) throw new BadRequestException('primero verifica este número: va a facturar a nombre de la empresa');
+    }
+    await this.prisma.membership.update({ where: { id: m.id }, data: { canInvoice: enabled } });
+    await this.auditarPanel(m.contact.waId, enabled ? 'PANEL_FACTURAR_SI' : 'PANEL_FACTURAR_NO', gestor.email,
+      enabled ? 'puede emitir facturas por WhatsApp' : 'ya no puede emitir facturas');
     return { ok: true };
   }
 

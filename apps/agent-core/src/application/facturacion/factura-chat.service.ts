@@ -77,6 +77,8 @@ export class FacturaChatService {
   async atender(message: IncomingMessage, ctx: StrategyContext, negocio: Negocio): Promise<StrategyReply | null> {
     const texto = message.body.trim();
     let req = await this.prisma.invoiceRequest.findUnique({ where: { conversationId: ctx.conversationId } });
+    // Una factura que está emitiendo el personal de la empresa no es de esta plática.
+    if ((req?.data as { modo?: string } | null)?.modo === 'empresa') return null;
     if (req && req.expiresAt < new Date()) {
       await this.borrar(ctx.conversationId);
       req = null;

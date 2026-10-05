@@ -36,6 +36,7 @@ import { MESSAGING_PORT } from './application/ports/messaging.port';
 import { FACTURACION_PORT } from './application/ports/facturacion.port';
 import { FacturacionService } from './application/facturacion/facturacion.service';
 import { FacturaChatService } from './application/facturacion/factura-chat.service';
+import { FacturaEquipoService } from './application/facturacion/factura-equipo.service';
 import { FacturaComAdapter } from './infrastructure/facturacion/factura-com.adapter';
 import { PanelFacturasController } from './infrastructure/http/panel/panel-facturas.controller';
 import { HandleIncomingMessageUseCase } from './application/use-cases/handle-incoming-message.use-case';
@@ -136,6 +137,7 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     // ── Facturación ────────────────────────────────────────────────────
     FacturacionService,
     FacturaChatService,
+    FacturaEquipoService,
 
     // ── Casos de uso ───────────────────────────────────────────────────
     DriveCommandsService,

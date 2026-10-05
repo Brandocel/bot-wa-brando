@@ -375,6 +375,11 @@ model Membership {
   /// no lo confirma: no se le entrega nada hasta que lo haga.
   nameConfirmedAt DateTime?
 
+  /// Este número puede EMITIR facturas de la empresa por WhatsApp (concepto
+  /// libre, se timbra con su "sí"). Aparte del rol: ver documentos no es lo
+  /// mismo que facturar a nombre de la empresa.
+  canInvoice Boolean @default(false)
+
   validFrom  DateTime  @default(now())
   validUntil DateTime?
   revokedAt  DateTime?

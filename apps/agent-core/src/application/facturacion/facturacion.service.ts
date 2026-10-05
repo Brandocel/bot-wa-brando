@@ -245,6 +245,94 @@ export class FacturacionService {
     return { ok: true, factura };
   }
 
+  /**
+   * Factura que emite el PERSONAL de la empresa por WhatsApp: concepto
+   * libre, sin pedido. No pasa por aprobación en el panel: quien la pide es
+   * la empresa misma (un número con permiso "puede facturar"), y ya vio el
+   * resumen y dijo que sí. Se timbra al momento y el PDF/XML le llegan a él.
+   */
+  async facturarLibre(n: {
+    organizationId: string;
+    /** El número del personal que la pidió (a él le llega el PDF). */
+    contactId: string;
+    conversationId: string;
+    por: string;
+    receptor: Receptor;
+    conceptos: Array<{ descripcion: string; cantidad: number; precioCents: number }>;
+    formaPago: string;
+    origen: 'CONSTANCIA' | 'MANUAL';
+  }): Promise<{ ok: true; factura: Invoice } | { ok: false; errores: string[] }> {
+    const s = await this.prisma.invoicingSettings.findUnique({ where: { organizationId: n.organizationId } });
+    if (!s?.enabled) return { ok: false, errores: ['La facturación de esta empresa está apagada en el panel.'] };
+
+    const tipo = tipoPersona(n.receptor.rfc);
+    const receptor: Receptor = {
+      rfc: normalizarRfc(n.receptor.rfc),
+      nombre: normalizarNombre(n.receptor.nombre, tipo),
+      codigoPostal: n.receptor.codigoPostal.trim(),
+      regimen: n.receptor.regimen.trim(),
+      usoCfdi: n.receptor.usoCfdi.trim().toUpperCase(),
+      email: n.receptor.email?.trim() || null,
+    };
+    const errores = erroresDeReceptor(receptor);
+    const errPago = errorDePago(n.formaPago, 'PUE');
+    if (errPago) errores.push(errPago);
+    if (n.conceptos.length === 0) errores.push('Falta qué se factura.');
+    if (errores.length) return { ok: false, errores };
+
+    const armado = armarConceptos(
+      n.conceptos.map((c) => ({ nombre: c.descripcion, precioCents: c.precioCents, cantidad: c.cantidad })),
+      0,
+      {
+        preciosConIva: s.pricesIncludeTax,
+        tasaIva: s.ivaBasisPoints / 10000,
+        claveProdServ: s.defaultProdCode,
+        claveUnidad: s.defaultUnitCode,
+        claveProdServEnvio: s.deliveryProdCode,
+      },
+    );
+
+    const factura = await this.prisma.$transaction(async (tx) => {
+      const perfil = await tx.fiscalProfile.upsert({
+        where: { organizationId_contactId_rfc: { organizationId: n.organizationId, contactId: n.contactId, rfc: receptor.rfc } },
+        create: {
+          organizationId: n.organizationId, contactId: n.contactId, rfc: receptor.rfc, name: receptor.nombre,
+          zip: receptor.codigoPostal, regimen: receptor.regimen, usoCfdi: receptor.usoCfdi, email: receptor.email, source: n.origen,
+        },
+        update: {
+          name: receptor.nombre, zip: receptor.codigoPostal, regimen: receptor.regimen, usoCfdi: receptor.usoCfdi,
+          email: receptor.email, source: n.origen,
+        },
+      });
+      return tx.invoice.create({
+        data: {
+          organizationId: n.organizationId,
+          contactId: n.contactId,
+          conversationId: n.conversationId,
+          fiscalProfileId: perfil.id,
+          sandbox: s.sandbox,
+          receptor: receptor as unknown as Prisma.InputJsonValue,
+          concepts: armado.conceptos as unknown as Prisma.InputJsonValue,
+          formaPago: n.formaPago,
+          metodoPago: 'PUE',
+          subtotalCents: armado.subtotalCents,
+          ivaCents: armado.ivaCents,
+          totalCents: armado.totalCents,
+        },
+      });
+    });
+
+    return { ok: true, factura: await this.aprobar(n.organizationId, factura.id, n.por) };
+  }
+
+  /** Lo último que se le facturó a este RFC en la empresa: con el RFC basta para repetir. */
+  async perfilPorRfc(organizationId: string, rfc: string) {
+    return this.prisma.fiscalProfile.findFirst({
+      where: { organizationId, rfc: normalizarRfc(rfc) },
+      orderBy: { updatedAt: 'desc' },
+    });
+  }
+
   // ── Decidir ─────────────────────────────────────────────────────────
 
   /**

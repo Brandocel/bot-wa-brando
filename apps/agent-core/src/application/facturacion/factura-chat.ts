@@ -251,3 +251,62 @@ export function datosEnTexto(r: Partial<Receptor>): string {
     `• Régimen: ${reg ? `${reg.nombre} (${reg.clave})` : '—'}`,
   ].join('\n');
 }
+
+// ── Facturas que emite el personal de la empresa ──────────────────────
+
+const VERBOS_EMITIR = [
+  'hacer', 'haz', 'hazme', 'hazle', 'genera', 'generar', 'generame', 'emitir', 'emite', 'emiteme', 'crear', 'crea',
+  'creame', 'nueva', 'nuevo', 'timbrar', 'timbra', 'timbrame', 'sacar', 'saca', 'sacame', 'elaborar', 'elabora',
+];
+
+/**
+ * ¿Quiere EMITIR una factura? "factura para Juan", "hazme una factura",
+ * "facturar a ACME". No confundir con pedir un documento que ya existe
+ * ("mándame la factura de marzo"): ahí no hay verbo de emitir.
+ */
+export function pideEmitirFactura(texto: string): boolean {
+  const ps = palabras(texto);
+  // El sustantivo ("factura") está a una letra del verbo ("facturar"): primero
+  // se descarta, o "mándame la factura de marzo" se leía como emitir.
+  const esSustantivo = (p: string) => p === 'facturas' || parecida(p, 'factura');
+  if (ps.some((p) => /^factur(ar|ale|ame|eme|en)/.test(p))) return true;
+  if (ps.some((p) => !esSustantivo(p) && ['facturar', 'facturarle', 'facturale', 'facturame', 'factureme'].some((w) => parecida(p, w)))) return true;
+  const i = ps.findIndex((p) => p.startsWith('factur') || parecida(p, 'factura'));
+  if (i < 0) return false;
+  if (ps.slice(0, i).some((p) => VERBOS_EMITIR.some((v) => parecida(p, v)))) return true;
+  // "factura para Juan Pérez", "factura a nombre de ACME"
+  const despues = ps[i + 1];
+  return despues === 'para' || despues === 'a' || despues === 'nueva';
+}
+
+export interface ConceptoEscrito {
+  descripcion: string;
+  cantidad: number;
+  /** Precio por unidad, en centavos, como lo escribió (con o sin IVA según la empresa). */
+  precioCents: number;
+}
+
+const MONTO = /\$?\s*(\d{1,3}(?:[,\s]\d{3})+|\d+)(?:\.(\d{1,2}))?\s*(?:pesos|mxn|mn|varos)?\s*$/i;
+
+/**
+ * Conceptos escritos a mano, uno por renglón: "Banquete 50 personas $3,500",
+ * "2 x Pollo entero 255", "Servicio de entrega - 80". El monto va al final.
+ * Con cantidad ("2 x"), el monto es el precio de cada uno; el resumen
+ * enseña el total para que se corrija si se leyó al revés.
+ */
+export function leerConceptos(texto: string): ConceptoEscrito[] | null {
+  const renglones = texto.split(/\n|;/).map((r) => r.trim()).filter(Boolean);
+  const conceptos: ConceptoEscrito[] = [];
+  for (const r of renglones) {
+    const m = r.match(MONTO);
+    if (!m) return null;
+    const precioCents = Number(m[1]!.replace(/[,\s]/g, '')) * 100 + Number((m[2] ?? '0').padEnd(2, '0'));
+    let resto = r.slice(0, m.index).replace(/[\s:=\-–—]+(por|de|en)?\s*$/i, '').trim();
+    let cantidad = 1;
+    const c = resto.match(/^(\d{1,4})\s*(?:x|×|pz|pzas?|piezas?|unidades?)?\s+(.+)$/i);
+    if (c) { cantidad = Number(c[1]); resto = c[2]!.trim(); }
+    if (resto.length < 3 || precioCents <= 0 || cantidad <= 0) return null;
+    conceptos.push({ descripcion: resto.slice(0, 300), cantidad, precioCents });
+  }
+  return conceptos.length ? conceptos : null;
+}

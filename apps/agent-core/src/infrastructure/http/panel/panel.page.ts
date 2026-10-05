@@ -349,8 +349,14 @@ const ETIQUETAS = {
   SEGUIMIENTO: 'seguimiento', PIDE_HUMANO: 'pide persona', CORTESIA: 'cortesía',
 };
 
+/**
+ * Solo se marca lo que pide atención (queja, pide persona, molesto). Una
+ * etiqueta en cada mensaje ("consulta", "cortesía") era ruido que tapaba lo
+ * importante.
+ */
 function etiqueta(m) {
   if (m.direction !== 'IN' || !ETIQUETAS[m.intent]) return '';
+  if (!m.molesto && m.intent !== 'QUEJA' && m.intent !== 'PIDE_HUMANO') return '';
   const texto = ETIQUETAS[m.intent] +
     (m.motivo ? ' · ' + m.motivo.replace(/_/g, ' ') : '') +
     (m.molesto ? ' · molesto' : '');
@@ -358,6 +364,7 @@ function etiqueta(m) {
 }
 
 const ICONO_ARCHIVO = '${icono('archivo')}';
+const ICONO_TICKET = '${icono('ticket')}';
 
 /**
  * El texto de un mensaje como se ve en WhatsApp: *negritas* y, si es un
@@ -398,19 +405,49 @@ function autorSaliente(m) {
   return { clase: ' bot', firma: '<span class="firma">Jarvis · bot</span>' };
 }
 
-function pintarMensajes(datos) {
+/** Un ticket dentro del hilo, en el punto de la plática donde se abrió. */
+function anclaTicket(t) {
+  const cerrado = t.state === 'CERRADO';
+  const estado = cerrado ? 'resuelto' : t.state === 'EN_REVISION' ? 'espera a una persona' : t.state.replace('_', ' ').toLowerCase();
+  return '<div class="ticket-ancla' + (cerrado ? ' cerrado' : '') + '" id="ticket-' + t.id + '">' +
+    '<span class="ticket-ancla-ico">' + ICONO_TICKET + '</span>' +
+    '<div class="ticket-ancla-texto">' +
+      '<div><strong>Ticket #' + t.number + '</strong> <span class="muted small">· ' + esc(estado) + ' · ' + hora(t.createdAt) + '</span></div>' +
+      '<div class="ticket-ancla-asunto">' + ligasMaps(esc(t.subject)) + '</div>' +
+      (cerrado && t.closeReason ? '<div class="muted small">' + esc(t.closeReason) + '</div>' : '') +
+    '</div>' +
+    (cerrado ? '' : '<button class="mini" data-cerrar="' + t.id + '">Resolver</button>') +
+  '</div>';
+}
+
+function pintarMensajes(datos, alFinal) {
   const caja = document.getElementById('hilo-mensajes');
-  const abajo = caja.scrollHeight - caja.scrollTop - caja.clientHeight < 40;
+  const abajo = alFinal || caja.scrollHeight - caja.scrollTop - caja.clientHeight < 40;
+
+  // Mensajes y tickets en una sola línea de tiempo: el ticket aparece
+  // justo donde se abrió, pegado al mensaje que lo provocó.
+  const eventos = datos.messages.map((m) => ({ fecha: m.createdAt, m }))
+    .concat((datos.tickets ?? []).map((t) => ({ fecha: t.createdAt, t })))
+    .sort((a, b) => new Date(a.fecha).getTime() - new Date(b.fecha).getTime());
 
   let diaAnterior = null;
-  const burbujas = datos.messages.map((m) => {
-    const dia = new Date(m.createdAt).toDateString();
-    const separador = dia !== diaAnterior ? '<div class="dia">' + esc(nombreDia(m.createdAt)) + '</div>' : '';
+  let firmaAnterior = null;
+  const burbujas = eventos.map((ev) => {
+    const dia = new Date(ev.fecha).toDateString();
+    const separador = dia !== diaAnterior ? '<div class="dia">' + esc(nombreDia(ev.fecha)) + '</div>' : '';
+    if (dia !== diaAnterior) firmaAnterior = null;
     diaAnterior = dia;
+    if (ev.t) { firmaAnterior = null; return separador + anclaTicket(ev.t); }
+
+    const m = ev.m;
     const autor = m.direction === 'IN' ? { clase: '', firma: '' } : autorSaliente(m);
+    // La firma ("Jarvis · bot") solo cuando cambia quién escribe: repetida
+    // en cada burbuja era ruido.
+    const firma = m.direction === 'IN' || autor.firma === firmaAnterior ? '' : autor.firma;
+    firmaAnterior = m.direction === 'IN' ? null : autor.firma;
     return separador +
       '<div class="burbuja ' + (m.direction === 'IN' ? 'entra' : 'sale') + autor.clase + '">' +
-        autor.firma +
+        firma +
         etiqueta(m) +
         cuerpoMensaje(m.body) +
         '<span class="hora">' + hora(m.createdAt) + '</span>' +
@@ -430,8 +467,8 @@ function pintarMensajes(datos) {
     '<p class="muted centro">Sin mensajes todavía.</p>';
 
   // Solo baja al final si ya estabas abajo: si estás leyendo arriba, no
-  // te arrastra.
-  if (abajo || ultimoHilo === null) caja.scrollTop = caja.scrollHeight;
+  // te arrastra. Un hilo recién abierto siempre empieza en lo último.
+  if (abajo) caja.scrollTop = caja.scrollHeight;
 }
 
 function pintarEstadoHilo(datos) {
@@ -442,27 +479,63 @@ function pintarEstadoHilo(datos) {
     boton.textContent = 'Devolver al bot';
     boton.className = 'ghost small activo';
     boton.title = 'El bot vuelve a contestar este chat';
-    estado.innerHTML = '<span class="pill warn">Lo atiendes tú · el bot no contesta</span>' +
-      (datos.handoffUntil ? ' <span class="muted small">hasta ' + hora(datos.handoffUntil) + '</span>' : '');
+    estado.innerHTML = '<span class="estado persona"><i></i>lo atiendes tú' +
+      (datos.handoffUntil ? ' · hasta ' + hora(datos.handoffUntil) : '') + '</span>';
   } else {
     boton.textContent = 'Atender yo';
     boton.className = 'acento';
     boton.title = 'El bot se calla y contestas tú';
+    // "El bot atiende" ya lo dice el botón "Atender yo": aquí solo el turno.
     const etiqueta = {
-      BOT: ['warn', 'sin responder'],
-      AGENTE: ['warn', 'espera a una persona'],
-      CLIENTE: ['', 'espera al cliente'],
+      BOT: ['nuevo', 'sin responder'],
+      AGENTE: ['espera', 'espera a una persona'],
+      CLIENTE: ['cliente', 'espera al cliente'],
       NADIE: ['ok', 'al día'],
     }[datos.awaiting] ?? ['', datos.awaiting];
-    estado.innerHTML = '<span class="pill ' + etiqueta[0] + '">' + etiqueta[1] + '</span>' +
-      '<span class="pill">el bot atiende</span>';
+    estado.innerHTML = '<span class="estado ' + etiqueta[0] + '"><i></i>' + etiqueta[1] + '</span>';
   }
 }
 
+/** Burbujas de mentira mientras llega el hilo: se ve la forma, no un "Cargando…". */
+function skeletonHilo() {
+  return [['entra', 52], ['sale', 70], ['sale', 46], ['entra', 38], ['sale', 64], ['entra', 58]].map(([lado, ancho]) =>
+    '<div class="sk sk-burbuja ' + lado + '" style="width:' + ancho + '%"></div>').join('');
+}
+
+/**
+ * Cada apertura lleva un turno. El refresco de cada 5 s y un clic en
+ * "cerrar" pueden cruzarse: la respuesta que llega tarde de un refresco ya
+ * no manda, si mientras tanto cerraste el hilo o abriste otro. Antes esa
+ * respuesta tardía lo volvía a abrir y había que cerrar dos veces.
+ */
+let turnoHilo = 0;
+/** El chat que está pintado en el hilo (el que se pidió, no el que devuelve la API). */
+let hiloPintado = null;
+
 async function abrirHilo(chatId, silencioso) {
+  // Un refresco de un hilo que ya no está abierto no hace nada.
+  if (silencioso && chatAbierto !== chatId) return;
+  const nuevo = hiloPintado !== chatId;
   chatAbierto = chatId;
+  const turno = ++turnoHilo;
+
+  // Hilo nuevo: se abre ya, con el nombre que se ve en la lista y burbujas
+  // de carga, en vez de esperar con la pantalla quieta.
+  if (nuevo && !silencioso) {
+    const fila = [...document.querySelectorAll('[data-chat]')].find((el) => el.dataset.chat === chatId);
+    const nombreFila = fila?.querySelector('strong')?.textContent ?? '';
+    document.getElementById('hilo-nombre').textContent = nombreFila;
+    document.getElementById('hilo-numero').textContent = numeroBonito(chatId);
+    document.getElementById('hilo-avatar').textContent = iniciales(nombreFila || '?');
+    document.getElementById('hilo-estado').innerHTML = '<span class="sk sk-linea" style="width:120px"></span>';
+    document.getElementById('hilo-meta').innerHTML = '';
+    document.getElementById('hilo-mensajes').innerHTML = skeletonHilo();
+    document.getElementById('hilo').hidden = false;
+    app.classList.add('con-hilo');
+    document.querySelectorAll('[data-chat]').forEach((el) => el.classList.toggle('abierta', el.dataset.chat === chatId));
+  }
   const datos = await api('conversacion?chatId=' + encodeURIComponent(chatId));
-  if (!datos) return;
+  if (!datos || turno !== turnoHilo || chatAbierto !== chatId) return;
 
   const nombreHilo = datos.contact?.displayName || numeroBonito(datos.contact?.waId) || datos.chatId;
   document.getElementById('hilo-nombre').textContent = nombreHilo;
@@ -479,19 +552,14 @@ async function abrirHilo(chatId, silencioso) {
   const lineaHilo = separarLinea(chatId).linea;
   if (lineaHilo && !nombresDeLinea[lineaHilo]) await cargarLineas().catch(() => {});
   const empresaLinea = lineaHilo ? (nombresDeLinea[lineaHilo] ?? 'otra empresa') : null;
-  const pillLinea = empresaLinea
-    ? '<span class="pill linea" title="Escribió al WhatsApp de esta empresa">WhatsApp de ' + esc(empresaLinea) + '</span>'
-    : '<span class="pill" title="Escribió al número principal">número principal</span>';
-
+  // Contexto en una sola línea de texto: por qué número escribió y de qué
+  // empresas es cliente. Antes eran cuatro pastillas que se leían como
+  // alertas sin serlo.
   const membresias = datos.contact?.memberships ?? [];
-  document.getElementById('hilo-meta').innerHTML = pillLinea + (membresias.length
-    ? membresias.map((m) =>
-        '<span class="pill">' + esc(m.organization.name) + ' · ' + m.role.toLowerCase() +
-        (m.verifiedAt ? '' : ' · <span class="warn-text">sin verificar</span>') + '</span>',
-      ).join('')
-    : empresaLinea
-      ? '<span class="pill">cliente nuevo de la empresa</span>'
-      : '<span class="pill warn">sin acceso a ninguna empresa</span>');
+  const contexto = [empresaLinea ? 'vía ' + esc(empresaLinea) : 'número principal']
+    .concat(membresias.map((m) => esc(m.organization.name) + ' (' + m.role.toLowerCase() +
+      (m.verifiedAt ? '' : ', <span class="warn-text">sin verificar</span>') + ')'));
+  document.getElementById('hilo-meta').innerHTML = '<span class="meta-texto">' + contexto.join(' · ') + '</span>';
 
   // Los tickets van en un cajón lateral, no encima del chat: son casos de
   // soporte, y la mayoría de las conversaciones no tienen ninguno.
@@ -519,11 +587,14 @@ async function abrirHilo(chatId, silencioso) {
   document.getElementById('hilo-borrar-quien').textContent =
     datos.contact?.displayName || numeroBonito(datos.contact?.waId) || datos.chatId;
 
-  pintarMensajes(datos);
-  ultimoHilo = datos;
-
+  // Primero se muestra y luego se pinta: un elemento oculto no tiene alto,
+  // y el scroll al último mensaje se quedaba en el primero.
   document.getElementById('hilo').hidden = false;
   app.classList.add('con-hilo');
+
+  pintarMensajes(datos, nuevo);
+  ultimoHilo = datos;
+  hiloPintado = chatId;
 
   if (!silencioso) {
     document.querySelectorAll('[data-chat]').forEach((el) =>
@@ -533,6 +604,8 @@ async function abrirHilo(chatId, silencioso) {
 }
 
 function cerrarHilo() {
+  turnoHilo++;
+  hiloPintado = null;
   chatAbierto = null;
   ultimoHilo = null;
   document.getElementById('hilo-borrar-cajon').hidden = true;
@@ -544,8 +617,18 @@ function cerrarHilo() {
 
 document.getElementById('hilo-cerrar').addEventListener('click', cerrarHilo);
 document.getElementById('hilo-tickets-btn').addEventListener('click', () => {
-  const cajon = document.getElementById('hilo-tickets');
-  cajon.hidden = !cajon.hidden;
+  const tickets = ultimoHilo?.tickets ?? [];
+  if (!tickets.length) { aviso('Esta persona no tiene tickets.'); return; }
+  // El abierto más reciente; si no hay abiertos, el último.
+  const abierto = tickets.filter((t) => t.state !== 'CERRADO');
+  const destino = (abierto.length ? abierto : tickets)
+    .slice().sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+  const el = document.getElementById('ticket-' + destino.id);
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  el.classList.remove('resalta');
+  void el.offsetWidth;
+  el.classList.add('resalta');
 });
 document.getElementById('hilo-tickets-cerrar').addEventListener('click', () => {
   document.getElementById('hilo-tickets').hidden = true;
@@ -884,6 +967,14 @@ function fichaCliente(m) {
           '<small class="muted">' + p.detalle + '</small>' + accionDePaso(m, p) + '</div>' +
       '</li>').join('') + '</ol>' +
     '<h4>Qué puede pedir</h4>' + permisos +
+    // Emitir facturas es otra cosa que ver documentos: permiso aparte.
+    '<h4>Facturación</h4>' +
+    '<label class="permiso' + (m.canInvoice ? ' activo' : '') + '"><input type="checkbox" data-dir-facturar' +
+      (m.canInvoice ? ' checked' : '') + (puedeGestionar() && (m.verifiedAt || m.canInvoice) ? '' : ' disabled') + '> ' +
+      'Puede emitir facturas de ' + esc(m.organization?.name ?? 'la empresa') + ' por WhatsApp</label>' +
+    '<p class="muted small">' + (m.verifiedAt
+      ? 'Le escribe al bot "factura para…" con los datos de su cliente y se timbra con su "sí".'
+      : 'Primero verifica el número: va a facturar a nombre de la empresa.') + '</p>' +
     (puedeGestionar()
       ? '<div class="ficha-pie"><span class="muted small">Alta: ' + fecha(m.createdAt) + '</span>' +
           '<button class="mini peligro" data-dir-revocar="' + m.id + '">Quitar acceso</button></div>'
@@ -1057,6 +1148,23 @@ document.addEventListener('change', async (e) => {
     const sensible = rol === 'VIEWER' &&
       [...document.querySelectorAll('input[name="dir-cat"]:checked')].some((c) => SENSIBLES.includes(c.value));
     document.getElementById('dir-alta-atestacion').hidden = !sensible;
+    return;
+  }
+
+  const facturar = e.target.closest('[data-dir-facturar]');
+  if (facturar) {
+    if (facturar.checked && !confirm('Este número podrá timbrar facturas a nombre de la empresa desde WhatsApp. ¿Seguimos?')) {
+      facturar.checked = false;
+      return;
+    }
+    try {
+      await enviar('numeros/facturar', { id: dirSeleccion, enabled: facturar.checked });
+      aviso(facturar.checked ? 'Ya puede emitir facturas por WhatsApp' : 'Ya no puede emitir facturas');
+      repintarDirectorio();
+    } catch (err) {
+      facturar.checked = !facturar.checked;
+      aviso(err.message, 'error');
+    }
     return;
   }
 
@@ -1663,6 +1771,19 @@ async function vtFacturacion() {
 
 const repintarFacturas = () => pintar('ventas', true);
 
+document.addEventListener('click', (e) => {
+  const ir = e.target.closest('[data-emp-ir]');
+  if (!ir) return;
+  if (ir.dataset.empIr === 'ventas') {
+    vtEmpresa = ir.dataset.empId;
+    try { localStorage.setItem('vt-empresa', vtEmpresa); } catch {}
+    vtTab = ir.dataset.empTab || 'pedidos';
+    vtProducto = null;
+    ftSeries = null;
+  }
+  pintar(ir.dataset.empIr);
+});
+
 document.addEventListener('click', async (e) => {
   const est = e.target.closest('[data-ft-estado]');
   if (est) { ftEstado = est.dataset.ftEstado; return repintarFacturas(); }
@@ -1878,7 +1999,7 @@ const VISTAS = {
         (esFalsa(o.driveFolderId) ? ' <span class="pill warn">de prueba</span>' : '');
     };
 
-    const acciones = (o) => {
+    const accionesDocs = (o) => {
       if (!esAdmin) return '';
       const cambiar = '<select class="compacto" data-origen="' + o.id + '">' +
         '<option value="DRIVE"' + (o.sourceType === 'DRIVE' ? ' selected' : '') + '>Drive</option>' +
@@ -1886,9 +2007,61 @@ const VISTAS = {
         '</select> ';
       return cambiar + (o.sourceType === 'PC'
         ? '<button class="mini" data-codigo-pc="' + o.id + '" data-nombre="' + esc(o.name) + '">Conectar PC</button>'
-        : '<button class="mini" data-guardar="' + o.id + '">Guardar</button>') +
-        ' <button class="mini" data-accesos="' + o.id + '">Accesos al panel</button>' +
-        ' <button class="mini peligro" data-borrar-empresa="' + o.id + '" data-nombre="' + esc(o.name) + '" title="Eliminar empresa">Eliminar</button>';
+        : '<button class="mini" data-guardar="' + o.id + '">Guardar</button>');
+    };
+
+    /**
+     * Un paso de la configuración de la empresa: qué es, cómo está y qué
+     * hacer. Así se ve de un vistazo qué le falta a cada una para vender,
+     * facturar y atender por WhatsApp.
+     */
+    const paso = (listo, titulo, estado, detalle, accion) =>
+      '<div class="emp-paso' + (listo ? ' listo' : '') + '">' +
+        '<div class="emp-paso-cabeza"><span class="emp-paso-marca">' + (listo ? '✓' : '') + '</span><strong>' + titulo + '</strong></div>' +
+        '<div class="emp-paso-estado">' + estado + '</div>' +
+        (detalle ? '<small class="muted">' + detalle + '</small>' : '') +
+        (accion ? '<div class="emp-paso-accion">' + accion + '</div>' : '') +
+      '</div>';
+
+    const irA = (o, vista, tab, texto) =>
+      '<button class="mini" data-emp-ir="' + vista + '" data-emp-tab="' + (tab ?? '') + '" data-emp-id="' + o.id + '">' + texto + '</button>';
+
+    const tarjeta = (o) => {
+      const vende = !!o.sales?.enabled;
+      const fact = o.invoicing;
+      const facturan = (o.memberships ?? []).length;
+      const productos = o._count?.products ?? 0;
+      return '<article class="card emp-card">' +
+        '<div class="emp-cabeza">' +
+          '<div class="emp-nombre"><h3>' + esc(o.name) + (o.active ? '' : ' <span class="pill warn">inactiva</span>') + '</h3>' +
+            '<span class="muted small">' + (o.taxId ? esc(o.taxId) + ' · ' : '') + o._count.memberships + ' números · ' +
+              o._count.documents + ' documentos · ' + o._count.tickets + ' tickets</span></div>' +
+          '<span class="spacer"></span>' +
+          (esAdmin ? '<button class="mini" data-accesos="' + o.id + '">Accesos al panel</button>' +
+            '<button class="mini peligro" data-borrar-empresa="' + o.id + '" data-nombre="' + esc(o.name) + '" title="Eliminar empresa">Eliminar</button>' : '') +
+        '</div>' +
+        '<div class="emp-pasos">' +
+          paso(!!o.waLineId, 'WhatsApp propio',
+            '<span data-estado-wa="' + o.id + '">' + celdaWa(o, null) + '</span>',
+            'Su número para vender y facturar. Sin él atiende el número principal.') +
+          paso(o.sourceType === 'PC' || !!o.driveFolderId, 'Documentos', origen(o), '', accionesDocs(o)) +
+          paso(vende, 'Ventas',
+            vende ? '<span class="pill ok">activas</span> <span class="muted small">' + productos + ' productos</span>'
+              : '<span class="pill">apagadas</span>' + (productos ? ' <span class="muted small">' + productos + ' productos</span>' : ''),
+            vende ? '' : 'Catálogo, horario y entregas.',
+            irA(o, 'ventas', vende ? 'pedidos' : 'config', vende ? 'Ver pedidos' : 'Configurar')) +
+          paso(!!fact?.enabled, 'Facturación',
+            fact?.enabled ? '<span class="pill ok">activa</span>' + (fact.sandbox ? ' <span class="pill warn">modo prueba</span>' : '')
+              : '<span class="pill">apagada</span>',
+            fact?.enabled ? '' : 'Llaves de Factura.com, serie y claves del SAT.',
+            irA(o, 'ventas', 'facturacion', fact?.enabled ? 'Ajustar' : 'Configurar') + (fact?.enabled ? irA(o, 'ventas', 'facturas', 'Ver facturas') : '')) +
+          paso(facturan > 0, 'Quién factura por WhatsApp',
+            facturan > 0 ? '<strong>' + facturan + '</strong> ' + (facturan === 1 ? 'número puede' : 'números pueden') + ' emitir facturas'
+              : '<span class="muted">nadie todavía</span>',
+            'Su personal le escribe al bot "factura para…" y se timbra con su "sí".',
+            irA(o, 'directorio', '', 'Elegir en Directorio')) +
+        '</div>' +
+      '</article>';
     };
 
     // El estado de cada conector se pide después de pintar la tabla: son
@@ -1901,20 +2074,10 @@ const VISTAS = {
     const accesos = esAdmin && accesosEmpresa ? await tarjetaAccesos(filas.find((o) => o.id === accesosEmpresa)) : '';
 
     return formulario + accesos + '<div id="codigo-pc">' + codigoPcVigente() + '</div>' +
-      '<div id="qr-wa">' + qrWaVigente() + '</div>' + tabla(
-      ['Empresa', 'RFC', 'Origen de documentos', 'WhatsApp', 'Números', 'Documentos', 'Tickets', ''],
-      filas.map((o) => '<tr>' +
-        '<td>' + esc(o.name) + (o.active ? '' : ' <span class="pill warn">inactiva</span>') + '</td>' +
-        '<td>' + esc(o.taxId ?? '—') + '</td>' +
-        '<td>' + origen(o) + '</td>' +
-        '<td data-estado-wa="' + o.id + '">' + celdaWa(o, null) + '</td>' +
-        '<td>' + o._count.memberships + '</td>' +
-        '<td>' + o._count.documents + '</td>' +
-        '<td>' + o._count.tickets + '</td>' +
-        '<td class="acciones">' + acciones(o) + '</td>' +
-      '</tr>'),
-      'No hay empresas registradas.',
-    );
+      '<div id="qr-wa">' + qrWaVigente() + '</div>' +
+      (filas.length
+        ? '<div class="emp-lista">' + filas.map(tarjeta).join('') + '</div>'
+        : '<p class="vacio">No hay empresas registradas. Da de alta la primera arriba.</p>');
   },
 
   async documentos() {
@@ -2651,6 +2814,24 @@ async function pintarResumen() {
   bc.textContent = r.cuarentena; bc.hidden = !(r.cuarentena > 0);
 }
 
+/** La forma de la vista mientras carga: filas, tarjetas o tabla de mentira. */
+function skeletonVista(vista) {
+  const linea = (ancho, alto) => '<span class="sk sk-linea" style="width:' + ancho + ';height:' + (alto || 12) + 'px"></span>';
+  if (vista === 'bandeja') {
+    const fila = (i) => '<div class="fila sk-fila">' +
+      '<div class="sk sk-avatar"></div>' +
+      '<div class="fila-cuerpo">' +
+        '<div class="fila-arriba">' + linea((30 + (i * 13) % 25) + '%', 14) + linea('48px', 10) + '</div>' +
+        linea((55 + (i * 17) % 35) + '%') +
+        '<div class="fila-pills">' + linea('92px', 18) + linea('64px', 18) + '</div>' +
+      '</div></div>';
+    return '<div class="barra">' + linea('320px', 40) + '<div class="chips">' + linea('70px', 32) + linea('160px', 32) + linea('120px', 32) + '</div></div>' +
+      '<div class="lista">' + [0, 1, 2, 3, 4, 5].map(fila).join('') + '</div>';
+  }
+  const tarjeta = '<div class="card sk-card">' + linea('40%', 16) + linea('85%') + linea('70%') + linea('55%') + '</div>';
+  return '<div class="sk-grid">' + tarjeta + tarjeta + tarjeta + '</div>';
+}
+
 async function pintar(vista, silencioso) {
   vistaActual = vista;
   document.getElementById('titulo').textContent = vista === 'bandeja' && yo
@@ -2658,7 +2839,7 @@ async function pintar(vista, silencioso) {
     : TITULOS[vista] ?? vista;
   document.querySelectorAll('.nav-items button').forEach((b) =>
     b.classList.toggle('active', b.dataset.view === vista));
-  if (!silencioso) contenido.innerHTML = '<p class="muted">Cargando…</p>';
+  if (!silencioso) contenido.innerHTML = skeletonVista(vista);
   try {
     contenido.innerHTML = await VISTAS[vista]();
   } catch (err) {
@@ -3087,6 +3268,63 @@ const STYLES = `<link rel="preconnect" href="https://fonts.googleapis.com">
     padding: 0 16px 12px; border-bottom: 1px solid var(--borde);
   }
   .hilo-estado, .hilo-meta { display: contents; }
+
+  /* Empresas: una tarjeta por empresa con sus pasos de configuración */
+  .emp-lista { display: flex; flex-direction: column; gap: 14px; }
+  .emp-card { padding: 18px; }
+  .emp-cabeza { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+  .emp-nombre h3 { margin: 0 0 2px; font-size: 17px; }
+  .emp-pasos { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+  .emp-paso {
+    background: var(--caja2); border: 1px solid var(--borde); border-radius: var(--radio);
+    padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; min-width: 0;
+  }
+  .emp-paso.listo { border-color: rgba(74, 222, 128, .3); }
+  .emp-paso-cabeza { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .emp-paso-marca {
+    width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0; display: grid; place-items: center;
+    font-size: 11px; font-weight: 800; border: 1.5px solid var(--borde2); color: var(--verde);
+  }
+  .emp-paso.listo .emp-paso-marca { background: var(--verde-suave); border-color: var(--verde); }
+  .emp-paso-estado { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 13px; min-width: 0; }
+  .emp-paso-estado input.compacto { max-width: 100%; }
+  .emp-paso-accion { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; padding-top: 4px; }
+  .meta-texto { font-size: 12px; color: var(--suave); }
+  .estado.ok { background: var(--verde-suave); color: var(--verde); }
+
+  /* Ticket anclado dentro del hilo */
+  .ticket-ancla {
+    align-self: stretch; display: flex; align-items: flex-start; gap: 10px; margin: 6px 0;
+    padding: 10px 12px; border-radius: var(--radio); background: var(--ambar-suave);
+    border: 1px solid var(--ambar-borde); font-size: 13px;
+  }
+  .ticket-ancla.cerrado { background: var(--caja2); border-color: var(--borde); opacity: .75; }
+  .ticket-ancla-ico { color: var(--ambar); flex-shrink: 0; display: grid; place-items: center; }
+  .ticket-ancla.cerrado .ticket-ancla-ico { color: var(--tenue); }
+  .ticket-ancla-ico svg { width: 18px; height: 18px; }
+  .ticket-ancla-texto { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .ticket-ancla-asunto { word-break: break-word; }
+  .ticket-ancla.resalta { animation: resalta 1.4s ease; }
+  @keyframes resalta { 0%, 40% { box-shadow: 0 0 0 3px var(--ambar-borde); } 100% { box-shadow: none; } }
+
+  /* Skeleton de carga */
+  .sk {
+    display: block; border-radius: 8px;
+    background: linear-gradient(90deg, var(--caja2) 0%, var(--caja3) 50%, var(--caja2) 100%);
+    background-size: 200% 100%; animation: sk 1.3s ease-in-out infinite;
+  }
+  .sk-linea { display: inline-block; height: 12px; }
+  .sk-avatar { width: 42px; height: 42px; border-radius: 12px; flex-shrink: 0; }
+  .sk-fila { cursor: default; }
+  .sk-fila:hover { background: none; }
+  .sk-fila .fila-cuerpo { gap: 8px; }
+  .sk-burbuja { height: 44px; border-radius: 16px; }
+  .sk-burbuja.entra { align-self: flex-start; border-bottom-left-radius: 5px; }
+  .sk-burbuja.sale { align-self: flex-end; border-bottom-right-radius: 5px; }
+  .sk-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+  .sk-card { display: flex; flex-direction: column; gap: 10px; padding: 18px; }
+  @keyframes sk { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+  @media (prefers-reduced-motion: reduce) { .sk { animation: none; } .ticket-ancla.resalta { animation: none; } }
   .hilo-drawer {
     position: absolute; top: 0; right: 0; bottom: 0; width: min(100%, 360px); z-index: 5;
     background: var(--caja); border-left: 1px solid var(--borde); box-shadow: -12px 0 32px rgba(0, 0, 0, .45);
