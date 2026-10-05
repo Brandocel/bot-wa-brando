@@ -1285,11 +1285,12 @@ async function vistaVentas() {
     '<label class="campo en-linea vt-selector">Empresa<select id="vt-empresa">' + orden.map((o) =>
       '<option value="' + o.id + '"' + (o.id === vtEmpresa ? ' selected' : '') + '>' + esc(o.name) +
         (o.sales?.enabled ? ' · vende' : o.waLineId ? ' · WhatsApp propio' : '') + '</option>').join('') + '</select></label>';
-  const tabs = [['pedidos', 'Pedidos'], ['catalogo', 'Catálogo'], ['config', 'Configuración']].map(([v, t]) =>
+  const tabs = [['pedidos', 'Pedidos'], ['catalogo', 'Catálogo'], ['config', 'Configuración'], ['facturas', 'Facturas'], ['facturacion', 'Facturación']].map(([v, t]) =>
     '<button class="chip' + (vtTab === v ? ' activo' : '') + '" data-vt-tab="' + v + '">' + t + '</button>').join('');
 
   const actual = empresas.find((o) => o.id === vtEmpresa);
-  const cuerpo = vtTab === 'catalogo' ? await vtCatalogo() : vtTab === 'config' ? await vtConfig() : await vtPedidos();
+  const cuerpo = vtTab === 'catalogo' ? await vtCatalogo() : vtTab === 'config' ? await vtConfig()
+    : vtTab === 'facturas' ? await vtFacturas() : vtTab === 'facturacion' ? await vtFacturacion() : await vtPedidos();
   return '<div class="dir-barra">' + selector + tabs + '</div>' + (actual ? vtFicha(actual) : '') + cuerpo;
 }
 
@@ -1427,7 +1428,7 @@ const repintarVentas = () => pintar('ventas', true);
 
 /** Con un formulario de ventas abierto, el refresco automático espera. */
 function ventasOcupado() {
-  return vistaActual === 'ventas' && (vtTab === 'config' || vtProducto !== null);
+  return vistaActual === 'ventas' && (vtTab === 'config' || vtTab === 'facturacion' || vtProducto !== null);
 }
 
 document.addEventListener('click', async (e) => {
@@ -1480,6 +1481,7 @@ document.addEventListener('change', (e) => {
   if (e.target.id === 'vt-empresa') {
     vtEmpresa = e.target.value;
     vtProducto = null;
+    ftSeries = null;
     try { localStorage.setItem('vt-empresa', vtEmpresa); } catch {}
     repintarVentas();
   }
@@ -1536,6 +1538,216 @@ document.addEventListener('submit', async (e) => {
       repintarVentas();
     } catch (err) { aviso(err.message, 'error'); }
   }
+});
+
+// ── Facturación: facturas por aprobar y configuración de Factura.com ───
+
+let ftEstado = 'pendientes';
+let ftSeries = null; // series que regresó "Probar conexión"
+const ESTADO_FACTURA = {
+  POR_APROBAR: ['por aprobar', 'warn'], TIMBRANDO: ['timbrando', 'warn'], TIMBRADA: ['timbrada', 'ok'],
+  ERROR: ['con error', ''], RECHAZADA: ['rechazada', ''], CANCELADA: ['cancelada', ''],
+};
+const FORMAS_PAGO_FT = {
+  '01': 'Efectivo', '02': 'Cheque', '03': 'Transferencia', '04': 'Tarjeta de crédito', '05': 'Monedero electrónico',
+  '06': 'Dinero electrónico', '08': 'Vales de despensa', '28': 'Tarjeta de débito', '29': 'Tarjeta de servicios', '99': 'Por definir',
+};
+const MOTIVOS_FT = [
+  ['02', '02 · Con errores, sin relación'], ['01', '01 · Con errores, la sustituye otra'],
+  ['03', '03 · No se llevó a cabo la operación'], ['04', '04 · Va en una factura global'],
+];
+
+async function vtFacturas() {
+  const [facturas, config] = await Promise.all([api(conEmpresa('facturas?estado=' + ftEstado)), api(conEmpresa('facturas/config'))]);
+  const filtros = [['pendientes', 'Por aprobar'], ['timbradas', 'Timbradas'], ['cerradas', 'Rechazadas y canceladas']].map(([v, t]) =>
+    '<button class="chip' + (ftEstado === v ? ' activo' : '') + '" data-ft-estado="' + v + '">' + t + '</button>').join('');
+  const aviso = !config.enabled
+    ? '<p class="alert">La facturación está apagada: el bot no arma facturas. Actívala en la pestaña Facturación.</p>'
+    : config.sandbox ? '<p class="alert">Modo prueba (sandbox): lo que se timbra aquí NO tiene validez fiscal.</p>' : '';
+
+  if (!facturas.length) {
+    return aviso + '<div class="chips">' + filtros + '</div><p class="vacio">' +
+      (ftEstado === 'pendientes' ? 'No hay facturas por aprobar.' : 'Nada por aquí.') + '</p>';
+  }
+
+  const tarjeta = (f) => {
+    const [estado, clase] = ESTADO_FACTURA[f.status] ?? [f.status, ''];
+    const r = f.receptor ?? {};
+    const cliente = f.contact?.displayName || numeroBonito(f.contact?.waId ?? '');
+    const conceptos = (f.concepts ?? []).map((c) =>
+      '<li>' + c.Cantidad + ' × ' + esc(c.Descripcion) + ' <span class="muted small">' + esc(c.ClaveProdServ) + '</span>' +
+      '<span class="spacer"></span>' + dinero(Math.round(c.ValorUnitario * c.Cantidad * 100)) + '</li>').join('');
+
+    let acciones = '';
+    if (puedeGestionar() && (f.status === 'POR_APROBAR' || f.status === 'ERROR')) {
+      acciones = '<div class="vt-acciones">' +
+        '<button class="primario" data-ft-aprobar="' + f.id + '">' + (f.status === 'ERROR' ? 'Reintentar timbrado' : 'Aprobar y timbrar') + '</button>' +
+        '<input class="vt-motivo" placeholder="Motivo si la rechazas" data-ft-motivo="' + f.id + '">' +
+        '<button class="mini peligro" data-ft-rechazar="' + f.id + '">Rechazar</button></div>';
+    } else if (puedeGestionar() && f.status === 'TIMBRANDO' && f.error) {
+      acciones = '<div class="vt-acciones"><span class="muted small">Factura.com no contestó. Búscala en su panel antes de hacer nada.</span>' +
+        '<button class="mini" data-ft-liberar="' + f.id + '">Ya revisé: no se timbró</button></div>';
+    } else if (puedeGestionar() && f.status === 'TIMBRADA') {
+      acciones = '<div class="vt-acciones">' +
+        '<button class="mini" data-ft-reenviar="' + f.id + '">Reenviar al cliente</button>' +
+        '<select data-ft-motivo-cancel="' + f.id + '">' + MOTIVOS_FT.map(([v, t]) => '<option value="' + v + '">' + t + '</option>').join('') + '</select>' +
+        '<input class="vt-motivo" placeholder="UUID que la sustituye (solo motivo 01)" data-ft-sustituto="' + f.id + '">' +
+        '<button class="mini peligro" data-ft-cancelar="' + f.id + '">Cancelar en el SAT</button></div>';
+    }
+
+    return '<article class="card vt-pedido">' +
+      '<div class="vt-cabeza"><strong>' + (f.serie || f.folio ? esc((f.serie ?? '') + (f.folio ?? '')) : 'Factura') + '</strong>' +
+        '<span class="pill ' + clase + '">' + estado + '</span>' +
+        (f.sandbox ? '<span class="pill">prueba</span>' : '') +
+        (f.order ? '<span class="pill">P-' + f.order.number + '</span>' : '') +
+        '<span class="spacer"></span><span class="muted small">' + fecha(f.stampedAt ?? f.createdAt) + '</span></div>' +
+      '<div class="vt-cliente"><strong>' + esc(r.nombre) + '</strong> <span class="mono small">' + esc(r.rfc) + '</span></div>' +
+      '<div class="muted small">CP ' + esc(r.codigoPostal) + ' · Régimen ' + esc(r.regimen) + ' · Uso ' + esc(r.usoCfdi) +
+        ' · ' + esc(FORMAS_PAGO_FT[f.formaPago] ?? f.formaPago) + (r.email ? ' · ' + esc(r.email) : '') + '</div>' +
+      '<div class="muted small">Pidió: ' + esc(cliente) + '</div>' +
+      (conceptos ? '<ul class="vt-items">' + conceptos + '</ul>' : '') +
+      '<div class="muted small">Subtotal ' + dinero(f.subtotalCents) + ' · IVA ' + dinero(f.ivaCents) + '</div>' +
+      '<div class="vt-total">Total <strong>' + dinero(f.totalCents) + '</strong></div>' +
+      (f.uuid ? '<div class="muted small mono">UUID ' + esc(f.uuid) + '</div>' : '') +
+      (f.error ? '<p class="alert">' + esc(f.error) + '</p>' : '') +
+      (f.rejectReason ? '<div class="muted small">Rechazada: ' + esc(f.rejectReason) + '</div>' : '') +
+      acciones +
+    '</article>';
+  };
+
+  return aviso + '<div class="chips">' + filtros + '</div><div class="vt-grid">' + facturas.map(tarjeta).join('') + '</div>';
+}
+
+async function vtFacturacion() {
+  const c = await api(conEmpresa('facturas/config'));
+  const d = puedeGestionar() ? '' : ' disabled';
+  const serie = ftSeries
+    ? '<label class="campo">Serie<select id="ft-c-serie"' + d + '>' + ftSeries.map((s) =>
+        '<option value="' + s.id + '"' + (s.id === c.serieId ? ' selected' : '') + '>' + esc(s.nombre) + (s.activa ? '' : ' (inactiva)') + '</option>').join('') + '</select></label>'
+    : '<label class="campo">Serie <span class="muted">(usa "Probar conexión" para elegirla)</span><input id="ft-c-serie" type="number" value="' + (c.serieId ?? '') + '" placeholder="SerieID"' + d + '></label>';
+
+  return '<form id="ft-form-config" class="card alta vt-form">' +
+    (c.cifradoDisponible ? '' : '<p class="alert">Falta FACTURACION_SECRET en el servidor: sin ella no se pueden guardar las llaves.</p>') +
+    '<label class="check vt-activar"><input type="checkbox" id="ft-c-activo"' + (c.enabled ? ' checked' : '') + d + '>' +
+      ' <span><strong>Facturar por WhatsApp</strong><small class="muted"> El cliente pide su factura, el bot junta sus datos y aquí la apruebas antes de timbrar.</small></span></label>' +
+    '<label class="check"><input type="checkbox" id="ft-c-sandbox"' + (c.sandbox ? ' checked' : '') + d + '> Modo prueba (sandbox de Factura.com, sin validez fiscal)</label>' +
+    '<fieldset class="tipo"><legend>Llaves de Factura.com de esta empresa</legend>' +
+      '<p class="muted small">Factura.com → Desarrolladores → Datos de acceso, con la empresa seleccionada. ' +
+        (c.llavesCapturadas ? 'Ya hay llaves guardadas: déjalas vacías para conservarlas.' : 'Todavía no hay llaves.') + '</p>' +
+      '<div class="fila-alta">' +
+        '<label class="campo">API Key<input id="ft-c-api" type="password" autocomplete="off" placeholder="' + (c.llavesCapturadas ? '•••••• guardada' : '') + '"' + d + '></label>' +
+        '<label class="campo">Secret Key<input id="ft-c-secret" type="password" autocomplete="off" placeholder="' + (c.llavesCapturadas ? '•••••• guardada' : '') + '"' + d + '></label>' +
+      '</div>' +
+      (puedeGestionar() && c.llavesCapturadas ? '<div class="fila-botones"><button type="button" class="ghost" data-ft-probar>Probar conexión</button></div>' : '') +
+    '</fieldset>' +
+    '<div class="fila-alta">' + serie +
+      '<label class="campo">Correo de la empresa <span class="muted">(Factura.com lo pide si el cliente no da el suyo)</span><input id="ft-c-email" type="email" value="' + escAttr(c.fallbackEmail) + '"' + d + '></label>' +
+      '<label class="campo">CP de expedición <span class="muted">(vacío = el de Factura.com)</span><input id="ft-c-cp" maxlength="5" value="' + escAttr(c.lugarExpedicion) + '"' + d + '></label>' +
+    '</div>' +
+    '<fieldset class="tipo"><legend>Impuestos y claves del SAT</legend>' +
+      '<label class="check"><input type="checkbox" id="ft-c-coniva"' + (c.pricesIncludeTax ? ' checked' : '') + d + '> Los precios del catálogo ya incluyen IVA</label>' +
+      '<div class="fila-alta">' +
+        '<label class="campo">IVA<select id="ft-c-iva"' + d + '>' + [[1600, '16% general'], [800, '8% frontera'], [0, '0% tasa cero']].map(([v, t]) =>
+          '<option value="' + v + '"' + (v === c.ivaBasisPoints ? ' selected' : '') + '>' + t + '</option>').join('') + '</select></label>' +
+        '<label class="campo">Clave de producto por omisión<input id="ft-c-prod" maxlength="8" value="' + escAttr(c.defaultProdCode) + '"' + d + '></label>' +
+        '<label class="campo">Clave de unidad<input id="ft-c-unidad" maxlength="3" value="' + escAttr(c.defaultUnitCode) + '"' + d + '></label>' +
+      '</div><div class="fila-alta">' +
+        '<label class="campo">Clave del envío<input id="ft-c-envio" maxlength="8" value="' + escAttr(c.deliveryProdCode) + '"' + d + '></label>' +
+        '<label class="campo">Días para pedir factura<input id="ft-c-dias" type="number" min="1" max="365" value="' + c.maxDaysAfterSale + '"' + d + '></label>' +
+      '</div>' +
+      '<small class="muted">01010101 = "No existe en el catálogo" (válida). Pregúntale a tu contador la clave exacta de lo que vendes; H87 = pieza, E48 = servicio.</small>' +
+    '</fieldset>' +
+    (puedeGestionar() ? '<div class="fila-botones"><button type="submit">Guardar facturación</button></div>' : '') +
+  '</form>';
+}
+
+const repintarFacturas = () => pintar('ventas', true);
+
+document.addEventListener('click', async (e) => {
+  const est = e.target.closest('[data-ft-estado]');
+  if (est) { ftEstado = est.dataset.ftEstado; return repintarFacturas(); }
+
+  const empresaBody = yo?.role === 'EMPRESA' ? {} : { organizationId: vtEmpresa };
+  const accion = async (boton, ruta, cuerpo, ok) => {
+    boton.disabled = true;
+    try {
+      const r = await enviar(ruta, { ...empresaBody, ...cuerpo });
+      aviso(typeof ok === 'function' ? ok(r) : ok);
+      repintarFacturas();
+    } catch (err) { aviso(err.message, 'error'); boton.disabled = false; }
+  };
+
+  const probar = e.target.closest('[data-ft-probar]');
+  if (probar) {
+    probar.disabled = true;
+    try {
+      ftSeries = await enviar('facturas/probar', empresaBody);
+      aviso(ftSeries.length ? 'Conexión correcta: elige la serie' : 'Conexión correcta, pero no hay series de factura: créala en Factura.com');
+      repintarFacturas();
+    } catch (err) { aviso(err.message, 'error'); probar.disabled = false; }
+    return;
+  }
+
+  const aprobar = e.target.closest('[data-ft-aprobar]');
+  if (aprobar) {
+    if (!confirm('¿Timbrar esta factura? Ya timbrada, solo se puede cancelar ante el SAT.')) return;
+    return accion(aprobar, 'facturas/aprobar', { id: aprobar.dataset.ftAprobar }, (f) =>
+      f.status === 'TIMBRADA' ? 'Factura timbrada y enviada al cliente' : 'No se timbró: ' + (f.error ?? 'revisa el detalle'));
+  }
+
+  const rechazar = e.target.closest('[data-ft-rechazar]');
+  if (rechazar) {
+    const id = rechazar.dataset.ftRechazar;
+    const motivo = document.querySelector('[data-ft-motivo="' + id + '"]')?.value ?? '';
+    if (!confirm('¿Rechazar esta factura? Se le avisa al cliente con el motivo que escribiste.')) return;
+    return accion(rechazar, 'facturas/rechazar', { id, motivo }, 'Factura rechazada; el cliente ya lo sabe');
+  }
+
+  const liberar = e.target.closest('[data-ft-liberar]');
+  if (liberar) {
+    if (!confirm('¿Confirmas que en Factura.com NO aparece timbrada? Si sí aparece, reintentar la duplicaría.')) return;
+    return accion(liberar, 'facturas/liberar', { id: liberar.dataset.ftLiberar }, 'Lista para reintentar');
+  }
+
+  const reenviar = e.target.closest('[data-ft-reenviar]');
+  if (reenviar) return accion(reenviar, 'facturas/reenviar', { id: reenviar.dataset.ftReenviar }, 'Reenviada al cliente');
+
+  const cancelar = e.target.closest('[data-ft-cancelar]');
+  if (cancelar) {
+    const id = cancelar.dataset.ftCancelar;
+    const motivo = document.querySelector('[data-ft-motivo-cancel="' + id + '"]')?.value ?? '02';
+    const sustituto = document.querySelector('[data-ft-sustituto="' + id + '"]')?.value ?? '';
+    if (!confirm('¿Cancelar esta factura ante el SAT? No se puede deshacer.')) return;
+    return accion(cancelar, 'facturas/cancelar', { id, motivo, sustituto }, (r) =>
+      r.estado === 'cancelada' ? 'Factura cancelada' : 'Cancelación en proceso: el receptor tiene que aceptarla');
+  }
+});
+
+document.addEventListener('submit', async (e) => {
+  if (e.target.id !== 'ft-form-config') return;
+  e.preventDefault();
+  const empresaBody = yo?.role === 'EMPRESA' ? {} : { organizationId: vtEmpresa };
+  const serie = document.getElementById('ft-c-serie').value;
+  try {
+    await enviar('facturas/config', {
+      ...empresaBody,
+      enabled: document.getElementById('ft-c-activo').checked,
+      sandbox: document.getElementById('ft-c-sandbox').checked,
+      apiKey: document.getElementById('ft-c-api').value,
+      secretKey: document.getElementById('ft-c-secret').value,
+      serieId: serie ? Number(serie) : null,
+      fallbackEmail: document.getElementById('ft-c-email').value,
+      lugarExpedicion: document.getElementById('ft-c-cp').value,
+      pricesIncludeTax: document.getElementById('ft-c-coniva').checked,
+      ivaBasisPoints: Number(document.getElementById('ft-c-iva').value),
+      defaultProdCode: document.getElementById('ft-c-prod').value,
+      defaultUnitCode: document.getElementById('ft-c-unidad').value,
+      deliveryProdCode: document.getElementById('ft-c-envio').value,
+      maxDaysAfterSale: Number(document.getElementById('ft-c-dias').value),
+    });
+    aviso('Facturación guardada');
+    repintarFacturas();
+  } catch (err) { aviso(err.message, 'error'); }
 });
 
 const VISTAS = {

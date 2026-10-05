@@ -33,6 +33,11 @@ import { TicketService } from './application/support/ticket.service';
 import { DOCUMENT_SOURCE_PORT } from './application/ports/document-source.port';
 import { LLM_PORT } from './application/ports/llm.port';
 import { MESSAGING_PORT } from './application/ports/messaging.port';
+import { FACTURACION_PORT } from './application/ports/facturacion.port';
+import { FacturacionService } from './application/facturacion/facturacion.service';
+import { FacturaChatService } from './application/facturacion/factura-chat.service';
+import { FacturaComAdapter } from './infrastructure/facturacion/factura-com.adapter';
+import { PanelFacturasController } from './infrastructure/http/panel/panel-facturas.controller';
 import { HandleIncomingMessageUseCase } from './application/use-cases/handle-incoming-message.use-case';
 
 import { ConnectorService } from './application/support/connector.service';
@@ -69,6 +74,7 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     PanelApiController,
     PanelConnectorController,
     PanelVentasController,
+    PanelFacturasController,
     ConnectorController,
   ],
   providers: [
@@ -94,6 +100,8 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     GoogleDriveAdapter,
     { provide: DOCUMENT_SOURCE_PORT, useClass: RoutingDocumentSource },
     { provide: LLM_PORT, useClass: AnthropicAdapter },
+    // El PAC. Cambiar de proveedor = otro adaptador aquí.
+    { provide: FACTURACION_PORT, useClass: FacturaComAdapter },
 
     // ── Pipeline ───────────────────────────────────────────────────────
     SourceFilter,
@@ -124,6 +132,10 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     DirectoryService,
     DocumentLinkService,
     EntregaVigenteService,
+
+    // ── Facturación ────────────────────────────────────────────────────
+    FacturacionService,
+    FacturaChatService,
 
     // ── Casos de uso ───────────────────────────────────────────────────
     DriveCommandsService,

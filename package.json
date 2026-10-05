@@ -21,6 +21,7 @@
     "typecheck": "tsc -b --pretty",
     "test:conversational": "tsx --tsconfig apps/agent-core/tsconfig.json --test apps/agent-core/src/application/support/query-parser.test.ts apps/agent-core/src/application/support/slot-extractor.service.test.ts apps/agent-core/src/application/support/support.strategy.test.ts apps/agent-core/src/application/pipeline/filters/rate-limit.filter.test.ts apps/agent-core/src/application/support/lineas.test.ts apps/agent-core/src/application/support/support.mixed-intents.test.ts apps/agent-core/src/application/sales/sales.test.ts",
     "test:documentos": "tsx --tsconfig apps/agent-core/tsconfig.json --test apps/agent-core/src/application/support/document-classification.test.ts",
+    "test:facturacion": "tsx --tsconfig apps/agent-core/tsconfig.json --test apps/agent-core/src/application/facturacion/facturacion.test.ts apps/agent-core/src/application/facturacion/factura-chat.test.ts apps/agent-core/src/infrastructure/facturacion/factura-com.adapter.test.ts",
     "smoke-test":"node scripts/smoke-test.js",
     "seed": "tsx --tsconfig tsconfig.base.json prisma/seed.ts",
     "prisma:deploy": "prisma migrate deploy",
@@ -33,6 +34,7 @@
     "verify:phone": "tsx --tsconfig tsconfig.base.json scripts/dev/verify-phone.ts",
     "verify:delivery": "tsx --tsconfig tsconfig.base.json scripts/dev/verify-delivery.ts",
     "verify:entrega": "tsx --tsconfig tsconfig.base.json scripts/dev/verify-entrega-real.ts",
+    "verify:facturacion": "tsx --tsconfig tsconfig.base.json scripts/dev/verify-facturacion.ts",
     "verify:clasificador": "tsx --tsconfig tsconfig.base.json scripts/dev/verify-clasificador.ts"
   },
   "devDependencies": {

@@ -1,6 +1,7 @@
 import makeWASocket, {
   Browsers,
   DisconnectReason,
+  downloadMediaMessage,
   fetchLatestBaileysVersion,
   isJidGroup,
   useMultiFileAuthState,
@@ -46,6 +47,11 @@ export interface PayloadParaCore {
   lat?: number;
   lng?: number;
   loc?: string | null;
+  /**
+   * El archivo, solo en PDFs chicos: la Constancia de Situación Fiscal que
+   * manda un cliente para facturar. Lo demás no se baja.
+   */
+  media?: { mimetype: string; filename: string; base64: string };
   isGroupMsg: boolean;
   fromMe: boolean;
   isBroadcast: boolean;
@@ -134,6 +140,28 @@ function ubicacionDe(m: WAMessage): { lat?: number; lng?: number; loc?: string |
   const direccion = 'address' in l && typeof l.address === 'string' ? l.address : '';
   const loc = [nombre, direccion].filter(Boolean).join(', ') || null;
   return { lat: l.degreesLatitude, lng: l.degreesLongitude, loc };
+}
+
+/** Tope para bajar un PDF y mandarlo al core: una Constancia pesa ~100 KB. */
+const MAX_PDF_BYTES = 3 * 1024 * 1024;
+
+/**
+ * Los bytes de un PDF que mandó la persona. Si no se puede bajar, el mensaje
+ * sigue su camino sin archivo: el core le pedirá los datos por escrito.
+ */
+async function pdfDe(m: WAMessage): Promise<PayloadParaCore['media']> {
+  const c = m.message ?? {};
+  const doc = c.documentMessage ?? c.documentWithCaptionMessage?.message?.documentMessage;
+  if (!doc || doc.mimetype !== 'application/pdf') return undefined;
+  if (Number(doc.fileLength ?? 0) > MAX_PDF_BYTES) return undefined;
+  try {
+    const buf = await downloadMediaMessage(m, 'buffer', {});
+    if (buf.length > MAX_PDF_BYTES) return undefined;
+    return { mimetype: 'application/pdf', filename: doc.fileName ?? 'documento.pdf', base64: buf.toString('base64') };
+  } catch (err) {
+    console.error(`[media] no se pudo bajar el PDF: ${String(err)}`);
+    return undefined;
+  }
 }
 
 /** El texto que escribió la persona, venga suelto o como pie de un archivo. */
@@ -295,6 +323,7 @@ export class Linea {
 
     const miJid = this.yo?.id ? haciaCore(this.yo.id) : '';
     const { body, caption } = textoDe(m);
+    const media = fromMe ? undefined : await pdfDe(m);
 
     // El chat conmigo mismo: WhatsApp lo direcciona por LID, así que se
     // comparan los dígitos contra el número y el LID de la cuenta.
@@ -327,6 +356,7 @@ export class Linea {
       body,
       caption,
       ...ubicacionDe(m),
+      ...(media ? { media } : {}),
       isGroupMsg: esGrupo,
       fromMe,
       isBroadcast: remoteJid === 'status@broadcast',

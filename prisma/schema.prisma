@@ -65,6 +65,8 @@ model Contact {
   orders        Order[]
   memberships   Membership[]
   tickets       Ticket[]
+  fiscalProfiles FiscalProfile[]
+  invoices      Invoice[]
 
   @@index([role])
 }
@@ -343,6 +345,9 @@ model Organization {
   sales       SalesSettings?
   products    Product[]
   orders      Order[]
+  invoicing   InvoicingSettings?
+  fiscalProfiles FiscalProfile[]
+  invoices    Invoice[]
 }
 
 enum MemberRole {
@@ -727,6 +732,10 @@ model Product {
   priceCents     Int
   /// Días en que se vende ("lun".."dom"). Vacío = todos. "Súper Miércoles" = ["mie"].
   availableDays  String[] @default([])
+  /// c_ClaveProdServ del SAT para facturarlo. null = la de la empresa.
+  satProdCode    String?
+  /// c_ClaveUnidad del SAT (H87 pieza, KGM kilo...). null = la de la empresa.
+  satUnitCode    String?
   active         Boolean @default(true)
   sortOrder      Int     @default(0)
   createdAt      DateTime @default(now())
@@ -782,8 +791,138 @@ model Order {
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  invoices     Invoice[]
 
   @@unique([number])
   @@index([organizationId, status, createdAt])
   @@index([conversationId, status])
+}
+
+// ─── Facturación (CFDI 4.0) ───────────────────────────────────────────────
+
+/// Cómo factura UNA empresa. Cada empresa timbra con su propio RFC y CSD,
+/// dados de alta en Factura.com; aquí solo van sus llaves de API, cifradas.
+model InvoicingSettings {
+  organizationId   String   @id
+  enabled          Boolean  @default(false)
+  /// true = sandbox de Factura.com: los CFDI no tienen validez fiscal.
+  sandbox          Boolean  @default(true)
+  /// Cifradas con FACTURACION_SECRET. Nunca se devuelven al panel.
+  apiKeyEnc        String?
+  secretKeyEnc     String?
+  /// SerieID de Factura.com con la que se timbran las facturas.
+  serieId          Int?
+  /// Código postal del lugar de expedición. Vacío = el de la empresa en Factura.com.
+  lugarExpedicion  String   @default("")
+  /// Correo de la empresa: Factura.com no registra un cliente sin correo, y
+  /// no todos los clientes dan uno.
+  fallbackEmail    String   @default("")
+  /// Los precios del catálogo ya traen IVA (lo normal al vender al público).
+  pricesIncludeTax Boolean  @default(true)
+  /// Tasa de IVA en puntos base: 1600 = 16%, 800 = frontera, 0 = tasa cero.
+  ivaBasisPoints   Int      @default(1600)
+  /// Claves del SAT por omisión para productos que no traen la suya.
+  defaultProdCode  String   @default("01010101")
+  defaultUnitCode  String   @default("H87")
+  deliveryProdCode String   @default("78102203")
+  /// Hasta cuántos días después de la compra se puede pedir factura.
+  maxDaysAfterSale Int      @default(30)
+  updatedAt        DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+/// Datos fiscales de un cliente para una empresa, tal como salen en su
+/// Constancia de Situación Fiscal. Se guardan para no pedírselos cada vez.
+model FiscalProfile {
+  id             String   @id @default(cuid())
+  organizationId String
+  contactId      String
+  rfc            String
+  name           String
+  zip            String
+  regimen        String
+  usoCfdi        String
+  email          String?
+  /// CONSTANCIA = leído del PDF del SAT; MANUAL = dictado o capturado.
+  source         String   @default("MANUAL")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  invoices     Invoice[]
+
+  @@unique([organizationId, contactId, rfc])
+}
+
+enum InvoiceStatus {
+  POR_APROBAR // armada y validada; la empresa la revisa antes de timbrar
+  TIMBRANDO // se mandó al PAC; si se queda aquí, revisar en Factura.com
+  TIMBRADA
+  ERROR // el PAC la rechazó o no contestó; ver `error`
+  RECHAZADA // la empresa no la aprobó
+  CANCELADA
+}
+
+/// Una factura. Los conceptos y el receptor se copian al armarla: cambiar
+/// el catálogo o el perfil fiscal después no altera lo que se aprobó.
+model Invoice {
+  id              String        @id @default(cuid())
+  organizationId  String
+  contactId       String
+  conversationId  String?
+  orderId         String?
+  fiscalProfileId String?
+  status          InvoiceStatus @default(POR_APROBAR)
+  sandbox         Boolean       @default(true)
+  /// Copia del receptor: { rfc, nombre, codigoPostal, regimen, usoCfdi, email }.
+  receptor        Json
+  /// Conceptos tal como se mandan al PAC.
+  concepts        Json
+  formaPago       String
+  metodoPago      String        @default("PUE")
+  subtotalCents   Int
+  ivaCents        Int
+  totalCents      Int
+  /// UID de la factura en Factura.com, para descargar y cancelar.
+  providerUid     String?
+  uuid            String?       @unique
+  serie           String?
+  folio           String?
+  stampedAt       DateTime?
+  error           String?
+  decidedBy       String?
+  rejectReason    String?
+  cancelMotivo    String?
+  canceledAt      DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contact       Contact        @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  order         Order?         @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  fiscalProfile FiscalProfile? @relation(fields: [fiscalProfileId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, status, createdAt])
+  @@index([orderId])
+}
+
+/// Una plática de "quiero factura" a medio camino, por conversación. Va
+/// aparte del pedido y del contexto de soporte: son preguntas cerradas
+/// (datos fiscales, uso, forma de pago) y no deben mezclarse con la venta.
+model InvoiceRequest {
+  conversationId String   @id
+  organizationId String
+  contactId      String
+  /// PEDIDO | DATOS | REGIMEN | USO | PAGO | CORREO | CONFIRMAR
+  step           String
+  /// { orderId, opciones, receptor, origen, formaPago, email }
+  data           Json     @default("{}")
+  /// Respuestas que no se entendieron seguidas; a la tercera se suelta.
+  tries          Int      @default(0)
+  expiresAt      DateTime
+  updatedAt      DateTime @updatedAt
+
+  @@index([expiresAt])
 }

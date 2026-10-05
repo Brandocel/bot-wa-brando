@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { config } from '../../config';
 import type {
+  Attachment,
   IncomingMessage,
   MessageKind,
 } from '../../domain/message/incoming-message';
@@ -42,6 +43,17 @@ function mapKind(rawType: string | null): MessageKind {
     default:
       return 'UNSUPPORTED';
   }
+}
+
+/** El archivo que el gateway bajó y adjuntó en `media`, si viene completo. */
+function adjuntoDe(raw: RawMessage): Attachment | null {
+  const m = raw['media'];
+  if (!m || typeof m !== 'object') return null;
+  const media = m as Record<string, unknown>;
+  const mimetype = str(media['mimetype']);
+  const base64 = str(media['base64']);
+  if (!mimetype || !base64) return null;
+  return { mimetype, filename: str(media['filename']) ?? 'archivo', base64 };
 }
 
 function deUbicacion(raw: RawMessage): string {
@@ -159,7 +171,10 @@ export class OpenWaMessageMapper {
         chatId.endsWith('@newsletter'),
       mentionsMe: !deLineaDeEmpresa && mentions.includes(config.ownerWaId),
       timestamp: seconds ? new Date(seconds * 1000) : new Date(),
-      raw,
+      attachment: adjuntoDe(raw),
+      // El raw se guarda en la tabla de mensajes: sin los bytes del archivo,
+      // que ya viajan en `attachment` y no hacen falta para depurar.
+      raw: raw['media'] ? { ...raw, media: { ...(raw['media'] as object), base64: '[omitido]' } } : raw,
     };
   }
 }

@@ -71,6 +71,13 @@ export const config = {
     maxDeliverableBytes: Number(process.env.MAX_DELIVERABLE_BYTES ?? 15 * 1024 * 1024),
   },
 
+  /**
+   * Llave con la que se cifran en la base las llaves de Factura.com de cada
+   * empresa. 64 caracteres hex. Vacío = la facturación queda apagada.
+   * Si se pierde, hay que volver a capturar las llaves de todas las empresas.
+   */
+  facturacionSecret: process.env.FACTURACION_SECRET || null,
+
   queue: {
     /**
      * Cuántos mensajes entrantes se atienden a la vez (de chats distintos;

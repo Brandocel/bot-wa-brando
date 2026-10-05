@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import type { DeliveryMode, Order, Prisma } from '@prisma/client';
 import { PrismaService } from '../../infrastructure/persistence/prisma.service';
 import { separarChat } from '../../domain/message/linea';
@@ -6,6 +6,7 @@ import type { IncomingMessage } from '../../domain/message/incoming-message';
 import { LLM_PORT, type LlmPort } from '../ports/llm.port';
 import { ConversationHistoryService } from '../support/conversation-history.service';
 import { TicketService } from '../support/ticket.service';
+import { FacturaChatService } from '../facturacion/factura-chat.service';
 import type { LecturaVenta, StrategyContext, StrategyReply } from '../support/support.strategy';
 import { ESQUEMA_VENTA, SISTEMA_CORRECCION, SISTEMA_VENTA } from './guion-venta';
 import {
@@ -92,6 +93,7 @@ export class SalesStrategy {
     @Inject(LLM_PORT) private readonly llm: LlmPort,
     private readonly history: ConversationHistoryService,
     private readonly tickets: TicketService,
+    @Optional() private readonly facturas?: FacturaChatService,
   ) {}
 
   /** La empresa que vende por la línea de este chat, o null si no vende. */
@@ -157,6 +159,13 @@ export class SalesStrategy {
     if (texto === '' && message.kind === 'AUDIO') {
       return { text: 'Perdón, todavía no puedo escuchar audios 🙏 ¿Me lo escribes, por favor?', awaiting: 'CLIENTE' };
     }
+    // "Quiero factura" (o la Constancia en PDF) va por su propia plática de
+    // preguntas cerradas, antes que la venta: ahí no hay nada que vender.
+    if (this.facturas) {
+      const factura = await this.facturas.atender(message, ctx, { organizationId: negocio.organizationId, nombre: negocio.nombre });
+      if (factura) return factura;
+    }
+
     if (texto === '') return null;
     const ahora = new Date();
 

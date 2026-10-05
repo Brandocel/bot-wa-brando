@@ -13,6 +13,13 @@ export type MessageKind =
   | 'DOCUMENT'
   | 'UNSUPPORTED';
 
+export interface Attachment {
+  mimetype: string;
+  filename: string;
+  /** Los bytes en base64, sin prefijo data:. */
+  base64: string;
+}
+
 /** Rol del interlocutor. Decide qué Strategy atiende la conversación. */
 export type Role = 'OWNER' | 'PROSPECT' | 'CUSTOMER' | 'BLOCKED';
 
@@ -40,6 +47,11 @@ export interface IncomingMessage {
   readonly isBroadcast: boolean;
   readonly mentionsMe: boolean;
   readonly timestamp: Date;
+  /**
+   * El archivo que mandó la persona, cuando el gateway lo pudo bajar. Hoy
+   * solo PDFs chicos (la Constancia de Situación Fiscal para facturar).
+   */
+  readonly attachment?: Attachment | null;
   /** Payload original, solo para depurar el mapper. Nunca para lógica. */
   readonly raw: unknown;
 }
