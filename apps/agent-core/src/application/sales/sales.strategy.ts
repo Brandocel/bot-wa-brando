@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import type { DeliveryMode, Order, Prisma } from '@prisma/client';
 import { PrismaService } from '../../infrastructure/persistence/prisma.service';
 import { separarChat } from '../../domain/message/linea';
+import { esConfirmacion } from '../../domain/message/confirmacion';
 import type { IncomingMessage } from '../../domain/message/incoming-message';
 import { LLM_PORT, type LlmPort } from '../ports/llm.port';
 import { ConversationHistoryService } from '../support/conversation-history.service';
@@ -522,12 +523,9 @@ export class SalesStrategy {
 
 // ── Piezas sin estado ──────────────────────────────────────────────────
 
-/** "sí", "confírmalo", "así está bien", "va, mándalo"... y nada que lo contradiga. */
+/** "sí", "confírmalo", "perfecto sí así está bien", "va, mándalo"... y nada que lo contradiga. */
 export function confirmaPedido(texto: string): boolean {
-  const t = texto.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z\s]/g, ' ')
-    .replace(/\s+/g, ' ').trim();
-  if (/\b(no|pero|cambia|cambiar|quita|agrega|mejor|espera)\b/.test(t)) return false;
-  return /^(si|sip|simon|claro|dale|va|sale|ok|okey|perfecto|correcto|exacto|listo|asi|asi esta bien|asi esta perfecto|esta bien|confirma|confirmalo|confirmado|si confirma|si confirmalo|si por favor|si porfa|si gracias|si asi|mandalo|si mandalo|va mandalo|adelante|de acuerdo|si esta bien|si dale|si va|si correcto)( (por favor|porfa|gracias|asi|va))*$/.test(t);
+  return esConfirmacion(texto);
 }
 
 function validarRespuesta(raw: unknown): RespuestaModelo | null {

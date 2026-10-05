@@ -282,6 +282,10 @@ export class FacturaChatService {
 
       case 'CORREO': {
         const c = leerCorreo(texto);
+        // "Simón", "sí porfa": quiere correo pero no lo escribió.
+        if (!c && esSi(texto)) {
+          return { text: '¿A qué correo te la mando? Escríbelo completo, por ejemplo nombre@gmail.com', awaiting: 'CLIENTE' };
+        }
         if (!c) return null;
         d.email = c === 'ninguno' ? null : c;
         return this.avanzar(req, d, 'CONFIRMAR');

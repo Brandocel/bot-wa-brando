@@ -104,6 +104,63 @@ test('correo y pedido', () => {
   assert.equal(numeroDePedido('el pedido 77'), 77);
 });
 
+// ── Como escriben de verdad ───────────────────────────────────────────
+
+test('pide factura aunque lo escriba mal', () => {
+  for (const t of ['kiero fatura', 'ocupo factua', 'me la facturas?', 'nesesito factira porfa', 'FACTURA!!']) {
+    assert.equal(pideFactura(t), true, t);
+  }
+  assert.equal(pideFactura('no ocupo fatura'), false);
+});
+
+test('forma de pago con faltas', () => {
+  assert.equal(leerFormaPago('efectibo'), '01');
+  assert.equal(leerFormaPago('tranferencia'), '03');
+  assert.equal(leerFormaPago('le hice deposito'), '03');
+  assert.equal(leerFormaPago('con targeta'), 'tarjeta');
+  assert.equal(leerFormaPago('devito'), '28');
+  assert.equal(leerFormaPago('la dos'), '03');
+});
+
+test('uso con faltas o clave mal tecleada', () => {
+  const ops = usosPara('601', 'EKU9003173C9');
+  assert.equal(leerUso('gastos en jeneral', ops), 'G03');
+  assert.equal(leerUso('g 03', ops), 'G03');
+  assert.equal(leerUso('g3', ops), 'G03');
+  assert.equal(leerUso('el primero', ops), ops[0]!.clave);
+});
+
+test('régimen con faltas', () => {
+  assert.equal(leerRegimen('rezico'), '626');
+  assert.equal(leerRegimen('soy asalariado'), '605');
+  assert.equal(leerRegimen('actividades empresariales'), '612');
+  assert.equal(leerRegimen('jeneral de ley'), '601');
+});
+
+test('correo con espacios y dominio mal escrito', () => {
+  assert.equal(leerCorreo('brando @ gmial .com'), 'brando@gmail.com');
+  assert.equal(leerCorreo('ana@hotmal.con'), 'ana@hotmail.com');
+  assert.equal(leerCorreo('Nop'), 'ninguno');
+  assert.equal(leerCorreo('solo por whats'), 'ninguno');
+  assert.equal(leerCorreo('ninguno'), 'ninguno');
+});
+
+test('RFC con O en lugar de cero y separado', () => {
+  assert.equal(leerDatosEscritos('mi rfc eku 9OO317 3c9').rfc, 'EKU9003173C9');
+  assert.equal(leerDatosEscritos('cp 42 501').codigoPostal, '42501');
+});
+
+test('salir y no, mal escritos', () => {
+  assert.equal(quiereSalir('cancelalo'), true);
+  assert.equal(quiereSalir('kancela'), true);
+  assert.equal(quiereSalir('ya no gracias'), true);
+  assert.equal(quiereSalir('no gracias'), true);
+  assert.equal(quiereSalir('no, el rfc está mal'), false);
+  assert.equal(esNo('nop'), true);
+  assert.equal(esNo('esta mal el nombre'), true);
+  assert.equal(esNo('incorecto'), true);
+});
+
 // ── La plática completa contra una base falsa ─────────────────────────
 
 function baseFalsa(opts: { ordenes?: Array<{ id: string; number: number; totalCents: number; status: string }>; perfil?: object | null; enabled?: boolean }) {
@@ -227,6 +284,21 @@ test('tres respuestas sin entender pasan a una persona', async () => {
   const r = await decir('???');
   assert.equal(r!.awaiting, 'AGENTE');
   assert.equal(reqs.size, 0);
+});
+
+test('"Simón" al correo pregunta cuál, sin contarlo como error', async () => {
+  const { decir, reqs } = baseFalsa({});
+  await decir('quiero factura');
+  await decir('RFC EKU9003173C9\nNombre: Escuela Kemper Urgate\nCP 42501\nRégimen 601');
+  await decir('1');
+  let r = await decir('transferencia');
+  assert.match(r!.text, /correo/);
+  r = await decir('Simón');
+  assert.match(r!.text, /A qué correo/);
+  assert.equal(reqs.get('conv1')!.tries, 0);
+  r = await decir('ana@mail.com');
+  assert.match(r!.text, /Revisa que esté bien/);
+  assert.match(r!.text, /ana@mail.com/);
 });
 
 test('"ya no" deja la factura', async () => {
