@@ -4,6 +4,7 @@ import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { config } from './config';
+import { montarPanelNuevo } from './infrastructure/http/panel/panel-spa';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
@@ -18,6 +19,8 @@ async function bootstrap(): Promise<void> {
   // que Express acepta por defecto. Y los archivos suben en crudo.
   app.useBodyParser('json', { limit: '10mb' });
   app.useBodyParser('raw', { type: 'application/octet-stream', limit: '26mb' });
+
+  montarPanelNuevo(app);
 
   app.enableShutdownHooks(); // para que pg-boss y Prisma cierren limpio
   await app.listen(config.port, '0.0.0.0');

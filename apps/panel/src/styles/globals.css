@@ -1,0 +1,165 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/inter';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * El sistema de diseño del panel, entero, vive aquí.
+ *
+ * Los componentes nunca nombran un color de la paleta (`emerald-600`,
+ * `zinc-200`): usan el papel que cumple (`primary`, `border`, `muted`). Así
+ * cambiar la marca o afinar el tema oscuro es tocar este archivo y nada más.
+ *
+ * Papeles:
+ *   background / foreground   la página y su texto
+ *   surface                   tarjetas, tablas, menú: lo que flota sobre la página
+ *   muted                     relleno discreto y texto secundario
+ *   primary                   la acción principal y lo seleccionado
+ *   success / warning / danger / info   estados, cada uno con su versión suave
+ */
+:root {
+  --background: oklch(0.985 0.002 165);
+  --foreground: oklch(0.21 0.012 165);
+  --surface: oklch(1 0 0);
+  --surface-raised: oklch(1 0 0);
+  --muted: oklch(0.962 0.004 165);
+  --muted-foreground: oklch(0.5 0.012 165);
+  --border: oklch(0.915 0.005 165);
+  --border-strong: oklch(0.85 0.007 165);
+  --ring: oklch(0.6 0.13 163);
+
+  --primary: oklch(0.52 0.125 163);
+  --primary-hover: oklch(0.46 0.115 163);
+  --primary-foreground: oklch(0.99 0.01 163);
+  --primary-soft: oklch(0.955 0.04 163);
+  --primary-soft-foreground: oklch(0.38 0.1 163);
+
+  --success: oklch(0.52 0.14 150);
+  --success-soft: oklch(0.955 0.045 150);
+  --warning: oklch(0.52 0.12 70);
+  --warning-soft: oklch(0.96 0.055 85);
+  --danger: oklch(0.55 0.2 25);
+  --danger-hover: oklch(0.49 0.19 25);
+  --danger-soft: oklch(0.96 0.03 25);
+  --info: oklch(0.52 0.15 250);
+  --info-soft: oklch(0.955 0.03 250);
+
+  --shadow-color: 165 20% 20%;
+}
+
+.dark {
+  --background: oklch(0.165 0.006 165);
+  --foreground: oklch(0.95 0.004 165);
+  --surface: oklch(0.2 0.007 165);
+  --surface-raised: oklch(0.235 0.008 165);
+  --muted: oklch(0.255 0.008 165);
+  --muted-foreground: oklch(0.7 0.012 165);
+  --border: oklch(0.29 0.008 165);
+  --border-strong: oklch(0.36 0.01 165);
+  --ring: oklch(0.7 0.14 163);
+
+  --primary: oklch(0.7 0.145 163);
+  --primary-hover: oklch(0.76 0.145 163);
+  --primary-foreground: oklch(0.18 0.03 163);
+  --primary-soft: oklch(0.3 0.055 163);
+  --primary-soft-foreground: oklch(0.86 0.11 163);
+
+  --success: oklch(0.78 0.16 150);
+  --success-soft: oklch(0.3 0.06 150);
+  --warning: oklch(0.82 0.14 85);
+  --warning-soft: oklch(0.32 0.055 80);
+  --danger: oklch(0.72 0.17 25);
+  --danger-hover: oklch(0.78 0.16 25);
+  --danger-soft: oklch(0.3 0.07 25);
+  --info: oklch(0.76 0.12 250);
+  --info-soft: oklch(0.3 0.06 250);
+
+  --shadow-color: 165 30% 2%;
+}
+
+@theme inline {
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-ring: var(--ring);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
+  --color-primary-soft-foreground: var(--primary-soft-foreground);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-hover: var(--danger-hover);
+  --color-danger-soft: var(--danger-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  --shadow-xs: 0 1px 2px hsl(var(--shadow-color) / 0.06);
+  --shadow-sm: 0 1px 2px hsl(var(--shadow-color) / 0.06), 0 2px 6px hsl(var(--shadow-color) / 0.05);
+  --shadow-lg: 0 8px 24px hsl(var(--shadow-color) / 0.14), 0 2px 6px hsl(var(--shadow-color) / 0.08);
+
+  --animate-in: entrar 0.16s ease-out;
+  --animate-overlay: velo 0.16s ease-out;
+
+  @keyframes entrar {
+    from { opacity: 0; transform: translateY(4px) scale(0.985); }
+  }
+  @keyframes velo {
+    from { opacity: 0; }
+  }
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html {
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    font-feature-settings: 'cv11', 'ss01';
+    -webkit-font-smoothing: antialiased;
+  }
+  /* El foco se ve siempre que se llega con teclado, igual en todo el panel. */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  button:not(:disabled),
+  summary,
+  [role='button'] {
+    cursor: pointer;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}

@@ -21,6 +21,7 @@ cuenta de verdad, en los dos roles: contesta `eco (prospect)` a desconocidos y
 ```
 apps/wa-gateway   Chromium + open-wa. Proceso tonto, sin lógica de negocio.
 apps/agent-core   NestJS. Todo el cerebro.
+apps/panel        React + Vite + Tailwind. El panel nuevo, servido por agent-core en /panel/v2.
 prisma/           Esquema completo (fases 1–7)
 docs/             Arquitectura
 render.yaml       Blueprint de despliegue

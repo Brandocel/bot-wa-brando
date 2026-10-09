@@ -71,7 +71,10 @@ services:
     #
     # El filtro por workspace es importante: sin él, `npm ci` instala también
     # las deps del gateway, que aquí no sirven de nada.
-    buildCommand: npm ci --include-workspace-root --workspace=agent-core && npx prisma generate && npm run build --workspace=agent-core && node apps/pc-connector/build-exe.cjs
+    #
+    # El panel nuevo (apps/panel) se compila aquí y lo sirve este mismo
+    # servicio en /panel/v2: por eso su workspace también se instala.
+    buildCommand: npm ci --include-workspace-root --workspace=agent-core --workspace=panel && npx prisma generate && npm run build --workspace=agent-core && npm run build --workspace=panel && node apps/pc-connector/build-exe.cjs
     startCommand: npx prisma migrate deploy && node apps/agent-core/dist/main.js
     healthCheckPath: /healthz
     envVars:
