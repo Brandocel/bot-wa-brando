@@ -189,7 +189,7 @@ export function panelPage(): string {
     <form id="hilo-form" class="hilo-form">
       <div class="compositor">
         <textarea id="hilo-texto" rows="1" placeholder="Escribe un mensaje…" aria-label="Mensaje"></textarea>
-        <button type="submit" title="Enviar">${icono('enviar')}</button>
+        <button type="submit" title="Enviar">${icono('enviar')}<span>Enviar</span></button>
       </div>
       <div class="compositor-ayuda no-movil">Enter envía · Shift+Enter nueva línea</div>
     </form>
@@ -375,6 +375,7 @@ function etiqueta(m) {
 
 const ICONO_ARCHIVO = '${icono('archivo')}';
 const ICONO_TICKET = '${icono('ticket')}';
+const ICONO_EMPRESA = '${icono('empresa')}';
 
 /**
  * El texto de un mensaje como se ve en WhatsApp: *negritas* y, si es un
@@ -562,14 +563,13 @@ async function abrirHilo(chatId, silencioso) {
   const lineaHilo = separarLinea(chatId).linea;
   if (lineaHilo && !nombresDeLinea[lineaHilo]) await cargarLineas().catch(() => {});
   const empresaLinea = lineaHilo ? (nombresDeLinea[lineaHilo] ?? 'otra empresa') : null;
-  // Contexto en una sola línea de texto: por qué número escribió y de qué
-  // empresas es cliente. Antes eran cuatro pastillas que se leían como
-  // alertas sin serlo.
+  // La barra conserva el contexto real del contacto con peso visual discreto.
   const membresias = datos.contact?.memberships ?? [];
-  const contexto = [empresaLinea ? 'vía ' + esc(empresaLinea) : 'número principal']
-    .concat(membresias.map((m) => esc(m.organization.name) + ' (' + m.role.toLowerCase() +
-      (m.verifiedAt ? '' : ', <span class="warn-text">sin verificar</span>') + ')'));
-  document.getElementById('hilo-meta').innerHTML = '<span class="meta-texto">' + contexto.join(' · ') + '</span>';
+  const contexto = [empresaLinea ? '<span class="meta-chip via">' + ICONO_EMPRESA + '<span>' + esc(empresaLinea) + '</span></span>' : '<span class="meta-chip">Número principal</span>'];
+  contexto.push(...membresias.map((m) => '<span class="meta-chip">' + esc(m.organization.name) + ' · ' + esc(m.role.toLowerCase()) +
+    (m.verifiedAt ? '' : ' · sin verificar') + '</span>'));
+  if (datos.topic) contexto.push('<span class="meta-chip">' + esc(datos.topic) + '</span>');
+  document.getElementById('hilo-meta').innerHTML = contexto.join('');
 
   // Los tickets van en un cajón lateral, no encima del chat: son casos de
   // soporte, y la mayoría de las conversaciones no tienen ninguno.
@@ -2243,7 +2243,7 @@ const VISTAS = {
 
     const buscador =
       '<label class="buscador">' + ICONO_BUSCAR +
-        '<input id="buscar-chat" type="search" placeholder="Busca por nombre, número o mensaje" value="' + esc(busquedaBandeja) + '">' +
+        '<input id="buscar-chat" type="search" placeholder="Buscar nombre, número o último mensaje…" value="' + esc(busquedaBandeja) + '">' +
       '</label>';
 
     const lista = filas.length
@@ -2265,19 +2265,17 @@ const VISTAS = {
           return '<div class="fila' + (c.chatId === chatAbierto ? ' abierta' : '') + '" data-chat="' + esc(c.chatId) + '" data-busqueda="' + esc(indice) + '">' +
             '<div class="avatar" style="--h:' + tono(nombre) + '">' + esc(iniciales(nombre)) + '</div>' +
             '<div class="fila-cuerpo">' +
-              '<div class="fila-arriba"><strong class="recorte">' + esc(nombre) + '</strong>' +
-                '<span class="muted small">' + hace(c.lastInboundAt) + '</span></div>' +
-              '<div class="fila-abajo"><span class="muted recorte">' + esc(ultimo) + '</span></div>' +
-              '<div class="fila-pills">' + estado +
-                // Por qué número llegó, si fue por el de una empresa.
+              '<div class="fila-arriba"><span class="fila-identidad"><strong class="recorte">' + esc(nombre) + '</strong>' +
+                '<span class="fila-numero mono">' + esc(numeroBonito(c.contact?.waId ?? c.chatId)) + '</span></span>' +
+                '<span class="muted small fila-hora">' + hace(c.lastInboundAt) + '</span></div>' +
+              '<div class="fila-abajo"><span class="muted recorte">' + esc(ultimo) + '</span>' + estado + '</div>' +
+              '<div class="fila-pills">' +
+                // Metadatos secundarios: solo los presentes y nunca como tags editables.
                 (separarLinea(c.chatId).linea
                   ? ' <span class="pill linea" title="Llegó al WhatsApp de esta empresa">' +
                       esc(nombresDeLinea[separarLinea(c.chatId).linea] ?? 'otra línea') + '</span>'
-                  // Con empresas en su propio número, también se marca el
-                  // principal: si no, la misma persona en los dos parecía
-                  // un chat duplicado.
                   : Object.keys(nombresDeLinea).length
-                    ? ' <span class="pill" title="Llegó al número principal">número principal</span>'
+                    ? ' <span class="pill linea-principal">número principal</span>'
                     : '') +
                 (c.topic ? ' <span class="pill">' + esc(c.topic) + '</span>' : '') +
                 (c.quejas ? ' <span class="pill tipo-queja">queja</span>' : '') +
@@ -3226,8 +3224,9 @@ function skeletonVista(vista) {
 
 async function pintar(vista, silencioso) {
   vistaActual = vista;
-  document.getElementById('titulo').textContent = vista === 'bandeja' && yo
-    ? 'Hola, ' + String(yo.name ?? '').trim().split(/\\s+/)[0]
+  app.classList.toggle('vista-conversaciones', vista === 'bandeja');
+  document.getElementById('titulo').textContent = vista === 'bandeja'
+    ? 'Conversaciones'
     : TITULOS[vista] ?? vista;
   document.querySelectorAll('.nav-items button').forEach((b) =>
     b.classList.toggle('active', b.dataset.view === vista));
@@ -4237,5 +4236,207 @@ const STYLES = `<link rel="preconnect" href="https://fonts.googleapis.com">
     .fila { padding: 12px 14px; }
     .fila-abajo .recorte { max-width: 100%; }
     th, td { padding: 10px 12px; }
+  }
+
+  /* Rediseño acotado a Conversaciones: la navegación y los otros módulos conservan su estilo. */
+  .app.vista-conversaciones {
+    --nav: 240px;
+    background: linear-gradient(135deg, #0e1522 0%, #0b111c 100%);
+  }
+  .app.vista-conversaciones .main {
+    background: linear-gradient(155deg, #111a29 0%, #101827 58%, #0f1724 100%);
+  }
+  .app.vista-conversaciones .nav { background: linear-gradient(180deg, #111a29 0%, #0e1623 100%); border-right-color: #202b3d; }
+  .app.vista-conversaciones .nav-brand { padding-top: 17px; padding-bottom: 15px; }
+  .app.vista-conversaciones .nav-items { gap: 5px; padding-top: 14px; }
+  .app.vista-conversaciones .nav-items button { min-height: 44px; border-radius: 10px; }
+  .app.vista-conversaciones .nav-items button.active {
+    background: rgba(101, 72, 255, .09); box-shadow: inset 3px 0 #765cff;
+  }
+  .app.vista-conversaciones .nav-items button.active .ico { color: #a99aff; }
+  .app.vista-conversaciones .nav-foot { border-top-color: #202b3d; }
+  @media (min-width: 1181px) {
+    .app.vista-conversaciones.con-hilo { grid-template-columns: var(--nav) clamp(520px, 35vw, 570px) minmax(0, 1fr); }
+    .app.plegado.vista-conversaciones.con-hilo { grid-template-columns: var(--nav-plegado) clamp(520px, 35vw, 570px) minmax(0, 1fr); }
+  }
+  .app.vista-conversaciones .top {
+    flex: 0 0 auto; padding: 20px 24px 2px; border-bottom: 0;
+    background: linear-gradient(115deg, rgba(20, 30, 47, .72), rgba(16, 24, 39, .4));
+  }
+  .app.vista-conversaciones #resumen,
+  .app.vista-conversaciones #reloj,
+  .app.vista-conversaciones #refrescar { display: none; }
+  .app.vista-conversaciones #titulo { font-size: 26px; font-weight: 600; letter-spacing: -.035em; }
+  .app.vista-conversaciones #titulo::after {
+    content: 'Gestiona todas tus conversaciones en un solo lugar.';
+    display: block; margin-top: 3px; color: #a9b4c8; font: 400 14px/1.45 'Plus Jakarta Sans', sans-serif;
+    letter-spacing: 0;
+  }
+  .app.vista-conversaciones #contenido {
+    display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: hidden;
+    padding: 8px 18px 12px; background: linear-gradient(155deg, #101827 0%, #101827 50%, #0e1623 100%);
+  }
+  .app.vista-conversaciones .barra {
+    display: flex; flex-direction: column; align-items: stretch; gap: 18px; flex: 0 0 auto; margin: 0 0 14px;
+  }
+  .app.vista-conversaciones .buscador {
+    min-width: 0; width: 100%; flex: none; min-height: 46px; padding: 0 14px;
+    border-color: #29374d; border-radius: 11px; background: linear-gradient(135deg, #182338, #141d2d); color: #a9b4c8;
+  }
+  .app.vista-conversaciones .buscador:focus-within { border-color: #6653dc; }
+  .app.vista-conversaciones .buscador input { color: #f4f6fb; font-size: 14px; }
+  .app.vista-conversaciones .buscador input::placeholder { color: #93a0b8; }
+  .app.vista-conversaciones .chips { gap: 7px; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px; }
+  .app.vista-conversaciones .chip {
+    flex: 0 0 auto; padding: 8px 13px; border: 1px solid transparent; border-radius: 11px;
+    background: linear-gradient(135deg, #182338, #141d2d); color: #c4ccda; font-size: 12px;
+  }
+  .app.vista-conversaciones .chip:hover { background: #1b263a; border-color: #2c3a52; }
+  .app.vista-conversaciones .chip.activo { background: #543bf0; border-color: #6548ff; color: #fff; }
+  .app.vista-conversaciones .lista {
+    flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto;
+    border: 0; border-radius: 0; background: linear-gradient(180deg, rgba(17, 26, 41, .2), rgba(13, 21, 34, .36));
+  }
+  .app.vista-conversaciones .fila {
+    gap: 14px; align-items: center; padding: 15px 12px; border-bottom-color: #202b3d;
+    background: transparent; transition: background .14s ease;
+  }
+  .app.vista-conversaciones .fila:hover { background: rgba(255, 255, 255, .025); }
+  .app.vista-conversaciones .fila.abierta { background: rgba(101, 72, 255, .025); }
+  .app.vista-conversaciones .fila.abierta::before {
+    left: 0; top: 8px; bottom: 8px; width: 2px; background: #765cff;
+  }
+  .app.vista-conversaciones .avatar { width: 52px; height: 52px; border-radius: 50%; }
+  .app.vista-conversaciones .fila-cuerpo { gap: 7px; }
+  .app.vista-conversaciones .fila-arriba { align-items: center; gap: 8px; }
+  .app.vista-conversaciones .fila-identidad { display: flex; flex: 1; align-items: baseline; gap: 8px; min-width: 0; overflow: hidden; }
+  .app.vista-conversaciones .fila-identidad strong { flex: 0 1 auto; }
+  .app.vista-conversaciones .fila-arriba strong { font-size: 16px; }
+  .app.vista-conversaciones .fila-numero { overflow: hidden; color: #98a5bb; font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+  .app.vista-conversaciones .fila-hora { flex: 0 0 auto; color: #9eabc2; white-space: nowrap; }
+  .app.vista-conversaciones .fila-abajo { min-width: 0; align-items: center; }
+  .app.vista-conversaciones .fila-abajo .recorte { flex: 1; min-width: 0; color: #b2bfd4; font-size: 13px; }
+  .app.vista-conversaciones .fila-abajo .estado { flex: 0 0 auto; margin-left: auto; }
+  .app.vista-conversaciones .fila-abajo .estado { padding: 3px 8px; background: #192235; color: #aeb9cb; font-size: 10px; font-weight: 500; opacity: .82; }
+  .app.vista-conversaciones .fila-abajo .estado i { display: none; }
+  .app.vista-conversaciones .fila-abajo .estado.espera,
+  .app.vista-conversaciones .fila-abajo .estado.nuevo { background: rgba(180, 128, 35, .09); color: #d5b16d; }
+  .app.vista-conversaciones .fila-abajo .estado.persona { background: rgba(101, 72, 255, .08); color: #b1a8dc; }
+  .app.vista-conversaciones .fila-abajo .estado.cliente { background: rgba(96, 165, 250, .08); color: #9cb6d6; }
+  .app.vista-conversaciones .fila-abajo .estado.ok { background: #1b263a; color: #aebbd0; }
+  .app.vista-conversaciones .fila-pills { display: none; }
+  .app.vista-conversaciones .fila-pills .estado {
+    padding: 2px 8px; background: #1b263a; color: #c5cede; font-size: 10px; font-weight: 600;
+  }
+  .app.vista-conversaciones .fila-pills .estado i { display: none; }
+  .app.vista-conversaciones .fila-pills .estado.espera,
+  .app.vista-conversaciones .fila-pills .estado.nuevo { background: rgba(245, 158, 11, .11); color: #f3bd55; }
+  .app.vista-conversaciones .fila-pills .estado.persona { background: rgba(101, 72, 255, .14); color: #c2b8ff; }
+  .app.vista-conversaciones .fila-pills .estado.cliente { background: rgba(96, 165, 250, .12); color: #a8ceff; }
+  .app.vista-conversaciones .fila-pills .estado.ok { background: #1b263a; color: #aebbd0; }
+  .app.vista-conversaciones .fila-pills:empty { display: none; }
+  .app.vista-conversaciones .fila-pills .pill,
+  .app.vista-conversaciones .fila-pills .folio { padding: 2px 7px; font-size: 10px; }
+  .app.vista-conversaciones .fila-pills .pill:not(.tipo-queja) { background: transparent; color: #8997ad; }
+  .app.vista-conversaciones .fila-pills .pill.tipo-queja { background: rgba(248, 113, 113, .12); color: #ff8b8b; }
+  .app.vista-conversaciones .fila-pills .folio { color: #a9b4c8; }
+  .app.vista-conversaciones .vacio { background: transparent; border-color: #2c3a52; }
+
+  .app.vista-conversaciones #hilo {
+    background: linear-gradient(180deg, #0f1725 0%, #0d1421 52%, #0d1420 100%); border-left-color: #202b3d; box-shadow: none;
+  }
+  .app.vista-conversaciones .hilo-head {
+    background: linear-gradient(110deg, rgba(18, 27, 42, .2), rgba(13, 20, 33, .08));
+  }
+  .app.vista-conversaciones .hilo-head { min-height: 96px; padding: 18px 24px 16px; gap: 16px; }
+  .app.vista-conversaciones .hilo-head .avatar { width: 58px; height: 58px; border-radius: 50%; }
+  .app.vista-conversaciones .hilo-quien strong { font-size: 20px; }
+  .app.vista-conversaciones #hilo-numero { margin-top: 2px; color: #a9b4c8; }
+  .app.vista-conversaciones .hilo-sub {
+    margin: 0 16px; padding: 10px 14px; border: 1px solid #202b3d; border-radius: 12px;
+    background: linear-gradient(110deg, rgba(20, 30, 46, .72), rgba(16, 25, 39, .62)); gap: 9px;
+  }
+  .app.vista-conversaciones .hilo-estado { display: inline-flex; order: 2; opacity: .72; }
+  .app.vista-conversaciones .hilo-meta { display: inline-flex; flex-wrap: wrap; gap: 7px; order: 1; }
+  .app.vista-conversaciones .hilo-meta:empty { display: none; }
+  .app.vista-conversaciones .hilo-meta .meta-chip {
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 7px; border-radius: 8px;
+    background: #172236; color: #c4ccda; font-size: 11px;
+  }
+  .app.vista-conversaciones .hilo-meta .meta-chip.via { background: #172236; }
+  .app.vista-conversaciones .hilo-meta .meta-chip svg { width: 15px; height: 15px; color: #aebbd0; }
+  .app.vista-conversaciones #hilo-atender,
+  .app.vista-conversaciones #hilo-tickets-btn { min-height: 42px; padding: 0 14px; white-space: nowrap; }
+  .app.vista-conversaciones #hilo-atender { min-height: 44px; padding: 0 16px; white-space: nowrap; }
+  .app.vista-conversaciones #hilo-tickets-btn { color: #c5a95f; border-color: rgba(197, 169, 95, .22); opacity: .86; }
+  .app.vista-conversaciones #hilo-cerrar { color: #8793a8; opacity: .75; }
+  .app.vista-conversaciones #hilo-borrar { color: #8793a8; border-color: transparent; opacity: .76; }
+  .app.vista-conversaciones #hilo-borrar:hover { color: #ff8b8b; border-color: rgba(248, 113, 113, .25); opacity: 1; }
+  .app.vista-conversaciones #hilo-atender.acento { background: #543bf0; border-color: #543bf0; }
+  .app.vista-conversaciones #hilo-atender.acento:hover { background: #6548ff; }
+  .app.vista-conversaciones .chat {
+    flex: 1; min-height: 0; margin: 14px 16px 6px; padding: 20px; gap: 16px;
+    border: 1px solid rgba(105, 124, 151, .16); border-radius: 16px;
+    background: linear-gradient(155deg, #101826 0%, #0e1521 52%, #0d1420 100%);
+  }
+  .app.vista-conversaciones .dia { background: #172236; color: #bec9dc; }
+  .app.vista-conversaciones .burbuja { max-width: min(86%, 680px); padding: 15px 18px 11px; border-radius: 15px; font-size: 15px; line-height: 1.52; }
+  .app.vista-conversaciones .burbuja.entra { background: #172236; border: 1px solid #202b3d; border-bottom-left-radius: 5px; }
+  .app.vista-conversaciones .burbuja.sale {
+    background: linear-gradient(145deg, #302276, #25205b); border: 1px solid rgba(123, 103, 255, .18);
+    border-bottom-right-radius: 5px;
+  }
+  .app.vista-conversaciones .burbuja.sale.persona {
+    background: linear-gradient(145deg, #194a3e, #153d34); border-color: rgba(52, 211, 153, .24);
+  }
+  .app.vista-conversaciones .burbuja .firma { font-size: 11px; }
+  .app.vista-conversaciones .burbuja .hora { font-size: 11px; color: #aebbd0; }
+  .app.vista-conversaciones .burbuja.sale .hora { color: rgba(241, 239, 255, .72); }
+  .app.vista-conversaciones .ticket-ancla {
+    align-self: center; width: min(74%, 680px); gap: 8px; margin: 2px 0; padding: 7px 10px; border-color: rgba(214, 169, 76, .17); border-radius: 11px;
+    background: rgba(214, 169, 76, .035); color: #cbd3df; font-size: 12px;
+  }
+  .app.vista-conversaciones .ticket-ancla-ico { color: #c1a253; }
+  .app.vista-conversaciones .ticket-ancla-asunto { color: #dce2eb; }
+  .app.vista-conversaciones .ticket-ancla .btn { min-height: 30px; padding: 5px 10px; }
+  .app.vista-conversaciones .ticket-ancla.cerrado { background: #141b28; border-color: #2b3547; }
+  .app.vista-conversaciones .hilo-form {
+    margin: 6px 16px 14px; padding: 14px 16px; border: 1px solid rgba(105, 124, 151, .16); border-radius: 15px;
+    background: linear-gradient(120deg, rgba(19, 29, 45, .88), rgba(15, 23, 36, .92) 68%, rgba(14, 22, 35, .9));
+  }
+  .app.vista-conversaciones .compositor { border-color: rgba(105, 124, 151, .2); border-radius: 12px; background: linear-gradient(135deg, #172235, #141d2c); }
+  .app.vista-conversaciones .compositor:focus-within { border-color: #6653dc; }
+  .app.vista-conversaciones .compositor textarea { background: transparent; }
+  .app.vista-conversaciones .compositor button[type=submit] {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px; width: auto;
+    min-width: 108px; min-height: 46px; padding: 0 17px; border-radius: 10px; background: #543bf0;
+  }
+  .app.vista-conversaciones .compositor textarea { min-height: 44px; }
+  .app.vista-conversaciones .compositor button[type=submit] span { font-size: 13px; font-weight: 700; }
+    .app.vista-conversaciones .compositor-ayuda { color: #8290a8; }
+
+  @media (max-width: 1180px) {
+    .app.vista-conversaciones.con-hilo,
+    .app.plegado.vista-conversaciones.con-hilo { grid-template-columns: var(--nav) minmax(0, 1fr) 0; }
+    .app.plegado.vista-conversaciones.con-hilo { grid-template-columns: var(--nav-plegado) minmax(0, 1fr) 0; }
+    .app.vista-conversaciones #hilo { width: min(560px, 100vw); box-shadow: -10px 0 28px rgba(0, 0, 0, .28); }
+  }
+  @media (max-width: 899px) {
+    .app.vista-conversaciones,
+    .app.plegado.vista-conversaciones,
+    .app.vista-conversaciones.con-hilo,
+    .app.plegado.vista-conversaciones.con-hilo { grid-template-columns: minmax(0, 1fr); }
+    .app.vista-conversaciones .top { padding: 16px 16px 12px; }
+    .app.vista-conversaciones #contenido { padding: 13px 12px 8px; }
+    .app.vista-conversaciones #hilo { width: 100vw; }
+    .app.vista-conversaciones .hilo-head { min-height: 62px; padding: 10px 10px 8px; gap: 8px; }
+    .app.vista-conversaciones .hilo-head .avatar { width: 38px; height: 38px; }
+    .app.vista-conversaciones .hilo-sub { margin: 0 10px; padding: 8px 10px; }
+    .app.vista-conversaciones .chat { padding: 12px 10px 6px; }
+    .app.vista-conversaciones .burbuja { max-width: 90%; }
+    .app.vista-conversaciones .ticket-ancla { width: 100%; }
+    .app.vista-conversaciones .hilo-form { margin: 6px 10px 10px; padding: 8px 10px; }
+    .app.vista-conversaciones .compositor textarea { font-size: 16px; }
+    .app.vista-conversaciones .fila { padding: 12px 8px; }
   }
 </style>`;
