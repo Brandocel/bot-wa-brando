@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { MessageSquare, Ticket as IconoTicket } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { PageHeader } from '@/app/layout/PageHeader';
-import { abrirClasico } from '@/app/navegacion';
 import { Badge, type Tone } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { EmptyState, ErrorState, TableSkeleton } from '@/components/ui/feedback';
@@ -37,6 +37,7 @@ const PRIORIDAD: Record<Prioridad, { texto: string; tono: Tone }> = {
 };
 
 export function TicketsPage() {
+  const navigate = useNavigate();
   const tickets = useQuery({
     queryKey: ['tickets'],
     queryFn: () => api.get<Ticket[]>('tickets'),
@@ -99,8 +100,8 @@ export function TicketsPage() {
                       size="icon"
                       className="size-8"
                       aria-label={`Abrir la conversación del ticket ${t.number}`}
-                      title="Abrir la conversación (panel clásico)"
-                      onClick={() => abrirClasico('tickets', t.contact!.waId)}
+                      title="Abrir la conversación"
+                      onClick={() => navigate(`/conversaciones?chat=${encodeURIComponent(t.contact!.waId)}`)}
                     >
                       <MessageSquare />
                     </Button>

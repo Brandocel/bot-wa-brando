@@ -1,10 +1,10 @@
-import { ArrowUpRight, Bot, LogOut, Moon, Sun } from 'lucide-react';
+import { Bot, LogOut, Moon, Sun } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { NOMBRE_ROL, useSalir, useUsuario } from '@/features/auth/sesion';
 import { cn } from '@/lib/cn';
 import { iniciales } from '@/lib/format';
-import { abrirClasico, seccionesDe, type Seccion } from '../navegacion';
+import { seccionesDe, type Seccion } from '../navegacion';
 import { useTema } from '../tema';
 import { totalPendientes, useResumen, type Resumen } from './resumen';
 
@@ -35,31 +35,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       <nav aria-label="Secciones" className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-3 py-2">
         {seccionesDe(usuario.role).map((s) => {
           const n = contadorDe(s, resumen);
-          const contenido = (
-            <>
-              <s.icono className="size-[18px] shrink-0" aria-hidden />
-              <span className="flex-1 truncate text-left">{s.nombre}</span>
-              {n > 0 && (
-                <span className="rounded-full bg-warning-soft px-2 text-xs font-semibold text-warning tabular-nums">
-                  {n}
-                  <span className="sr-only"> por atender</span>
-                </span>
-              )}
-              {s.clasica && <ArrowUpRight className="size-3.5 opacity-60" aria-hidden />}
-            </>
-          );
-
-          return s.clasica ? (
-            <button
-              key={s.ruta}
-              type="button"
-              className={item}
-              title="Se abre en el panel clásico"
-              onClick={() => abrirClasico(s.clasica!)}
-            >
-              {contenido}
-            </button>
-          ) : (
+          return (
             <NavLink
               key={s.ruta}
               to={`/${s.ruta}`}
@@ -68,7 +44,14 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                 cn(item, isActive && 'bg-primary-soft text-primary-soft-foreground hover:bg-primary-soft hover:text-primary-soft-foreground')
               }
             >
-              {contenido}
+              <s.icono className="size-[18px] shrink-0" aria-hidden />
+              <span className="flex-1 truncate text-left">{s.nombre}</span>
+              {n > 0 && (
+                <span className="rounded-full bg-warning-soft px-2 text-xs font-semibold text-warning tabular-nums">
+                  {n}
+                  <span className="sr-only"> por atender</span>
+                </span>
+              )}
             </NavLink>
           );
         })}

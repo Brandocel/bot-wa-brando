@@ -40,3 +40,45 @@ export const iniciales = (nombre: string | null | undefined): string =>
     .toUpperCase();
 
 export const plural = (n: number, uno: string, varios: string): string => `${n} ${n === 1 ? uno : varios}`;
+
+/** "hace 5 min", "ayer", "12/09": lo que se quiere leer en una lista. */
+export const hace = (iso: string | null | undefined): string => {
+  if (!iso) return '';
+  const min = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (min < 1) return 'ahora';
+  if (min < 60) return `hace ${min} min`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `hace ${h} h`;
+  const d = Math.floor(h / 24);
+  if (d === 1) return 'ayer';
+  if (d < 7) return `hace ${d} días`;
+  return new Date(iso).toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit' });
+};
+
+/** "Hoy", "Ayer" o la fecha larga: el separador entre días de un hilo. */
+export const nombreDia = (iso: string): string => {
+  const d = new Date(iso);
+  const hoy = new Date();
+  const ayer = new Date();
+  ayer.setDate(hoy.getDate() - 1);
+  if (d.toDateString() === hoy.toDateString()) return 'Hoy';
+  if (d.toDateString() === ayer.toDateString()) return 'Ayer';
+  return d.toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long' });
+};
+
+export const dinero = (cents: number): string =>
+  `$${(cents / 100).toLocaleString('es-MX', { maximumFractionDigits: 2 })}`;
+
+/** Un tono por nombre, estable: la misma persona siempre se ve del mismo color. */
+export const tono = (nombre: string | null | undefined): number => {
+  let h = 0;
+  for (const ch of nombre ?? '') h = (h * 31 + ch.charCodeAt(0)) % 360;
+  return h;
+};
+
+/** Para buscar sin que importen mayúsculas ni acentos. */
+export const normalizar = (texto: string | null | undefined): string =>
+  (texto ?? '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '');

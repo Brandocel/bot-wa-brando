@@ -116,9 +116,13 @@
 
   --animate-in: entrar 0.16s ease-out;
   --animate-overlay: velo 0.16s ease-out;
+  --animate-sheet: deslizar 0.2s ease-out;
 
   @keyframes entrar {
     from { opacity: 0; transform: translateY(4px) scale(0.985); }
+  }
+  @keyframes deslizar {
+    from { transform: translateX(24px); opacity: 0; }
   }
   @keyframes velo {
     from { opacity: 0; }

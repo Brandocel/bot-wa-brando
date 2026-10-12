@@ -1,9 +1,9 @@
 # panel
 
-El panel de operación, en React + Vite + Tailwind v4. Sustituye por fases a
+El panel de operación, en React + Vite + Tailwind v4. Sustituye a
 `apps/agent-core/src/infrastructure/http/panel/panel.page.ts` (el "panel clásico").
 
-Mientras dura la migración conviven los dos:
+Hasta el relevo conviven los dos:
 
 | Ruta        | Qué es                                                    |
 | ----------- | --------------------------------------------------------- |
@@ -55,30 +55,23 @@ importa de otra salvo tipos y catálogos compartidos.
 5. **Nada de `confirm()` ni `prompt()`**: `ConfirmDialog` y `Dialog`.
 6. **Los avisos son `toast`** (sonner), con el mismo texto que ya conocía la
    operación.
+7. **Ningún archivo pasa de 500 líneas.** Antes de llegar, la sección se parte:
+   página, piezas y `api.ts` (tipos y consultas). Se revisa con
+   `find apps/panel/src -type f | xargs wc -l | sort -rn | head`.
 
-## Migrar una sección
+## Añadir una sección
 
-1. Crear `features/<seccion>/<Seccion>Page.tsx` con los tipos de lo que
-   devuelve la API.
+1. Crear `features/<seccion>/` con su `api.ts` (tipos de lo que devuelve la
+   API y sus consultas) y su `<Seccion>Page.tsx`.
 2. Añadir la ruta en `app/router.tsx`.
-3. Quitar `clasica` de esa sección en `app/navegacion.ts`: el menú deja de
-   mandar al panel clásico.
+3. Añadirla al menú en `app/navegacion.ts`.
 
 ## Estado
 
-| Sección        | Estado   |
-| -------------- | -------- |
-| Entrar         | migrada  |
-| Tickets        | migrada  |
-| Documentos     | migrada  |
-| Cuarentena     | migrada  |
-| Auditoría      | migrada  |
-| Ajustes        | migrada  |
-| Pendientes     | clásico  |
-| Conversaciones | clásico (incluye el hilo del chat) |
-| Clientes       | clásico  |
-| Empresas       | clásico  |
-| Ventas         | clásico (incluye facturación) |
+Las once pantallas del panel clásico ya viven aquí: Entrar, Pendientes,
+Conversaciones (con el hilo), Tickets, Clientes, Empresas, Ventas (pedidos,
+catálogo, configuración, facturas y facturación), Documentos, Cuarentena,
+Auditoría y Ajustes.
 
-Al migrar la última: `/panel` pasa a servir este panel y se borran
-`panel.page.ts`, `PanelController` y el campo `clasica`.
+Falta el relevo: que `/panel` sirva este panel y borrar `panel.page.ts` y
+`PanelController`. Se hace después de probar este contra datos reales.

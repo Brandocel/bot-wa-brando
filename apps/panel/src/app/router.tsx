@@ -1,16 +1,20 @@
 import { createBrowserRouter, Navigate } from 'react-router-dom';
 import { AjustesPage } from '@/features/ajustes/AjustesPage';
 import { AuditoriaPage } from '@/features/auditoria/AuditoriaPage';
+import { EmpresasPage } from '@/features/empresas/EmpresasPage';
 import { LoginPage } from '@/features/auth/LoginPage';
-import { useUsuario } from '@/features/auth/sesion';
+import { ClientesPage } from '@/features/clientes/ClientesPage';
+import { ConversacionesPage } from '@/features/conversaciones/ConversacionesPage';
 import { CuarentenaPage } from '@/features/cuarentena/CuarentenaPage';
 import { DocumentosPage } from '@/features/documentos/DocumentosPage';
+import { PendientesPage } from '@/features/pendientes/PendientesPage';
 import { TicketsPage } from '@/features/tickets/TicketsPage';
+import { VentasPage } from '@/features/ventas/VentasPage';
 import { AppShell } from './layout/AppShell';
-import { inicioDe } from './navegacion';
+import { INICIO } from './navegacion';
 
 function Inicio() {
-  return <Navigate to={`/${inicioDe(useUsuario().role)}`} replace />;
+  return <Navigate to={`/${INICIO}`} replace />;
 }
 
 export const router = createBrowserRouter(
@@ -20,7 +24,12 @@ export const router = createBrowserRouter(
       element: <AppShell />,
       children: [
         { index: true, element: <Inicio /> },
+        { path: 'pendientes', element: <PendientesPage /> },
+        { path: 'conversaciones', element: <ConversacionesPage /> },
         { path: 'tickets', element: <TicketsPage /> },
+        { path: 'directorio', element: <ClientesPage /> },
+        { path: 'empresas', element: <EmpresasPage /> },
+        { path: 'ventas', element: <VentasPage /> },
         { path: 'documentos', element: <DocumentosPage /> },
         { path: 'cuarentena', element: <CuarentenaPage /> },
         { path: 'auditoria', element: <AuditoriaPage /> },
