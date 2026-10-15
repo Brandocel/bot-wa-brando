@@ -18,7 +18,9 @@ export class SourceFilter implements MessageFilter {
     // ahi TODO llega con fromMe: true. Es la unica excepcion: mis mensajes
     // escritos a mano en el chat de un cliente siguen ignorandose, para no
     // meterme cuando yo mismo estoy atendiendo.
-    if (message.isFromMe && !message.isSelfChat) {
+    // En una línea, el chat propio sigue: LineaPropiaFilter decide si ahí
+    // se atiende (PERSONA) o no (EMPRESA).
+    if (message.isFromMe && !message.isSelfChat && !message.isLineSelfChat) {
       return stop(ctx, this.name, 'mensaje propio');
     }
 

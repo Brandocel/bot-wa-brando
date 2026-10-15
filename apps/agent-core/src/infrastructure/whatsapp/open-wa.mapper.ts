@@ -164,6 +164,7 @@ export class OpenWaMessageMapper {
       isGroup,
       isFromMe: raw['fromMe'] === true,
       isSelfChat,
+      isLineSelfChat: deLineaDeEmpresa && !isGroup && chatContact['isMe'] === true,
       isBroadcast:
         raw['isBroadcast'] === true ||
         chatId === 'status@broadcast' ||

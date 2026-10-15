@@ -15,6 +15,7 @@ import { SupportStrategy } from '../support/support.strategy';
 import { clasificar, type Clasificacion } from '../support/message-classifier';
 import type { TransactionClient } from '../../infrastructure/persistence/prisma.service';
 import { SourceFilter } from '../pipeline/filters/source.filter';
+import { LineaPropiaFilter } from '../pipeline/filters/linea-propia.filter';
 import { runPipeline, type MessageFilter, type PipelineContext } from '../pipeline/pipeline';
 
 /** Cuánto espera un mensaje a que se atiendan los anteriores del mismo chat. */
@@ -48,6 +49,7 @@ export class HandleIncomingMessageUseCase {
     private readonly supportStrategy: SupportStrategy,
     private readonly conversations: ConversationStateService,
     source: SourceFilter,
+    lineaPropia: LineaPropiaFilter,
     idempotency: IdempotencyFilter,
     loopGuard: LoopGuardFilter,
     authorization: AuthorizationFilter,
@@ -63,6 +65,9 @@ export class HandleIncomingMessageUseCase {
     // pagarla por mensajes que igual se iban a descartar antes.
     this.filters = [
       source,
+      // Antes de registrar nada: un chat ajeno en una línea personal no
+      // debe quedar ni en Conversaciones.
+      lineaPropia,
       idempotency,
       loopGuard,
       authorization,

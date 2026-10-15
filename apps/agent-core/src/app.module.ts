@@ -13,6 +13,7 @@ import { AgentAdminCommandsService } from './application/commands/agent-admin-co
 import { TicketAssignmentService } from './application/support/ticket-assignment.service';
 import { SolicitudService } from './application/support/solicitud.service';
 import { SourceFilter } from './application/pipeline/filters/source.filter';
+import { LineaPropiaFilter } from './application/pipeline/filters/linea-propia.filter';
 import { AccessScopeService } from './application/support/access-scope.service';
 import { ConversationStateService } from './application/support/conversation-state.service';
 import { DirectoryService } from './application/support/directory.service';
@@ -108,6 +109,7 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
 
     // ── Pipeline ───────────────────────────────────────────────────────
     SourceFilter,
+    LineaPropiaFilter,
     IdempotencyFilter,
     LoopGuardFilter,
     AuthorizationFilter,

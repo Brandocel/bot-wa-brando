@@ -223,6 +223,13 @@ export class Linea {
   private lastQrAt: Date | null = null;
   lastError: string | null = null;
 
+  /**
+   * Ids de lo que el bot mandó por esta línea. En el chat propio, la
+   * respuesta del bot vuelve con fromMe igual que lo que escribe el dueño;
+   * sin esto se contestaría a sí mismo en bucle.
+   */
+  private readonly enviados = new Set<string>();
+
   /** Identidad de la cuenta conectada, tal como la reporta WhatsApp. */
   yo: { id: string; lid: string | null; name: string | null } | null = null;
 
@@ -302,6 +309,28 @@ export class Linea {
     return jid;
   }
 
+  /**
+   * El chat conmigo mismo: WhatsApp lo direcciona por LID, así que se
+   * comparan los dígitos contra el número y el LID de la cuenta.
+   */
+  private esChatPropio(remoteJid: string): boolean {
+    if (isJidGroup(remoteJid)) return false;
+    const digitos = soloDigitos(remoteJid);
+    return (
+      digitos.length > 0 &&
+      (digitos === soloDigitos(this.yo?.id ?? '') || digitos === soloDigitos(this.yo?.lid ?? ''))
+    );
+  }
+
+  private recordarEnviado(id: string): void {
+    this.enviados.add(id);
+    // Basta con los recientes: el eco llega en segundos.
+    if (this.enviados.size > 500) {
+      const viejo = this.enviados.values().next().value;
+      if (viejo !== undefined) this.enviados.delete(viejo);
+    }
+  }
+
   /** De mensaje de Baileys al payload que el core lleva esperando desde siempre. */
   private async aPayload(m: WAMessage): Promise<PayloadParaCore | null> {
     const remoteJid = m.key.remoteJid;
@@ -325,14 +354,7 @@ export class Linea {
     const { body, caption } = textoDe(m);
     const media = fromMe ? undefined : await pdfDe(m);
 
-    // El chat conmigo mismo: WhatsApp lo direcciona por LID, así que se
-    // comparan los dígitos contra el número y el LID de la cuenta.
-    const digitosDelChat = soloDigitos(remoteJid);
-    const esChatPropio =
-      !esGrupo &&
-      digitosDelChat.length > 0 &&
-      (digitosDelChat === soloDigitos(this.yo?.id ?? '') ||
-        digitosDelChat === soloDigitos(this.yo?.lid ?? ''));
+    const esChatPropio = this.esChatPropio(remoteJid);
 
     const menciones = m.message?.extendedTextMessage?.contextInfo?.mentionedJid ?? [];
 
@@ -531,9 +553,14 @@ export class Linea {
       void (async () => {
         for (const m of messages) {
           // En el número de una empresa, lo que manda la propia empresa
-          // desde su teléfono no es para el bot: ni comandos del dueño, ni
-          // conversaciones que atender.
-          if (!this.esPrincipal && m.key.fromMe === true) continue;
+          // desde su teléfono en el chat de un cliente no es para el bot.
+          // Pasa solo lo que el dueño se escribe a sí mismo (una PERSONA usa
+          // el bot ahí; el core decide según el tipo), y nunca el eco de lo
+          // que mandó el propio bot.
+          if (!this.esPrincipal && m.key.fromMe === true) {
+            if (!m.key.remoteJid || !this.esChatPropio(m.key.remoteJid)) continue;
+            if (m.key.id && this.enviados.has(m.key.id)) continue;
+          }
 
           const payload = await this.aPayload(m);
           if (!payload) continue;
@@ -600,6 +627,7 @@ export class Linea {
     if (!resultado?.key?.id) {
       throw new Error(`WhatsApp rechazó el texto para ${to}`);
     }
+    this.recordarEnviado(resultado.key.id);
     return resultado.key.id;
   }
 
@@ -640,6 +668,7 @@ export class Linea {
     if (!resultado?.key?.id) {
       throw new Error(`no se pudo enviar ${filename} a ${input.to}`);
     }
+    this.recordarEnviado(resultado.key.id);
     return resultado.key.id;
   }
 

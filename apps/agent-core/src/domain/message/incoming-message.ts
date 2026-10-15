@@ -44,6 +44,12 @@ export interface IncomingMessage {
    * cliente también son míos, y ahí el bot NO debe intervenir.
    */
   readonly isSelfChat: boolean;
+  /**
+   * El chat propio, pero en la línea de una empresa o persona. No es el
+   * asistente del dueño del bot: en una PERSONA es donde ella usa el bot
+   * (ver LineaPropiaFilter); en una EMPRESA se ignora.
+   */
+  readonly isLineSelfChat?: boolean;
   readonly isBroadcast: boolean;
   readonly mentionsMe: boolean;
   readonly timestamp: Date;
