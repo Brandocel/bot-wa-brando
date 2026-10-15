@@ -525,6 +525,7 @@ export class PanelApiController {
       select: {
         id: true,
         name: true,
+        kind: true,
         taxId: true,
         driveFolderId: true,
         sourceType: true,
@@ -1221,7 +1222,7 @@ export class PanelApiController {
   async addOrganization(
     @Req() req: PanelRequest,
     @Body()
-    body: { name?: string; driveFolderId?: string; taxId?: string; sourceType?: string },
+    body: { name?: string; driveFolderId?: string; taxId?: string; sourceType?: string; kind?: string },
   ) {
     this.requireAdmin(req);
 
@@ -1234,6 +1235,7 @@ export class PanelApiController {
 
     return this.directory.addOrganization({
       name: body.name,
+      kind: body.kind === 'PERSONA' ? 'PERSONA' : 'EMPRESA',
       sourceType,
       driveFolderId: sourceType === 'DRIVE' ? body.driveFolderId : undefined,
       taxId: body.taxId,
@@ -1259,6 +1261,7 @@ export class PanelApiController {
       taxId?: string;
       driveFolderId?: string;
       active?: boolean;
+      kind?: string;
     },
   ) {
     this.requireAdmin(req);
@@ -1271,6 +1274,7 @@ export class PanelApiController {
         ...(body.taxId !== undefined ? { taxId: body.taxId.trim() || null } : {}),
         ...(body.driveFolderId ? { driveFolderId: body.driveFolderId.trim() } : {}),
         ...(body.active !== undefined ? { active: body.active } : {}),
+        ...(body.kind === 'PERSONA' || body.kind === 'EMPRESA' ? { kind: body.kind } : {}),
       },
     });
 

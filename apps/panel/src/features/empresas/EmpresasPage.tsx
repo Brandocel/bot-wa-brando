@@ -1,5 +1,7 @@
 import { ArrowLeft, Building2, Plus } from 'lucide-react';
+import { useMutation } from '@tanstack/react-query';
 import { useState } from 'react';
+import { toast } from 'sonner';
 import { useSearchParams } from 'react-router-dom';
 import { PageHeader } from '@/app/layout/PageHeader';
 import { Avatar } from '@/components/ui/avatar';
@@ -10,10 +12,11 @@ import { Segmented } from '@/components/ui/segmented';
 import { useUsuario } from '@/features/auth/sesion';
 import { Clientes } from '@/features/clientes/Clientes';
 import { useEmpresas } from '@/features/ventas/api';
+import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { AccesosPanel } from './AccesosPanel';
 import { AltaEmpresa } from './AltaEmpresa';
-import { pasosDe, type Empresa } from './api';
+import { pasosDe, useRefrescarEmpresas, type Empresa } from './api';
 import { EliminarEmpresa } from './EliminarEmpresa';
 import { DialogoConector } from './PasoDocumentos';
 import { PasosEmpresa } from './PasosEmpresa';
@@ -32,6 +35,15 @@ export function EmpresasPage() {
   const pedida = params.get('empresa');
   const pestana: Pestana = params.get('tab') === 'personas' ? 'personas' : 'config';
   const actual = empresas.data?.find((o) => o.id === pedida) ?? empresas.data?.[0];
+  const refrescar = useRefrescarEmpresas();
+  const cambiarTipo = useMutation({
+    mutationFn: (kind: Empresa['kind']) => api.post('empresas/actualizar', { id: actual?.id, kind }),
+    onSuccess: (_, kind) => {
+      toast.success(kind === 'PERSONA' ? 'Ahora es persona: su número recibe todos sus documentos' : 'Ahora es empresa');
+      refrescar();
+    },
+    onError: (err) => toast.error(err.message),
+  });
   const poner = (cambios: Record<string, string>) => setParams({ ...Object.fromEntries(params), ...cambios }, { replace: true });
 
   return (
@@ -81,7 +93,16 @@ export function EmpresasPage() {
                 </p>
               </div>
               {esAdmin && (
-                <div className="flex gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Segmented
+                    label="Tipo de cliente"
+                    value={actual.kind}
+                    onChange={(kind) => kind !== actual.kind && cambiarTipo.mutate(kind)}
+                    options={[
+                      { value: 'EMPRESA', label: 'Empresa' },
+                      { value: 'PERSONA', label: 'Persona' },
+                    ]}
+                  />
                   <Button variant="secondary" size="sm" onClick={() => setAbierto('accesos')}>
                     Accesos al panel
                   </Button>
@@ -165,6 +186,7 @@ function FilaEmpresa({ empresa: o, activa, onElegir }: { empresa: Empresa; activ
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-2">
             <span className="truncate font-medium">{o.name}</span>
+            {o.kind === 'PERSONA' && <Badge>Persona</Badge>}
             {!o.active && <Badge tone="warning">Inactiva</Badge>}
           </span>
           <span className="block text-xs text-muted-foreground">

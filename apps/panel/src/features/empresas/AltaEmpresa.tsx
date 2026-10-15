@@ -3,6 +3,7 @@ import { useState, type FormEvent } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Field, Input, Select } from '@/components/ui/field';
+import { Segmented } from '@/components/ui/segmented';
 import { Sheet } from '@/components/ui/sheet';
 import { api } from '@/lib/api';
 import { useRefrescarEmpresas } from './api';
@@ -15,15 +16,23 @@ interface Props {
 
 export function AltaEmpresa({ onCerrar, onCreada }: Props) {
   const refrescar = useRefrescarEmpresas();
-  const [d, setD] = useState({ name: '', taxId: '', sourceType: 'PC' as 'PC' | 'DRIVE', driveFolderId: '' });
+  const [d, setD] = useState({
+    name: '',
+    kind: 'EMPRESA' as 'EMPRESA' | 'PERSONA',
+    taxId: '',
+    sourceType: 'PC' as 'PC' | 'DRIVE',
+    driveFolderId: '',
+  });
+  const persona = d.kind === 'PERSONA';
+  const creada = persona ? 'Persona creada' : 'Empresa creada';
 
   const crear = useMutation({
     mutationFn: () => api.post<{ id: string }>('empresas', d),
     onSuccess: (r) => {
       toast.success(
         d.sourceType === 'PC'
-          ? 'Empresa creada. Ahora conecta su computadora.'
-          : 'Empresa creada. Comparte la carpeta con la cuenta de servicio y corre /sync.',
+          ? `${creada}. Ahora conecta su computadora.`
+          : `${creada}. Comparte la carpeta con la cuenta de servicio y corre /sync.`,
       );
       refrescar();
       onCreada({ id: r.id, name: d.name }, d.sourceType === 'PC');
@@ -40,26 +49,35 @@ export function AltaEmpresa({ onCerrar, onCreada }: Props) {
     <Sheet
       open
       onOpenChange={(a) => !a && onCerrar()}
-      title="Nueva empresa"
+      title={persona ? 'Nueva persona' : 'Nueva empresa'}
       footer={
         <>
           <Button variant="secondary" onClick={onCerrar} disabled={crear.isPending}>
             Cancelar
           </Button>
           <Button type="submit" form="form-alta-empresa" loading={crear.isPending}>
-            Crear empresa
+            {persona ? 'Crear persona' : 'Crear empresa'}
           </Button>
         </>
       }
     >
       <form id="form-alta-empresa" onSubmit={enviar} className="flex flex-col gap-4">
+        <Segmented
+          label="Tipo de cliente"
+          value={d.kind}
+          onChange={(kind) => setD({ ...d, kind })}
+          options={[
+            { value: 'EMPRESA', label: 'Empresa' },
+            { value: 'PERSONA', label: 'Persona' },
+          ]}
+        />
         <Field label="Nombre">
           {(ids) => (
-            <Input {...ids} required autoFocus placeholder="Flores de Paula" value={d.name} onChange={(e) => setD({ ...d, name: e.target.value })} />
+            <Input {...ids} required autoFocus placeholder={persona ? 'Alan Pérez' : 'Flores de Paula'} value={d.name} onChange={(e) => setD({ ...d, name: e.target.value })} />
           )}
         </Field>
         <Field label="RFC (opcional)">
-          {(ids) => <Input {...ids} placeholder="FDP240101AB1" value={d.taxId} onChange={(e) => setD({ ...d, taxId: e.target.value })} />}
+          {(ids) => <Input {...ids} placeholder={persona ? 'PEPA800101AB1' : 'FDP240101AB1'} value={d.taxId} onChange={(e) => setD({ ...d, taxId: e.target.value })} />}
         </Field>
         <Field label="¿De dónde salen sus documentos?">
           {(ids) => (

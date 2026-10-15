@@ -307,6 +307,13 @@ model SystemFlag {
 // el permiso se resuelve en SQL contra el waId ANTES de que el LLM vea nada.
 
 /// De dónde saca el bot los documentos de una empresa.
+/// Quién es el cliente. Una PERSONA usa el bot para sí misma: su propio
+/// número (waNumber) recibe todos sus documentos, sin membresía ni titular.
+enum OrgKind {
+  EMPRESA
+  PERSONA
+}
+
 enum SourceType {
   DRIVE // carpeta de Google Drive compartida con la cuenta de servicio
   PC // conector instalado en la computadora del cliente, que sube los archivos
@@ -315,6 +322,7 @@ enum SourceType {
 model Organization {
   id            String     @id @default(cuid())
   name          String
+  kind          OrgKind    @default(EMPRESA)
   taxId         String?    @unique // RFC: la llave real del negocio
   sourceType    SourceType @default(DRIVE)
   driveFolderId String?    @unique // carpeta raíz en Drive; null si el origen es PC

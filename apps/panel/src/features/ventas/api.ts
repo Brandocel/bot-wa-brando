@@ -6,6 +6,8 @@ import type { Dia, EstadoPedido, ModoEntrega } from './catalogos';
 export interface Empresa {
   id: string;
   name: string;
+  /** PERSONA: usa el bot para sí misma; su número recibe todo lo suyo. */
+  kind: 'EMPRESA' | 'PERSONA';
   taxId: string | null;
   active: boolean;
   /** De dónde salen sus documentos: una carpeta de Drive o su computadora. */

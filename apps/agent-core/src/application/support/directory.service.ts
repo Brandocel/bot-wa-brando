@@ -241,6 +241,7 @@ export class DirectoryService {
 
   async addOrganization(input: {
     name: string;
+    kind?: 'EMPRESA' | 'PERSONA';
     sourceType?: 'DRIVE' | 'PC';
     driveFolderId?: string;
     taxId?: string;
@@ -248,6 +249,7 @@ export class DirectoryService {
     const organization = await this.prisma.organization.create({
       data: {
         name: input.name.trim(),
+        kind: input.kind ?? 'EMPRESA',
         sourceType: input.sourceType ?? 'DRIVE',
         driveFolderId: input.driveFolderId?.trim() || null,
         taxId: input.taxId?.trim() || null,

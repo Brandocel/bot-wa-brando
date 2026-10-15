@@ -3,6 +3,7 @@ import type { DocCategory } from '@prisma/client';
 import { PrismaService } from '../../infrastructure/persistence/prisma.service';
 import { separarChat } from '../../domain/message/linea';
 import { mismoNombre, tokensNombre } from '../../domain/contact/nombre';
+import { normalizePhone } from '../../domain/contact/phone';
 
 /**
  * LA frontera de seguridad del módulo de soporte.
@@ -195,10 +196,21 @@ export class AccessScopeService {
       soloEmpresa = empresa.id;
     }
 
+    // Una PERSONA usa el bot para sí misma: su propio número ve todo lo
+    // suyo, sin membresía, sin nombre que confirmar y sin filtro de titular.
+    const propias = await this.propiasDeTitular(waId, soloEmpresa);
+    const duenoDe = new Set(propias.map((p) => p.organizationId));
+
     const memberships = await this.prisma.membership.findMany({
       where: {
         contact: { waId },
-        ...(soloEmpresa ? { organizationId: soloEmpresa } : {}),
+        // Con número propio, las dos condiciones van juntas: separadas, la
+        // segunda pisaría la restricción de línea y abriría las demás.
+        ...(duenoDe.size > 0
+          ? { organizationId: { ...(soloEmpresa ? { equals: soloEmpresa } : {}), notIn: [...duenoDe] } }
+          : soloEmpresa
+            ? { organizationId: soloEmpresa }
+            : {}),
         revokedAt: null,
         validFrom: { lte: now },
         OR: [{ validUntil: null }, { validUntil: { gte: now } }],
@@ -210,7 +222,7 @@ export class AccessScopeService {
       },
     });
 
-    if (memberships.length === 0) {
+    if (memberships.length === 0 && propias.length === 0) {
       return {
         decision: 'DENY_NO_MEMBERSHIP',
         decidedBy: soloEmpresa ? 'sin membresía en la empresa de esta línea' : 'sin membresía vigente',
@@ -218,7 +230,7 @@ export class AccessScopeService {
       };
     }
 
-    const scopes: OrgScope[] = [];
+    const scopes: OrgScope[] = [...propias];
     const pendientesNombre: NombrePendiente[] = [];
     let blockedByVerification = false;
     let sinTitular = false;
@@ -313,7 +325,40 @@ export class AccessScopeService {
           };
     }
 
-    return { decision: 'ALLOW', decidedBy: 'membresía vigente', scopes };
+    return {
+      decision: 'ALLOW',
+      decidedBy: scopes.length === propias.length ? 'número propio de la persona' : 'membresía vigente',
+      scopes,
+    };
+  }
+
+  /**
+   * Las PERSONAS cuyo número vinculado es este mismo waId. Se compara ya
+   * normalizado: WhatsApp reporta "521…" y el operador pudo haber guardado
+   * "52…". Un waId de tipo LID no trae número y no coincide con nada.
+   */
+  private async propiasDeTitular(waId: string, soloEmpresa: string | null): Promise<OrgScope[]> {
+    const digitos = digitosDe(waId);
+    if (!digitos) return [];
+
+    const personas = await this.prisma.organization.findMany({
+      where: {
+        kind: 'PERSONA',
+        active: true,
+        waNumber: { not: null },
+        ...(soloEmpresa ? { id: soloEmpresa } : {}),
+      },
+      select: { id: true, name: true, waNumber: true },
+    });
+
+    return personas
+      .filter((o) => digitosDe(o.waNumber!) === digitos)
+      .map((o) => ({
+        organizationId: o.id,
+        organizationName: o.name,
+        windows: ALL_CATEGORIES.map((category) => ({ category, periodFrom: null, periodTo: null })),
+        strippedByVerification: [],
+      }));
   }
 
   /**
@@ -363,3 +408,12 @@ const ALL_CATEGORIES: readonly DocCategory[] = [
   'CONTABLE',
   'OTRO',
 ];
+
+function digitosDe(numero: string): string | null {
+  if (numero.endsWith('@lid')) return null;
+  try {
+    return normalizePhone(numero).digits;
+  } catch {
+    return null;
+  }
+}

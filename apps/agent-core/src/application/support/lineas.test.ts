@@ -136,6 +136,44 @@ test('la misma persona, por el número de Vega, solo ve Vega', async () => {
   assert.equal(prisma.consultas[0]!.organizationId, 'vega', 'se filtra en la consulta, no después');
 });
 
+// ── Persona: su propio número ve todo lo suyo ───────────────────────────
+
+function prismaDePersona() {
+  const consultas: Record<string, unknown>[] = [];
+  return {
+    consultas,
+    organization: {
+      findUnique: async () => null,
+      // Guardado sin el 1 mexicano: tiene que coincidir igual.
+      findMany: async () => [{ id: 'alan', name: 'Alan', waNumber: '529981234567' }],
+    },
+    membership: {
+      findMany: async ({ where }: { where: Record<string, unknown> }) => {
+        consultas.push(where);
+        return [];
+      },
+    },
+  };
+}
+
+test('una persona, desde su propio número, ve todo lo suyo sin membresía ni titular', async () => {
+  const { AccessScopeService } = await import('./access-scope.service');
+  const prisma = prismaDePersona();
+  const svc = new AccessScopeService(prisma as never);
+  const r = await svc.resolve('5219981234567@c.us', '5219981234567@c.us');
+  assert.equal(r.decision, 'ALLOW');
+  assert.deepEqual(r.scopes.map((s) => s.organizationId), ['alan']);
+  assert.equal(r.scopes[0]!.titular, undefined);
+  assert.deepEqual(prisma.consultas[0]!.organizationId, { notIn: ['alan'] });
+});
+
+test('otro número no recibe nada de la persona', async () => {
+  const { AccessScopeService } = await import('./access-scope.service');
+  const svc = new AccessScopeService(prismaDePersona() as never);
+  const r = await svc.resolve('5219980000000@c.us', '5219980000000@c.us');
+  assert.equal(r.decision, 'DENY_NO_MEMBERSHIP');
+});
+
 test('una línea que ya no es de ninguna empresa no da acceso a nada', async () => {
   const { AccessScopeService } = await import('./access-scope.service');
   const svc = new AccessScopeService(prismaDeMembresias() as never);
