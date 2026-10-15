@@ -3,6 +3,7 @@ import {
   FileText,
   FolderSearch,
   Inbox,
+  MessageCircle,
   MessageSquare,
   Settings,
   ShieldCheck,
@@ -28,6 +29,7 @@ const SECCIONES: Seccion[] = [
   { ruta: 'tickets', nombre: 'Tickets', icono: Ticket },
   { ruta: 'directorio', nombre: 'Clientes', icono: Users },
   { ruta: 'empresas', nombre: 'Empresas', icono: Building2 },
+  { ruta: 'whatsapp', nombre: 'WhatsApp', icono: MessageCircle },
   { ruta: 'ventas', nombre: 'Ventas', icono: ShoppingCart },
   { ruta: 'documentos', nombre: 'Documentos', icono: FileText },
   { ruta: 'cuarentena', nombre: 'Cuarentena', icono: FolderSearch, contador: 'cuarentena' },
@@ -36,12 +38,12 @@ const SECCIONES: Seccion[] = [
 ];
 
 /** Lo único que ve la gente de una empresa. El servidor niega lo demás. */
-const DE_EMPRESA = ['pendientes', 'directorio', 'ventas', 'documentos'];
+const DE_EMPRESA = ['pendientes', 'directorio', 'whatsapp', 'ventas', 'documentos'];
 
 export function seccionesDe(rol: Rol): Seccion[] {
   return rol === 'EMPRESA'
     ? SECCIONES.filter((s) => DE_EMPRESA.includes(s.ruta))
-    : SECCIONES.filter((s) => s.ruta !== 'directorio');
+    : SECCIONES.filter((s) => s.ruta !== 'directorio' && s.ruta !== 'whatsapp');
 }
 
 /** A dónde se llega al entrar: lo que pide atención. */

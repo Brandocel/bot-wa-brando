@@ -22,7 +22,10 @@ const ESTADO: Partial<Record<EstadoLinea, { texto: string; tono: Tone }>> = {
  * desde el teléfono.
  */
 export function PasoWhatsApp({ empresa: o }: { empresa: Empresa }) {
-  const esAdmin = useUsuario().role === 'ADMIN';
+  const usuario = useUsuario();
+  const esAdmin = usuario.role === 'ADMIN';
+  // La empresa misma también vincula su número, desde donde esté.
+  const puedeVincular = esAdmin || (usuario.role === 'EMPRESA' && usuario.organizationId === o.id);
   const refrescar = useRefrescarEmpresas();
   const queryClient = useQueryClient();
   const [confirmando, setConfirmando] = useState<'conectar' | 'desconectar' | null>(null);
@@ -54,7 +57,7 @@ export function PasoWhatsApp({ empresa: o }: { empresa: Empresa }) {
       {!conectada ? (
         <>
           <span className="text-[13px] text-muted-foreground">Se atiende por el número principal</span>
-          {esAdmin && (
+          {puedeVincular && (
             <Button variant="secondary" size="sm" onClick={() => setConfirmando('conectar')}>
               Conectar WhatsApp
             </Button>
@@ -66,12 +69,12 @@ export function PasoWhatsApp({ empresa: o }: { empresa: Empresa }) {
             {visto?.texto ?? 'Conectando…'}
           </Badge>
           {numero && <span className="font-mono text-[13px]">+{numero}</span>}
-          {esAdmin && estado === 'WAITING_QR' && (
+          {puedeVincular && estado === 'WAITING_QR' && (
             <Button variant="secondary" size="sm" onClick={() => setQrAbierto(true)}>
               Ver QR
             </Button>
           )}
-          {esAdmin && (estado === 'DISCONNECTED' || estado === 'CRASHED' || estado === 'DESCONOCIDO') && (
+          {puedeVincular && (estado === 'DISCONNECTED' || estado === 'CRASHED' || estado === 'DESCONOCIDO') && (
             <Button variant="secondary" size="sm" onClick={() => setConfirmando('conectar')}>
               Volver a conectar
             </Button>

@@ -19,7 +19,7 @@ import { ConnectorService } from '../../../application/support/connector.service
 import { PrismaService } from '../../persistence/prisma.service';
 import { LineasGatewayService } from '../../whatsapp/lineas-gateway.service';
 import { lineaDeEmpresa } from '../../../domain/message/linea';
-import { PanelGuard, type PanelRequest } from './panel.guard';
+import { PanelGuard, ParaEmpresa, type PanelRequest } from './panel.guard';
 
 /** Dónde deja build-exe.cjs el conector armado. En Render el cwd es la raíz del repo. */
 const CONNECTOR_EXE =
@@ -50,9 +50,11 @@ export class PanelConnectorController {
   // ── WhatsApp propio de la empresa ───────────────────────────────────────
 
   /** Estado del número de la empresa: sin conectar, esperando QR o conectado. */
+  @ParaEmpresa()
   @Get('whatsapp')
-  async whatsappStatus(@Query('id') organizationId: string) {
+  async whatsappStatus(@Req() req: PanelRequest, @Query('id') organizationId: string) {
     if (!organizationId) throw new BadRequestException('falta el id');
+    this.requirePropia(req, organizationId);
     const org = await this.prisma.organization.findUnique({
       where: { id: organizationId },
       select: { waLineId: true, waNumber: true },
@@ -84,10 +86,11 @@ export class PanelConnectorController {
    * Crea la línea de la empresa en el gateway (o la reactiva si la
    * desvincularon) y deja un QR listo para escanear.
    */
+  @ParaEmpresa()
   @Post('whatsapp/conectar')
   async whatsappConnect(@Req() req: PanelRequest, @Body() body: { id?: string }) {
-    this.requireAdmin(req);
     if (!body.id) throw new BadRequestException('falta el id');
+    this.requireAdminOPropia(req, body.id);
     const linea = lineaDeEmpresa(body.id);
 
     try {
@@ -105,14 +108,18 @@ export class PanelConnectorController {
     return { ok: true };
   }
 
-  /** El QR pendiente, como imagen. Solo ADMIN: vincula un número entero. */
+  /**
+   * El QR pendiente, como imagen. Vincula un número entero: solo ADMIN o
+   * el usuario de esa misma empresa, que lo escanea desde su casa.
+   */
+  @ParaEmpresa()
   @Get('whatsapp/qr')
   async whatsappQr(
     @Req() req: PanelRequest,
     @Query('id') organizationId: string,
     @Res() res: Response,
   ): Promise<void> {
-    this.requireAdmin(req);
+    this.requireAdminOPropia(req, organizationId ?? '');
     const org = await this.prisma.organization.findUnique({
       where: { id: organizationId ?? '' },
       select: { waLineId: true },
@@ -183,6 +190,20 @@ export class PanelConnectorController {
     if (req.panelUser?.role !== 'ADMIN') {
       throw new ForbiddenException('hace falta ser ADMIN');
     }
+  }
+
+  /** Un usuario de empresa solo toca la suya; el equipo, cualquiera. */
+  private requirePropia(req: PanelRequest, organizationId: string): void {
+    const u = req.panelUser;
+    if (u?.role === 'EMPRESA' && u.organizationId !== organizationId) {
+      throw new ForbiddenException('no es tu empresa');
+    }
+  }
+
+  /** ADMIN, o el usuario de esa misma empresa. Un AGENTE no vincula números. */
+  private requireAdminOPropia(req: PanelRequest, organizationId: string): void {
+    if (req.panelUser?.role === 'EMPRESA') return this.requirePropia(req, organizationId);
+    this.requireAdmin(req);
   }
 
   /**

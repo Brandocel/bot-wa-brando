@@ -2,6 +2,7 @@ import { createBrowserRouter, Navigate } from 'react-router-dom';
 import { AjustesPage } from '@/features/ajustes/AjustesPage';
 import { AuditoriaPage } from '@/features/auditoria/AuditoriaPage';
 import { EmpresasPage } from '@/features/empresas/EmpresasPage';
+import { MiWhatsAppPage } from '@/features/empresas/MiWhatsAppPage';
 import { LoginPage } from '@/features/auth/LoginPage';
 import { ClientesPage } from '@/features/clientes/ClientesPage';
 import { ConversacionesPage } from '@/features/conversaciones/ConversacionesPage';
@@ -29,6 +30,7 @@ export const router = createBrowserRouter(
         { path: 'tickets', element: <TicketsPage /> },
         { path: 'directorio', element: <ClientesPage /> },
         { path: 'empresas', element: <EmpresasPage /> },
+        { path: 'whatsapp', element: <MiWhatsAppPage /> },
         { path: 'ventas', element: <VentasPage /> },
         { path: 'documentos', element: <DocumentosPage /> },
         { path: 'cuarentena', element: <CuarentenaPage /> },
