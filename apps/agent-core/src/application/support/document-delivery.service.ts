@@ -36,6 +36,23 @@ const EXTENSIONES: Record<string, string> = {
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
   'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx',
+  'application/vnd.ms-powerpoint': '.ppt',
+  'application/vnd.ms-excel.sheet.macroEnabled.12': '.xlsm',
+  'application/vnd.oasis.opendocument.text': '.odt',
+  'application/vnd.oasis.opendocument.spreadsheet': '.ods',
+  'application/zip': '.zip',
+  'application/x-zip-compressed': '.zip',
+  'application/vnd.rar': '.rar',
+  'application/x-rar-compressed': '.rar',
+  'application/x-7z-compressed': '.7z',
+  'application/xml': '.xml',
+  'text/xml': '.xml',
+  'application/json': '.json',
+  'image/gif': '.gif',
+  'image/heic': '.heic',
+  'image/tiff': '.tif',
+  'audio/mpeg': '.mp3',
+  'video/mp4': '.mp4',
 };
 
 /**

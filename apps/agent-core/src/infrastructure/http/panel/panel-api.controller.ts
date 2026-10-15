@@ -467,6 +467,13 @@ export class PanelApiController {
     }
   }
 
+  /** Aprueba todo lo que está en revisión. Solo ADMIN, igual que uno a uno. */
+  @UseGuards(PanelGuard)
+  @Post('cuarentena/aprobar-todo')
+  async approveAll(@Req() req: PanelRequest) {
+    return this.sync.aprobarTodo(this.requireAdmin(req));
+  }
+
   /**
    * A nombre de quién va un documento. Es lo que decide qué cliente (VIEWER)
    * lo puede recibir, así que corregirlo es solo de ADMIN, y queda fijo: el

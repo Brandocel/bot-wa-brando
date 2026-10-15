@@ -44,6 +44,7 @@ export function CuarentenaPage() {
   const queryClient = useQueryClient();
   const [vista, setVista] = useState<Vista>('revision');
   const [porAprobar, setPorAprobar] = useState<Archivo | null>(null);
+  const [confirmarTodo, setConfirmarTodo] = useState(false);
 
   const archivos = useQuery({
     queryKey: ['cuarentena', vista],
@@ -62,9 +63,31 @@ export function CuarentenaPage() {
     onError: (err) => toast.error(err.message),
   });
 
+  const aprobarTodo = useMutation({
+    mutationFn: () => api.post<{ aprobados: number; omitidos: number }>('cuarentena/aprobar-todo', {}),
+    onSuccess: ({ aprobados, omitidos }) => {
+      toast.success(
+        `${aprobados} aprobado${aprobados === 1 ? '' : 's'}` +
+          (omitidos > 0 ? ` · ${omitidos} omitido${omitidos === 1 ? '' : 's'} por credenciales` : ''),
+      );
+      setConfirmarTodo(false);
+      void queryClient.invalidateQueries({ queryKey: ['cuarentena'] });
+      void queryClient.invalidateQueries({ queryKey: CLAVE_RESUMEN });
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const pendientes = vista === 'revision' ? (archivos.data?.length ?? 0) : 0;
+
   return (
     <>
-      <PageHeader title="Cuarentena" description={EXPLICACION[vista]} onRefresh={() => archivos.refetch()} />
+      <PageHeader title="Cuarentena" description={EXPLICACION[vista]} onRefresh={() => archivos.refetch()}>
+        {esAdmin && pendientes > 0 && (
+          <Button size="sm" disabled={aprobarTodo.isPending} onClick={() => setConfirmarTodo(true)}>
+            Aprobar todo
+          </Button>
+        )}
+      </PageHeader>
 
       <Segmented
         label="Qué archivos ver"
@@ -163,6 +186,16 @@ export function CuarentenaPage() {
         confirmLabel="Aprobar"
         loading={revisar.isPending}
         onConfirm={() => porAprobar && revisar.mutate({ id: porAprobar.id, decision: 'aprobar' })}
+      />
+
+      <ConfirmDialog
+        open={confirmarTodo}
+        onOpenChange={setConfirmarTodo}
+        title={`¿Aprobar ${pendientes} archivo${pendientes === 1 ? '' : 's'}?`}
+        description="El bot podrá mandarlos por WhatsApp a quien tenga permiso. Lo que parezca traer credenciales se queda fuera."
+        confirmLabel="Aprobar todo"
+        loading={aprobarTodo.isPending}
+        onConfirm={() => aprobarTodo.mutate()}
       />
     </>
   );

@@ -171,19 +171,26 @@ function utcMonth(year: number, month: number): Date {
   return new Date(Date.UTC(year, month - 1, 1));
 }
 
+/** Programas: WhatsApp los manda, pero un bot no reparte ejecutables. */
+const EJECUTABLES = new Set([
+  'application/x-msdownload',
+  'application/x-msdos-program',
+  'application/x-ms-installer',
+  'application/x-msi',
+  'application/x-dosexec',
+  'application/x-executable',
+  'application/x-sh',
+  'application/x-bat',
+  'application/vnd.microsoft.portable-executable',
+]);
+
 /**
- * ¿Es entregable? Solo formatos que WhatsApp muestra bien y que podemos
- * clasificar. Los Google Docs nativos quedan fuera: no tienen bytes que
- * descargar sin exportarlos primero.
+ * ¿Es entregable? Cualquier archivo con bytes: PDF, Office, imágenes,
+ * comprimidos, XML, audio, video… WhatsApp manda lo que sea como documento.
+ * Quedan fuera los Google Docs nativos (no tienen bytes que descargar sin
+ * exportarlos primero) y los ejecutables.
  */
 export function isDeliverable(mimeType: string): boolean {
-  return (
-    mimeType === 'application/pdf' ||
-    mimeType.startsWith('image/') ||
-    mimeType === 'text/plain' ||
-    mimeType === 'text/csv' ||
-    mimeType.startsWith('application/vnd.openxmlformats-officedocument') ||
-    mimeType === 'application/msword' ||
-    mimeType === 'application/vnd.ms-excel'
-  );
+  if (mimeType.startsWith('application/vnd.google-apps.')) return false;
+  return !EJECUTABLES.has(mimeType);
 }

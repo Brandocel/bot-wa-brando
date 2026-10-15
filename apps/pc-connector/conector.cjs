@@ -60,7 +60,30 @@ const MIME = {
   '.xls': 'application/vnd.ms-excel',
   '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.xlsm': 'application/vnd.ms-excel.sheet.macroEnabled.12',
+  '.odt': 'application/vnd.oasis.opendocument.text',
+  '.ods': 'application/vnd.oasis.opendocument.spreadsheet',
+  '.zip': 'application/zip',
+  '.rar': 'application/vnd.rar',
+  '.7z': 'application/x-7z-compressed',
+  '.xml': 'application/xml',
+  '.json': 'application/json',
+  '.gif': 'image/gif',
+  '.heic': 'image/heic',
+  '.tif': 'image/tiff',
+  '.tiff': 'image/tiff',
+  '.mp3': 'audio/mpeg',
+  '.mp4': 'video/mp4',
 };
+
+/** Programas y atajos: no se suben, el bot no los reparte. */
+const EJECUTABLE = /\.(exe|msi|bat|cmd|com|scr|ps1|vbs|sh|lnk|dll)$/i;
+
+/** Cualquier archivo se sube; lo que no está en la tabla va como binario. */
+function mimeDe(nombre) {
+  return MIME[extname(nombre).toLowerCase()] ?? 'application/octet-stream';
+}
 
 // ── Estado en disco ─────────────────────────────────────────────────────
 
@@ -707,7 +730,7 @@ async function recorrer(raiz) {
       if (ignorado(e.name)) continue;
       const completo = join(dir, e.name);
       if (e.isDirectory()) pendientes.push(completo);
-      else if (e.isFile() && MIME[extname(e.name).toLowerCase()]) encontrados.push(completo);
+      else if (e.isFile() && !EJECUTABLE.test(e.name)) encontrados.push(completo);
     }
   }
 
@@ -777,7 +800,7 @@ async function sincronizar(config) {
           await api(config, 'PUT', '/connector/files?path=' + encodeURIComponent(rel), {
             bytes,
             headers: {
-              'x-mime-type': MIME[extname(rel).toLowerCase()],
+              'x-mime-type': mimeDe(rel),
               ...(entrada ? { 'x-sha256': entrada.sha256 } : {}),
             },
           });

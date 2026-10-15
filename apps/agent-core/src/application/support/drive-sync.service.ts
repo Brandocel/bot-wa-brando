@@ -610,6 +610,31 @@ export class DriveSyncService implements OnModuleInit {
     return { status };
   }
 
+  /**
+   * Aprueba de una vez todo lo que está en revisión. Pasa uno por uno por
+   * `revisar`, así que las reglas duras siguen valiendo: lo que parezca
+   * traer credenciales se salta y se cuenta aparte.
+   */
+  async aprobarTodo(por: string): Promise<{ aprobados: number; omitidos: number }> {
+    const pendientes = await this.prisma.document.findMany({
+      where: { status: 'QUARANTINE' },
+      select: { id: true },
+    });
+
+    let aprobados = 0;
+    let omitidos = 0;
+    for (const { id } of pendientes) {
+      try {
+        await this.revisar(id, 'aprobar', por);
+        aprobados += 1;
+      } catch (err) {
+        if (!(err instanceof RevisionError)) throw err;
+        omitidos += 1;
+      }
+    }
+    return { aprobados, omitidos };
+  }
+
   /** Fuerza un barrido completo: borra el cursor y vuelve a leer todo. */
   async resetCursor(): Promise<void> {
     await this.prisma.driveSyncState.deleteMany({ where: { id: SYNC_STATE_ID } });
