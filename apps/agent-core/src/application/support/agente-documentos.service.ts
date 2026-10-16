@@ -102,9 +102,14 @@ export class AgenteDocumentosService {
             this.search.search(turno.scopes, query, limite),
             this.search.count(turno.scopes, query),
           ]);
+          // Cada búsqueda es una lista nueva numerada desde 1, como la ve la
+          // persona. Con números que crecían de búsqueda en búsqueda le
+          // salían "24." y "4." en una lista de dos, y el mismo archivo
+          // cambiaba de número al turno siguiente.
+          vistos.clear();
+          siguiente = 1;
           const filas = docs.map((d) => {
-            const ya = [...vistos.entries()].find(([, id]) => id === d.id)?.[0];
-            const ref = ya ?? siguiente++;
+            const ref = siguiente++;
             vistos.set(ref, d.id);
             nombres.set(d.id, d.name);
             return describir(ref, d);
@@ -218,7 +223,8 @@ const HERRAMIENTAS: readonly HerramientaLlm[] = [
       'Busca en los documentos del cliente. "texto" son palabras que deben aparecer en el nombre o dentro del ' +
       'archivo (todas): nombres de personas, trámite ("alta", "baja", "finiquito", "SIPARE"), folio, empresa. ' +
       'Usa pocas palabras y las más distintivas. Si no hay resultados, vuelve a buscar con menos palabras, ' +
-      'sinónimos, en singular o sin tipo/mes antes de decir que no hay. Devuelve total y los documentos con su "ref".',
+      'sinónimos, en singular o sin tipo/mes antes de decir que no hay. Devuelve total y los documentos con su "ref". ' +
+      'Cada búsqueda REEMPLAZA la lista: las refs van del 1 en adelante y solo valen las de la última búsqueda.',
     esquema: {
       type: 'object',
       properties: {
@@ -295,9 +301,11 @@ function instrucciones(
     '',
     'Cómo trabajar:',
     '- Busca SIEMPRE antes de contestar sobre documentos. Si no encuentras, intenta otra búsqueda (menos palabras, sinónimos, singular, sin mes o sin tipo) antes de rendirte.',
-    '- Un solo resultado claro: mándalo. Varios: enséñalos numerados con su ref ("*3.* nombre — mes") y pregunta cuál; si pidió "todos" o un rango, mándalos.',
+    '- Un solo resultado claro: mándalo. Varios: enséñalos numerados con su ref, en orden ("*1.* nombre — mes", "*2.* …") y pregunta cuál; si pidió "todos" o un rango, mándalos.',
+    '- Los números que ve la persona SON las refs de la última búsqueda. No busques otra vez solo para mandar algo de la lista que ya vio: usa sus números.',
     '- Si el pedido se puede entender de dos formas, pregunta en una frase en vez de adivinar.',
     '- "Mándame la 3", "del 1 al 4", "todos": son refs de la lista que ya vio.',
+    '- "Gracias", "listo", "ok": contesta corto y amable. No repitas lo que ya mandaste ni hables de números.',
     '- "¿Cómo va?", "¿ya salieron?": usa estado_entregas y di lo real.',
     '- Nunca digas que mandaste, estás mandando o vas a mandar algo que entregar_documentos no confirmó. Nunca prometas "voy a buscar": busca ahora.',
     '- No inventes documentos, fechas, cantidades ni trámites. Si no hay, dilo y ofrece alternativas reales de lo que sí encontraste.',

@@ -90,3 +90,17 @@ test('sin respuesta del modelo devuelve null para que siga el flujo de reglas', 
   const h = armar(async () => null);
   assert.equal(await h.servicio.atender(h.turno), null);
 });
+
+test('cada búsqueda numera desde 1 y solo valen las refs de la última', async () => {
+  const h = armar(async (ejecutar) => {
+    const altas = JSON.parse(await ejecutar('buscar_documentos', { texto: 'alta', tipo: null, mes: null }));
+    assert.deepEqual(altas.documentos.map((d: { ref: number }) => d.ref), [1, 2]);
+    const bajas = JSON.parse(await ejecutar('buscar_documentos', { texto: 'baja', tipo: null, mes: null }));
+    assert.deepEqual(bajas.documentos.map((d: { ref: number }) => d.ref), [1]);
+    assert.match(await ejecutar('entregar_documentos', { refs: [2] }), /no existe/);
+    await ejecutar('entregar_documentos', { refs: [1] });
+    return 'Listo.';
+  });
+  await h.servicio.atender(h.turno);
+  assert.deepEqual(h.entregados, ['b1']);
+});
