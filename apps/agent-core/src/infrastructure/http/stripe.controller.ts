@@ -19,7 +19,9 @@ export class StripeController {
   @HttpCode(200)
   async webhook(@Req() req: RawBodyRequest<Request>): Promise<{ ok: true }> {
     const secreto = config.stripe.webhookSecret;
-    if (!secreto || !req.rawBody) throw new BadRequestException('webhook apagado');
+    // Mensajes distintos: Stripe los enseña en «Entregas de eventos» y así se sabe qué arreglar.
+    if (!secreto) throw new BadRequestException('falta STRIPE_WEBHOOK_SECRET en el servidor');
+    if (!req.rawBody) throw new BadRequestException('no llegó el cuerpo crudo del webhook');
     if (!firmaValida(req.rawBody, req.header('stripe-signature'), secreto)) {
       throw new BadRequestException('firma inválida');
     }
