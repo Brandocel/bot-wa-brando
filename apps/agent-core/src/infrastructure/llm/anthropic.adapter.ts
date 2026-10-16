@@ -126,6 +126,90 @@ export class AnthropicAdapter implements LlmPort {
       return null;
     }
   }
+
+  /**
+   * El bucle de herramientas, a mano: cada vuelta el modelo pide
+   * herramientas, se ejecutan aquí (código nuestro, con sus candados) y
+   * se le devuelven, hasta que contesta con texto o se acaban los pasos.
+   */
+  async agente(input: Parameters<NonNullable<LlmPort['agente']>>[0]): Promise<string | null> {
+    const client = this.sdk();
+    if (!client) return null;
+    const model = await this.modelo(input.tarea);
+
+    const tools: Anthropic.Tool[] = input.herramientas.map((h) => ({
+      name: h.nombre,
+      description: h.descripcion,
+      input_schema: h.esquema as Anthropic.Tool.InputSchema,
+    }));
+
+    // La conversación previa como turnos; dos seguidos del mismo rol los
+    // junta la API. Tiene que empezar con la persona.
+    const messages: Anthropic.MessageParam[] = input.mensajes
+      .map((m): Anthropic.MessageParam => ({
+        role: m.rol === 'cliente' ? 'user' : 'assistant',
+        content: m.texto || '(vacío)',
+      }));
+    while (messages.length > 0 && messages[0]!.role !== 'user') messages.shift();
+    if (messages.length === 0 || messages[messages.length - 1]!.role !== 'user') return null;
+
+    const maxPasos = input.maxPasos ?? 8;
+    try {
+      for (let paso = 0; paso < maxPasos; paso++) {
+        const response = await client.messages.create({
+          model,
+          max_tokens: 4096,
+          system: [{ type: 'text', text: input.system, cache_control: { type: 'ephemeral' } }],
+          tools,
+          messages,
+          ...(/haiku/i.test(model) ? {} : { output_config: esfuerzo(model, 'conversacion') }),
+        });
+
+        if (response.stop_reason === 'refusal') return null;
+        if (response.stop_reason === 'pause_turn') {
+          messages.push({ role: 'assistant', content: response.content });
+          continue;
+        }
+
+        const usos = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
+        if (usos.length === 0) return textoFinal(response);
+
+        messages.push({ role: 'assistant', content: response.content });
+        const resultados: Anthropic.ToolResultBlockParam[] = [];
+        for (const uso of usos) {
+          try {
+            const salida = await input.ejecutar(uso.name, (uso.input ?? {}) as Record<string, unknown>);
+            resultados.push({ type: 'tool_result', tool_use_id: uso.id, content: salida });
+          } catch (err) {
+            resultados.push({
+              type: 'tool_result',
+              tool_use_id: uso.id,
+              content: `error: ${err instanceof Error ? err.message : String(err)}`,
+              is_error: true,
+            });
+          }
+        }
+        // Todos los resultados en UN mensaje: así sigue pidiendo en paralelo.
+        messages.push({ role: 'user', content: resultados });
+      }
+      this.logger.warn('agente: se acabaron los pasos sin respuesta');
+      return null;
+    } catch (err) {
+      this.logger.warn(`agente falló: ${String(err)}`);
+      return null;
+    }
+  }
+}
+
+/** El texto final de un turno con herramientas: todos los bloques de texto, juntos. */
+function textoFinal(response: Anthropic.Message): string | null {
+  if (response.stop_reason === 'refusal') return null;
+  const texto = response.content
+    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+    .map((b) => b.text.trim())
+    .filter(Boolean)
+    .join('\n\n');
+  return texto || null;
 }
 
 function firstText(response: Anthropic.Message): string | null {

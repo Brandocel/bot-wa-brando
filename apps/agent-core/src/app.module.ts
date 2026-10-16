@@ -14,6 +14,7 @@ import { TicketAssignmentService } from './application/support/ticket-assignment
 import { SolicitudService } from './application/support/solicitud.service';
 import { SourceFilter } from './application/pipeline/filters/source.filter';
 import { EntregasEnCursoService } from './application/support/entregas-en-curso.service';
+import { AgenteDocumentosService } from './application/support/agente-documentos.service';
 import { LineaPropiaFilter } from './application/pipeline/filters/linea-propia.filter';
 import { AccessScopeService } from './application/support/access-scope.service';
 import { ConversationStateService } from './application/support/conversation-state.service';
@@ -122,6 +123,7 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     // ── Soporte documental ─────────────────────────────────────────────
     AccessScopeService,
     EntregasEnCursoService,
+    AgenteDocumentosService,
     DocumentSearchService,
     DocumentContentService,
     DocumentClassifierService,

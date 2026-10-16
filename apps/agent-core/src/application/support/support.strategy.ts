@@ -24,6 +24,7 @@ import {
 import { TicketService, type EscalationReason } from './ticket.service';
 import { FacturaEquipoService } from '../facturacion/factura-equipo.service';
 import { EntregasEnCursoService } from './entregas-en-curso.service';
+import { AgenteDocumentosService } from './agente-documentos.service';
 import {
   ACUSE,
   esCierre,
@@ -167,6 +168,7 @@ export class SupportStrategy {
     @Optional() private readonly ventas?: SalesStrategy,
     @Optional() private readonly facturasEquipo?: FacturaEquipoService,
     @Optional() private readonly entregasEnCurso?: EntregasEnCursoService,
+    @Optional() private readonly agenteDocs?: AgenteDocumentosService,
   ) {}
 
   /**
@@ -272,6 +274,25 @@ export class SupportStrategy {
     // que no venía a cuento.
     if (message.kind !== 'TEXT' && message.body.trim() === '') {
       return { text: voz.archivoNoLeible(), awaiting: 'CLIENTE' };
+    }
+
+    /**
+     * El agente autónomo (piloto: clientes PERSONA). Entiende la petición
+     * como venga y usa herramientas con los mismos candados de siempre.
+     * Si el modelo no responde, sigue el flujo de reglas de abajo.
+     */
+    if (this.agenteDocs && (await this.agenteDocs.aplica(scope.scopes))) {
+      const texto = await this.agenteDocs.atender({
+        chatId: message.chatId,
+        waId: message.senderId,
+        mensajeId: message.id,
+        texto: message.body,
+        conversationId: ctx.conversationId,
+        contactId: ctx.contactId,
+        scopes: scope.scopes,
+        history: turn.history,
+      });
+      if (texto) return { text: texto, awaiting: 'CLIENTE' };
     }
 
     let sol = await this.solicitudes.actual(ctx.conversationId);

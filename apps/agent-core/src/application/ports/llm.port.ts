@@ -36,6 +36,30 @@ export interface LlmPort {
     user: string;
     maxTokens?: number;
   }): Promise<string | null>;
+
+  /**
+   * Un turno con herramientas: el modelo decide cuáles usar y cuántas
+   * veces, y termina con el texto para la persona. Las herramientas son
+   * código nuestro (`ejecutar`): ahí viven permisos y entregas, y el
+   * modelo solo ve lo que devuelven. null = el modelo no respondió.
+   *
+   * Opcional: un adaptador sin herramientas deja el flujo de siempre.
+   */
+  agente?(input: {
+    tarea: TareaLlm;
+    system: string;
+    mensajes: ReadonlyArray<{ rol: 'cliente' | 'bot'; texto: string }>;
+    herramientas: readonly HerramientaLlm[];
+    ejecutar: (nombre: string, entrada: Record<string, unknown>) => Promise<string>;
+    maxPasos?: number;
+  }): Promise<string | null>;
+}
+
+export interface HerramientaLlm {
+  nombre: string;
+  descripcion: string;
+  /** JSON Schema de la entrada. */
+  esquema: Record<string, unknown>;
 }
 
 export const LLM_PORT = Symbol('LlmPort');
