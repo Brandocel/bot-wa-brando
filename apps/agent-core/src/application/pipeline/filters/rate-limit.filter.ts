@@ -5,6 +5,7 @@ import { FlagsService } from '../../../infrastructure/persistence/flags.service'
 import { LimitesService } from '../../../infrastructure/persistence/limites.service';
 import { PrismaService } from '../../../infrastructure/persistence/prisma.service';
 import { type MessageFilter, type Next, type PipelineContext, stop } from '../pipeline';
+import { esChatDePrueba } from '../../../domain/message/prueba';
 
 const WINDOW_MS = 60 * 60 * 1000; // 1 hora
 
@@ -42,6 +43,8 @@ export class RateLimitFilter implements MessageFilter {
   async handle(ctx: PipelineContext, next: Next): Promise<void> {
     // A mí no me limita: si me estoy pasando, es a propósito.
     if (ctx.role === 'OWNER') return next();
+    // El chat de prueba no gasta el tope del número ni dispara avisos.
+    if (esChatDePrueba(ctx.message.chatId)) return next();
 
     const limites = await this.limites.actuales();
     const since = new Date(Date.now() - WINDOW_MS);

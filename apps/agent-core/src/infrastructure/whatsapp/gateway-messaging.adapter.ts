@@ -1,6 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { config } from '../../config';
 import { separarChat } from '../../domain/message/linea';
+import { esChatDePrueba } from '../../domain/message/prueba';
 import type {
   MessagingPort,
   NumberCheck,
@@ -52,6 +54,8 @@ export class GatewayMessagingAdapter implements MessagingPort {
   }
 
   async sendText(to: string, text: string): Promise<string> {
+    // Un chat de prueba nunca sale a WhatsApp: se queda en el panel.
+    if (esChatDePrueba(to)) return idDePrueba();
     const { messageId } = await this.post<{ messageId: string }>(
       '/messages/text',
       { ...this.destino(to), text },
@@ -60,6 +64,7 @@ export class GatewayMessagingAdapter implements MessagingPort {
   }
 
   async sendFile(to: string, file: OutgoingFile): Promise<string> {
+    if (esChatDePrueba(to)) return idDePrueba();
     // Timeout más largo que el de texto: el gateway tiene que descargar el
     // archivo de Drive antes de poder mandarlo.
     const { messageId } = await this.post<{ messageId: string }>(
@@ -88,6 +93,7 @@ export class GatewayMessagingAdapter implements MessagingPort {
   }
 
   async setTyping(to: string, on: boolean): Promise<void> {
+    if (esChatDePrueba(to)) return;
     // "Escribiendo..." es cosmético: si falla, no vale la pena tumbar el turno.
     try {
       await this.post('/messages/typing', { ...this.destino(to), on });
@@ -97,10 +103,15 @@ export class GatewayMessagingAdapter implements MessagingPort {
   }
 
   async markSeen(to: string): Promise<void> {
+    if (esChatDePrueba(to)) return;
     try {
       await this.post('/messages/seen', this.destino(to));
     } catch (err) {
       this.logger.warn(`no se pudo marcar como visto: ${String(err)}`);
     }
   }
+}
+
+function idDePrueba(): string {
+  return `prueba_${randomUUID()}`;
 }

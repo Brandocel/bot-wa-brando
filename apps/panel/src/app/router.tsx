@@ -9,6 +9,7 @@ import { ConversacionesPage } from '@/features/conversaciones/ConversacionesPage
 import { CuarentenaPage } from '@/features/cuarentena/CuarentenaPage';
 import { DocumentosPage } from '@/features/documentos/DocumentosPage';
 import { PendientesPage } from '@/features/pendientes/PendientesPage';
+import { PruebaPage } from '@/features/prueba/PruebaPage';
 import { TicketsPage } from '@/features/tickets/TicketsPage';
 import { VentasPage } from '@/features/ventas/VentasPage';
 import { AppShell } from './layout/AppShell';
@@ -36,6 +37,7 @@ export const router = createBrowserRouter(
         { path: 'cuarentena', element: <CuarentenaPage /> },
         { path: 'auditoria', element: <AuditoriaPage /> },
         { path: 'ajustes', element: <AjustesPage /> },
+        { path: 'prueba', element: <PruebaPage /> },
         { path: '*', element: <Inicio /> },
       ],
     },

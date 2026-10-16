@@ -43,6 +43,7 @@ import { SENSITIVE } from '../../../application/support/access-scope.service';
 import { randomBytes } from 'node:crypto';
 import { prefijoDeLinea, separarChat } from '../../../domain/message/linea';
 import { claveTitular } from '../../../domain/contact/nombre';
+import { SIN_PRUEBA, TICKET_SIN_PRUEBA } from './sin-prueba';
 
 /** Las conversaciones de esa persona en el mismo número de WhatsApp. */
 function mismaLinea(contactId: string, chatId: string): Prisma.ConversationWhereInput {
@@ -215,7 +216,7 @@ export class PanelApiController {
 
     const [abiertos, revision, alta, cuarentena, entregas24h, denegados24h, mensajesHora, limites] =
       await Promise.all([
-        this.prisma.conversation.count({ where: { awaiting: 'BOT' } }),
+        this.prisma.conversation.count({ where: { awaiting: 'BOT', ...SIN_PRUEBA } }),
         // Conversaciones, no tickets: una persona con tres tickets
         // escalados es UNA persona esperando. Contar tickets daba 18 en
         // la tarjeta y una bandeja vacía debajo.
@@ -225,10 +226,11 @@ export class PanelApiController {
               { awaiting: 'AGENTE' },
               { tickets: { some: { state: 'EN_REVISION' } } },
             ],
+            ...SIN_PRUEBA,
           },
         }),
         this.prisma.ticket.count({
-          where: { priority: 'ALTA', state: { not: 'CERRADO' } },
+          where: { priority: 'ALTA', state: { not: 'CERRADO' }, ...TICKET_SIN_PRUEBA },
         }),
         this.prisma.document.count({ where: { status: 'QUARANTINE' } }),
         this.prisma.accessAudit.count({
@@ -329,7 +331,7 @@ export class PanelApiController {
     const state = toState(estado);
 
     return this.prisma.ticket.findMany({
-      where: state ? { state } : {},
+      where: { ...(state ? { state } : {}), ...TICKET_SIN_PRUEBA },
       orderBy: [{ state: 'asc' }, { priority: 'desc' }, { createdAt: 'desc' }],
       take: 100,
       select: {
@@ -612,7 +614,7 @@ export class PanelApiController {
             { lastInboundAt: { gte: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000) } };
 
     const rows = await this.prisma.conversation.findMany({
-      where: filtro,
+      where: { AND: [filtro, SIN_PRUEBA] },
       orderBy: { lastInboundAt: 'desc' },
       take: 100,
       select: {

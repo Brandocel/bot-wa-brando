@@ -1,6 +1,7 @@
 import {
   Building2,
   FileText,
+  FlaskConical,
   FolderSearch,
   Inbox,
   MessageCircle,
@@ -34,6 +35,7 @@ const SECCIONES: Seccion[] = [
   { ruta: 'documentos', nombre: 'Documentos', icono: FileText },
   { ruta: 'cuarentena', nombre: 'Cuarentena', icono: FolderSearch, contador: 'cuarentena' },
   { ruta: 'auditoria', nombre: 'Auditoría', icono: ShieldCheck },
+  { ruta: 'prueba', nombre: 'Chat de prueba', icono: FlaskConical },
   { ruta: 'ajustes', nombre: 'Ajustes', icono: Settings },
 ];
 

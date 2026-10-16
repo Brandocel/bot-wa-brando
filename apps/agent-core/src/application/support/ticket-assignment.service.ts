@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { DocCategory, SupportAgent } from '@prisma/client';
 import { PrismaService } from '../../infrastructure/persistence/prisma.service';
 import type { EscalationReason } from './ticket.service';
+import { esChatDePrueba } from '../../domain/message/prueba';
 
 /**
  * Reparto de tickets escalados entre los agentes de soporte, y el aviso.
@@ -211,6 +212,7 @@ export class TicketAssignmentService {
         organization: { select: { name: true } },
         conversation: {
           select: {
+            chatId: true,
             messages: {
               where: { direction: 'IN' },
               orderBy: { createdAt: 'desc' },
@@ -223,6 +225,8 @@ export class TicketAssignmentService {
     });
 
     if (!ticket) return;
+    // Un ticket del chat de prueba no se le avisa a nadie por WhatsApp.
+    if (ticket.conversation && esChatDePrueba(ticket.conversation.chatId)) return;
 
     const slots = (ticket.slots ?? {}) as Record<string, unknown>;
     const empresa =

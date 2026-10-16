@@ -41,6 +41,7 @@ import { FacturaEquipoService } from './application/facturacion/factura-equipo.s
 import { FacturaComAdapter } from './infrastructure/facturacion/factura-com.adapter';
 import { PanelFacturasController } from './infrastructure/http/panel/panel-facturas.controller';
 import { PanelPendientesController } from './infrastructure/http/panel/panel-pendientes.controller';
+import { PanelPruebaController } from './infrastructure/http/panel/panel-prueba.controller';
 import { HandleIncomingMessageUseCase } from './application/use-cases/handle-incoming-message.use-case';
 
 import { ConnectorService } from './application/support/connector.service';
@@ -79,6 +80,7 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     PanelVentasController,
     PanelFacturasController,
     PanelPendientesController,
+    PanelPruebaController,
     ConnectorController,
   ],
   providers: [

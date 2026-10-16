@@ -11,6 +11,7 @@ import {
 } from '../../application/ports/messaging.port';
 import { EntregaVigenteService } from '../../application/support/entrega-vigente.service';
 import { PrismaService } from './prisma.service';
+import { esChatDePrueba } from '../../domain/message/prueba';
 
 /** Chats a los que se les manda a la vez. Cada uno sigue yendo en orden. */
 const CHATS_EN_PARALELO = 3;
@@ -285,7 +286,8 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     payload: OutboxTextPayload,
   ): Promise<SentMessage> {
-    await this.humanDelay(payload.text ?? '');
+    // En el chat de prueba no hay nadie a quien parecerle humano.
+    if (!esChatDePrueba(chatId)) await this.humanDelay(payload.text ?? '');
     const id = await this.messaging.sendText(chatId, payload.text);
     return { id, body: payload.text, kind: 'TEXT' };
   }

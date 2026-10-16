@@ -2,6 +2,7 @@ import { Controller, ForbiddenException, Get, Req, UseGuards } from '@nestjs/com
 import { separarChat } from '../../../domain/message/linea';
 import { PrismaService } from '../../persistence/prisma.service';
 import { PanelGuard, ParaEmpresa, type PanelRequest } from './panel.guard';
+import { SIN_PRUEBA } from './sin-prueba';
 
 export type TipoPendiente = 'persona' | 'sin_responder' | 'pedido' | 'factura' | 'documentos';
 
@@ -60,6 +61,7 @@ export class PanelPendientesController {
       const convs = await this.prisma.conversation.findMany({
         where: {
           OR: [{ awaiting: 'AGENTE' }, { awaiting: 'BOT' }, { tickets: { some: { state: 'EN_REVISION' } } }],
+          ...SIN_PRUEBA,
         },
         orderBy: { lastInboundAt: 'asc' },
         take: MAX,
