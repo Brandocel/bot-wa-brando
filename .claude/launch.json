@@ -4,8 +4,22 @@
     {
       "name": "panel",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev:panel"],
+      "runtimeArgs": [
+        "run",
+        "dev:panel"
+      ],
       "port": 5173
+    },
+    {
+      "name": "jarvis-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--prefix",
+        "C:/Users/Administrador/jarvis-web"
+      ],
+      "port": 3100
     }
   ]
 }
