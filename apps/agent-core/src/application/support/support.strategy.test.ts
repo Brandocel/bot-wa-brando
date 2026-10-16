@@ -243,7 +243,7 @@ class ObservedSlotExtractor extends SlotExtractorService {
   }
 }
 
-function makeHarness(options: { senderName?: string | null; scopes?: OrgScope[]; decision?: 'ALLOW' | 'DENY_NO_MEMBERSHIP' | 'DENY_UNVERIFIED'; scope?: Record<string, unknown>; history?: Array<{ role: 'cliente' | 'bot'; text: string; at: Date }>; llmResponse?: Record<string, unknown>; draftResponse?: string } = {}) {
+function makeHarness(options: { senderName?: string | null; scopes?: OrgScope[]; decision?: 'ALLOW' | 'DENY_NO_MEMBERSHIP' | 'DENY_UNVERIFIED'; scope?: Record<string, unknown>; history?: Array<{ role: 'cliente' | 'bot'; text: string; at: Date }>; llmResponse?: Record<string, unknown>; draftResponse?: string; entregas?: { pendientes: string[]; enviados: string[]; fallidos: string[] } } = {}) {
   const requests = new MemoryRequests();
   const search = new MemorySearch();
   const escalations: unknown[] = [];
@@ -294,6 +294,9 @@ function makeHarness(options: { senderName?: string | null; scopes?: OrgScope[];
         return replyWriter.write(...args);
       },
     } as never,
+    undefined,
+    undefined,
+    options.entregas ? ({ estado: async () => options.entregas } as never) : undefined,
   );
 
   const ctx: StrategyContext = { contactId: 'contact-1', conversationId: 'conversation-1' };
@@ -2931,4 +2934,32 @@ test('con contratos en curso: "de este mes tienes", "octubre del 2026" y "todos 
   await h.handle('todos los de este mes');
   assert.equal(h.delivered.length, 2);
   assert.equal(h.writerCalls.length, 0, 'nada de esto pasa por el redactor libre');
+});
+
+test('"¿cómo va?" con documentos en cola dice cuántos van y cuáles faltan', async () => {
+  const h = makeHarness({
+    draftResponse: 'Los 45 documentos ya están en camino.',
+    entregas: { pendientes: ['ALTA_3.pdf', 'ALTA_4.pdf'], enviados: ['ALTA_1.pdf', 'ALTA_2.pdf'], fallidos: [] },
+  });
+  const texto = (await h.handle('tienes una tarea pendiente de los docs, como va eso'))?.text.replaceAll('*', '') ?? '';
+  assert.match(texto, /2 de 4/);
+  assert.match(texto, /ALTA_3\.pdf/);
+  assert.equal(h.escalations.length, 0, 'no se abre ticket por algo que va saliendo');
+  assert.equal(h.writerCalls.length, 0);
+});
+
+test('"¿y los docs?" sin nada en cola no inventa un envío', async () => {
+  const h = makeHarness({
+    draftResponse: 'Ya van en camino.',
+    entregas: { pendientes: [], enviados: [], fallidos: [] },
+  });
+  const texto = (await h.handle('y los docs?'))?.text ?? '';
+  assert.match(texto, /no tengo documentos por mandarte/i);
+});
+
+test('"¿ya llegaron?" con todo enviado ofrece reenviar', async () => {
+  const h = makeHarness({ entregas: { pendientes: [], enviados: ['A.pdf', 'B.pdf'], fallidos: ['C.pdf'] } });
+  const texto = (await h.handle('ya llegaron?'))?.text.replaceAll('*', '') ?? '';
+  assert.match(texto, /los 2 documentos/);
+  assert.match(texto, /C\.pdf/);
 });

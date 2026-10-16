@@ -23,6 +23,7 @@ import {
 } from './solicitud.service';
 import { TicketService, type EscalationReason } from './ticket.service';
 import { FacturaEquipoService } from '../facturacion/factura-equipo.service';
+import { EntregasEnCursoService } from './entregas-en-curso.service';
 import {
   ACUSE,
   esCierre,
@@ -165,6 +166,7 @@ export class SupportStrategy {
     private readonly writer: ReplyWriterService,
     @Optional() private readonly ventas?: SalesStrategy,
     @Optional() private readonly facturasEquipo?: FacturaEquipoService,
+    @Optional() private readonly entregasEnCurso?: EntregasEnCursoService,
   ) {}
 
   /**
@@ -364,6 +366,17 @@ export class SupportStrategy {
     if (esAfirmacion(message.body) && sol.opciones?.length === 1) {
       const resuelto = await this.resolverOpcion(1, turn, sol);
       if (resuelto) return resuelto;
+    }
+
+    /**
+     * "¿Cómo va?", "¿y los docs?", "¿ya salieron?": se contesta con lo que
+     * de verdad hay en la cola, antes que la queja y el seguimiento (que
+     * abrirían un ticket por algo que solo va saliendo) y antes del modelo
+     * (que inventaba "ya van en camino").
+     */
+    if (preguntaEstatus(message.body) || esQuejaDeNoRecibido(message.body)) {
+      const estatus = await this.estatusEntregas(turn);
+      if (estatus) return estatus;
     }
 
     /**
@@ -1852,6 +1865,29 @@ ${reply.text}` : gracias };
     };
   }
 
+  /**
+   * Cómo van sus entregas, con lo que dice el outbox. Con documentos aún
+   * en cola, siempre contesta. Sin nada en la ventana, solo si preguntó
+   * por documentos: "¿cómo va todo?" de saludo sigue su camino. Y un "no
+   * me llegó" sin nada en cola lo atiende reenviarUltimo, más abajo.
+   */
+  private async estatusEntregas(turn: Turn): Promise<StrategyReply | null> {
+    if (!this.entregasEnCurso) return null;
+    const { pendientes, enviados, fallidos } = await this.entregasEnCurso.estado(turn.message.chatId);
+    const total = pendientes.length + enviados.length + fallidos.length;
+    const noRecibido = esQuejaDeNoRecibido(turn.message.body);
+
+    if (pendientes.length > 0) {
+      return { text: voz.estatusEnCurso(enviados.length, total, pendientes, fallidos), awaiting: 'NADIE' };
+    }
+    if (noRecibido) return null;
+    if (total > 0) return { text: voz.estatusTerminado(enviados.length, fallidos), awaiting: 'NADIE' };
+    if (/\b(?:docs?|documentos?|archivos?|pdfs?|facturas?|contratos?|constancias?|pedido|tarea|encargo)\b/.test(normalizar(turn.message.body))) {
+      return { text: voz.estatusSinNada(), awaiting: 'CLIENTE' };
+    }
+    return null;
+  }
+
   /** ¿Lo que pide por tema existe en sus archivos? Misma lectura que inventario(). */
   private async hayDeTema(turn: Turn, sol: Solicitud): Promise<boolean> {
     const { scopes } = turn;
@@ -2818,6 +2854,19 @@ function describirInventario(
 
   const quien = empresa ? `De *${empresa}* tengo:` : 'Tengo:';
   return [quien, ...partes.map((p) => `• ${p}`)].join('\n');
+}
+
+/** "¿Cómo va?", "¿y los docs?", "¿ya salieron?", "¿cuánto falta?". */
+function preguntaEstatus(texto: string): boolean {
+  const t = normalizar(texto);
+  return (
+    /\b(?:como|en que)\s+(?:va|vas|van|vamos)\b/.test(t) ||
+    /\bya\s+(?:llegaron|llego|salieron|salio|mandaste|enviaste|merito|casi)\b/.test(t) ||
+    /\bcuanto\s+(?:falta|faltan|tarda|tardan|tiempo|te\s+falta)\b/.test(t) ||
+    /^(?:y\s+)?(?:los|las|mis)\s+(?:docs?|documentos?|archivos?|facturas?|contratos?|constancias?)$/.test(t) ||
+    /\b(?:donde|que paso con)\s+(?:estan|quedaron)?\s*(?:los|las|mis)\s+(?:docs?|documentos?|archivos?)\b/.test(t) ||
+    /\b(?:estatus|status|avance)\b/.test(t)
+  );
 }
 
 /** "Dame…", "mándame…", "necesito…": el mensaje pide algo. "Quiero" y "¿tienes…?" no: "quiero viajar", "¿tienes hambre?". */

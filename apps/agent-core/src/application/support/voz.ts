@@ -254,6 +254,47 @@ export function encabezadoInventarioMes(mes: string, cuantos: number): string {
   return `De ${n(mes)} tengo ${cuantos === 1 ? 'esto' : `estos ${n(String(cuantos))}`}:`;
 }
 
+// ── Estatus de entregas ─────────────────────────────────────────────────
+
+function lista(nombres: readonly string[], max = 5): string {
+  const vistos = nombres.slice(0, max).map((x) => `• ${x}`);
+  return nombres.length > max ? [...vistos, `• y ${nombres.length - max} más`].join('\n') : vistos.join('\n');
+}
+
+/** Todavía salen: cuántos llevan, cuáles faltan. */
+export function estatusEnCurso(
+  enviados: number,
+  total: number,
+  pendientes: readonly string[],
+  fallidos: readonly string[],
+): string {
+  const partes = [
+    enviados > 0
+      ? `Van saliendo tus documentos: ya te mandé ${n(String(enviados))} de ${n(String(total))}.`
+      : `Tus documentos ya están en fila para salir: son ${n(String(total))}.`,
+    `Faltan:\n${lista(pendientes)}`,
+    ...(fallidos.length > 0 ? [`No pude mandarte:\n${lista(fallidos)}`] : []),
+    'Te van llegando por aquí, no tienes que hacer nada.',
+  ];
+  return partes.join('\n\n');
+}
+
+/** Ya salió todo lo de la ventana (o se rindió con algo). */
+export function estatusTerminado(enviados: number, fallidos: readonly string[]): string {
+  const partes = [
+    enviados > 0
+      ? `Ya te mandé ${enviados === 1 ? 'el documento' : `los ${n(String(enviados))} documentos`} que pediste.`
+      : 'No pude mandarte lo que pediste.',
+    ...(fallidos.length > 0 ? [`No pude mandarte:\n${lista(fallidos)}\nDime si quieres que lo intente otra vez.`] : []),
+    ...(enviados > 0 ? ['Si no ves alguno, dime cuál y te lo reenvío.'] : []),
+  ];
+  return partes.join('\n\n');
+}
+
+export function estatusSinNada(): string {
+  return 'Ahorita no tengo documentos por mandarte.\nDime cuál necesitas y te lo busco.';
+}
+
 /** Bajo una lista recortada: cómo llegar al que busca sin leerse todos. */
 export function pieListaLimitada(conMes: boolean): string {
   return conMes
