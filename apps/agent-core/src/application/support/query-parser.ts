@@ -416,6 +416,12 @@ function parsePeriod(text: string, allowFuzzy: boolean, raw: string): { value: D
     const year = /\b(20\d{2})\b/.exec(text);
     if (year) return exact(period(Number(year[1]), month));
 
+    // "Diciembre de este año" (también "este aanor", "este anio"): el del
+    // año en curso aunque todavía no llegue. Antes daba el del año pasado.
+    if (/\beste\s+a{1,2}n{1,2}[a-z]{0,2}\b/.test(text)) {
+      return exact(period(new Date().getUTCFullYear(), month));
+    }
+
     // Sin año: el mes más reciente que ya ocurrió. Pedir "la factura de
     // febrero" en marzo de 2026 nunca significa febrero de 2027.
     const now = new Date();

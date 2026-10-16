@@ -2963,3 +2963,40 @@ test('"¿ya llegaron?" con todo enviado ofrece reenviar', async () => {
   assert.match(texto, /los 2 documentos/);
   assert.match(texto, /C\.pdf/);
 });
+
+test('"dame del 1 al 4" manda las cuatro, no la 1 y la 4', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-16T12:00:00Z') });
+  t.mock.method(Math, 'random', () => 0);
+  const h = makeHarness();
+  h.search.catalog = [1, 2, 3, 4].map((i) => document(`c${i}`, `CONTRATO ${i}.pdf`, 'CONTRATO', '2026-10'));
+  await h.handle('me puedes dar contratos');
+  await h.handle('dame del 1 al 4');
+  assert.equal(h.delivered.length, 4);
+});
+
+test('después de una entrega, "tienes los de diciembre de este aañor" busca ese tipo en diciembre', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-16T12:00:00Z') });
+  t.mock.method(Math, 'random', () => 0);
+  const h = makeHarness({ draftResponse: 'Déjame buscar los contratos de diciembre para ti.' });
+  h.search.catalog = [
+    document('c1', 'CONTRATO OCT.pdf', 'CONTRATO', '2026-10'),
+    document('d1', 'CONTRATO DIC A.pdf', 'CONTRATO', '2026-12'),
+    document('d2', 'CONTRATO DIC B.pdf', 'CONTRATO', '2026-12'),
+  ];
+  await h.handle('me puedes dar contratos');
+  await h.handle('la 1');
+  const texto = (await h.handle('tienes los de diciembre de este aañor'))?.text.replaceAll('*', '') ?? '';
+  assert.match(texto, /DIC A/);
+  assert.doesNotMatch(texto, /Déjame buscar/);
+});
+
+test('"¿y qué encontraste?" sin nada en cola lo dice y pide de nuevo', async () => {
+  const h = makeHarness({
+    draftResponse: 'Cuenta conmigo para los documentos.',
+    entregas: { pendientes: [], enviados: [], fallidos: [] },
+  });
+  const texto = (await h.handle('Y que encontraste'))?.text ?? '';
+  assert.match(texto, /no lo encontré/);
+  const otra = (await h.handle('te pedi una tarea pero no me has dicho nada'))?.text ?? '';
+  assert.match(otra, /otra vez/);
+});

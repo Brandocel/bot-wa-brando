@@ -9,7 +9,7 @@ import {
   type HistoryTurn,
 } from './conversation-history.service';
 import { DocumentDeliveryService } from './document-delivery.service';
-import { DocumentSearchService, type InventoryLine } from './document-search.service';
+import { DocumentSearchService, palabrasDe, type InventoryLine } from './document-search.service';
 import type { SearchQuery } from './document-search.service';
 import { ReplyWriterService } from './reply-writer.service';
 import { nombreDeArchivo, palabrasClave, parseQuery } from './query-parser';
@@ -761,6 +761,24 @@ export class SupportStrategy {
      * estaban mal dichos, pero el nombre del cliente no.
      */
     if (query.text) {
+      /**
+       * Un tipo que nadie dijo —lo puso el modelo: "altas de empleados" →
+       * contrato— no puede tapar a los archivos que llevan el tema en el
+       * NOMBRE. Si los hay, ganan ellos, de cualquier tipo.
+       */
+      if (query.category && !sol.category && !parseQuery(turn.message.body).category) {
+        const sinTipo = { ...query, category: null };
+        const porTema = await this.search.search(
+          scopes,
+          { ...sinTipo, folio: null, organizationId, excludeIds: excluir(sinTipo, sol) },
+          MAX_OPCIONES + 1,
+        );
+        const palabras = palabrasDe(query.text);
+        if (porTema.some((d) => palabras.every((p) => normalizar(d.name).includes(p)))) {
+          return this.resolverResultados(turn, sinTipo, porTema, sol);
+        }
+      }
+
       const conTodo = await this.search.search(
         scopes,
         { ...query, organizationId, excludeIds: excluir(query, sol) },
@@ -1882,7 +1900,7 @@ ${reply.text}` : gracias };
     }
     if (noRecibido) return null;
     if (total > 0) return { text: voz.estatusTerminado(enviados.length, fallidos), awaiting: 'NADIE' };
-    if (/\b(?:docs?|documentos?|archivos?|pdfs?|facturas?|contratos?|constancias?|pedido|tarea|encargo)\b/.test(normalizar(turn.message.body))) {
+    if (/\b(?:docs?|documentos?|archivos?|pdfs?|facturas?|contratos?|constancias?|pedido|tarea|encargo|encontraste|hallaste|pedi|has dicho)\b/.test(normalizar(turn.message.body))) {
       return { text: voz.estatusSinNada(), awaiting: 'CLIENTE' };
     }
     return null;
@@ -2865,7 +2883,11 @@ function preguntaEstatus(texto: string): boolean {
     /\bcuanto\s+(?:falta|faltan|tarda|tardan|tiempo|te\s+falta)\b/.test(t) ||
     /^(?:y\s+)?(?:los|las|mis)\s+(?:docs?|documentos?|archivos?|facturas?|contratos?|constancias?)$/.test(t) ||
     /\b(?:donde|que paso con)\s+(?:estan|quedaron)?\s*(?:los|las|mis)\s+(?:docs?|documentos?|archivos?)\b/.test(t) ||
-    /\b(?:estatus|status|avance)\b/.test(t)
+    /\b(?:estatus|status|avance)\b/.test(t) ||
+    // "¿Y qué encontraste?", "te pedí algo y no me has dicho nada".
+    /\bque\s+(?:encontraste|hallaste|paso)\b/.test(t) ||
+    /\bte\s+pedi\b/.test(t) ||
+    /\bno\s+me\s+has\s+(?:dicho|mandado|contestado|respondido)\b/.test(t)
   );
 }
 

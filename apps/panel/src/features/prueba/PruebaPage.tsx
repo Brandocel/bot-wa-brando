@@ -194,7 +194,11 @@ function Burbuja({ m }: { m: Mensaje }) {
               <FileText className="size-4 shrink-0" aria-hidden />
               {titulo?.replace(/^\[documento\]\s*/, '')}
             </span>
-            {resto.length > 0 && <span className="mt-1 block">{resto.join('\n')}</span>}
+            {resto.length > 0 && (
+              <span className="mt-1 block">
+                <ConFormato texto={resto.join('\n')} />
+              </span>
+            )}
           </>
         ) : (
           <ConFormato texto={m.body} />

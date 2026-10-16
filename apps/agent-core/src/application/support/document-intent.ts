@@ -144,6 +144,10 @@ const MESES = 'enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|seti
 export function soloMesYRelleno(clean: string): boolean {
   if (!new RegExp(`\\b(?:${MESES}|mes|20\\d{2})\\b`).test(clean)) return false;
   const resto = clean
+    // "Este aañor", "este ano": un año mal tecleado sigue siendo relleno.
+    // Solo detrás de "este": "de Ana" es un nombre. Va primero: después
+    // "este" ya se quitó como relleno.
+    .replace(/\beste\s+a{1,2}n{1,2}[a-z]{0,2}\b/g, ' ')
     .replace(new RegExp(`\\b(?:${MESES})\\b`, 'g'), ' ')
     .replace(/\b(?:20\d{2}|y|ahora|mejor|todos|todas|los|las|lo|la|el|de|del|mes|me|tienes|tienen|hay|dame|mandame|pasame|porfa|por|favor|este|esta|pasado|anterior|actual|ano|que|cuales)\b/g, ' ')
     .trim();

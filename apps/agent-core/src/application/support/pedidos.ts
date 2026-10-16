@@ -254,6 +254,16 @@ export function leerVariasOpciones(raw: string): SeleccionOpciones | null {
 
   const ordinal = `(?:\\d+|${Object.keys(ORDINALES_OPCION).join('|')})`;
 
+  // "Del 1 al 4", "de la 2 a la 5", "1 a 3", "1-4": un rango son todas
+  // las de en medio. Leído como lista, "del 1 al 4" mandaba la 1 y la 4.
+  const rango = /^(?:(?:dame|mandame|pasame|enviame|quiero|me das|me pasas|me mandas|las|los|todas|todos)\s+)*(?:de(?:l|sde)?\s+)?(?:la\s+|el\s+)?(\d{1,2})\s*(?:al?|hasta|-)\s*(?:la\s+|el\s+)?(\d{1,2})(?:\s+(?:por favor|porfa|plis|gracias))?$/
+    .exec(normalizar(raw).replace(/[^a-z0-9ñ\s-]/g, ' ').replace(/\s+/g, ' ').trim());
+  if (rango) {
+    const a = Number(rango[1]);
+    const b = Number(rango[2]);
+    if (a >= 1 && b > a && b - a < 20) return Array.from({ length: b - a + 1 }, (_, i) => a + i);
+  }
+
   /**
    * "No, la 3" y "la 2 no, la 3" son una RECTIFICACIÓN, no una exclusión:
    * lo que va antes del "no," se descarta y lo que va después es lo que

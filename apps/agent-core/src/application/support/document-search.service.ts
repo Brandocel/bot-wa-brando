@@ -45,12 +45,26 @@ export class DocumentSearchService {
   ): Promise<Document[]> {
     const where = this.searchWhere(scopes, query);
     if (!where) return [];
+    const orderBy: Prisma.DocumentOrderByWithRelationInput[] = [{ period: 'desc' }, { name: 'asc' }];
 
-    return this.prisma.document.findMany({
-      where,
-      orderBy: [{ period: 'desc' }, { name: 'asc' }],
+    // Con texto, primero los que lo dicen en el NOMBRE: "alta de
+    // empleados" tiene que dar "CONSTANCIA DE ALTA…" antes que un convenio
+    // que solo menciona la palabra por dentro.
+    if (palabrasDe(query.text).length === 0) {
+      return this.prisma.document.findMany({ where, orderBy, take: limit });
+    }
+    const porNombre = await this.prisma.document.findMany({
+      where: this.searchWhere(scopes, query, true)!,
+      orderBy,
       take: limit,
     });
+    if (porNombre.length >= limit) return porNombre;
+    const resto = await this.prisma.document.findMany({
+      where: { AND: [where, { id: { notIn: porNombre.map((d) => d.id) } }] },
+      orderBy,
+      take: limit - porNombre.length,
+    });
+    return [...porNombre, ...resto];
   }
 
   /** Total buscable con exactamente los filtros de search(), sin paginar. */
@@ -62,6 +76,7 @@ export class DocumentSearchService {
   private searchWhere(
     scopes: readonly OrgScope[],
     query: SearchQuery,
+    soloNombre = false,
   ): Prisma.DocumentWhereInput | null {
     const scoped = this.scopeFilter(scopes, query);
     if (scoped.length === 0) return null;
@@ -104,11 +119,19 @@ export class DocumentSearchService {
      * lleva guiones bajos y el texto extraído lleva saltos de línea donde
      * la persona escribió un espacio.
      */
+    // Por dentro, al inicio de una palabra: "alta" no tiene que dar con
+    // "falta" ni con "salta".
     for (const palabra of palabrasDe(query.text)) {
       filters.push({
         OR: [
           { name: { contains: palabra, mode: 'insensitive' } },
-          { extractedText: { contains: palabra, mode: 'insensitive' } },
+          ...(soloNombre
+            ? []
+            : [
+                { extractedText: { startsWith: palabra, mode: 'insensitive' as const } },
+                { extractedText: { contains: ` ${palabra}`, mode: 'insensitive' as const } },
+                { extractedText: { contains: `\n${palabra}`, mode: 'insensitive' as const } },
+              ]),
         ],
       });
     }

@@ -292,7 +292,7 @@ export function estatusTerminado(enviados: number, fallidos: readonly string[]):
 }
 
 export function estatusSinNada(): string {
-  return 'Ahorita no tengo documentos por mandarte.\nDime cuál necesitas y te lo busco.';
+  return 'Ahorita no tengo documentos por mandarte; si te dije que lo buscaba, no lo encontré.\n¿Me dices otra vez cuál necesitas? Por ejemplo: *contratos de diciembre*.';
 }
 
 /** Bajo una lista recortada: cómo llegar al que busca sin leerse todos. */
