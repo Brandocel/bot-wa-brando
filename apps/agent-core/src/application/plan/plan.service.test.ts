@@ -58,7 +58,10 @@ function stripeFalso(conPrueba = false) {
       if (ruta.startsWith('products/')) return { id: ruta.slice(9) };
       if (ruta === 'tax_rates') return metodo === 'GET' ? { data: [] } : { id: 'txr_iva' };
       if (ruta === 'prices') return metodo === 'GET' ? { data: [] } : { id: `price_${params.lookup_key}` };
-      if (ruta === 'checkout/sessions') return { url: 'https://checkout.stripe.com/c/pay/x' };
+      if (ruta === 'checkout/sessions') return { url: 'https://checkout.stripe.com/c/pay/cs_test_abc123#frag' };
+      if (ruta === 'checkout/sessions/cs_test_abc123')
+        return { status: 'complete', subscription: 'sub_1', customer: 'cus_1', client_reference_id: 'org_alan' };
+      if (ruta === 'invoices') return { data: [{ id: 'in_1', subscription: 'sub_1', amount_paid: 130848, subtotal: 112800 }] };
       if (ruta === 'subscription_schedules') return { id: 'sub_sched_1', phases: [{ start_date: 100, end_date: 200, trial_end: conPrueba ? 200 : null }] };
       return {};
     }) as StripePort['pedir'],
@@ -215,4 +218,13 @@ test('cada cobro queda guardado con su monto y su mes', async () => {
       ['in_2', 2, 89088, 12288],
     ],
   );
+});
+
+test('si el webhook no llegó, la vista le pregunta a Stripe y registra el pago', async () => {
+  const { prisma, plan } = await conLiga(true);
+  const vista = await plan.vista('org_alan');
+  assert.equal(vista.suscripcion!.estado, 'ACTIVA');
+  assert.equal(vista.suscripcion!.mesesPagados, 1);
+  assert.equal(prisma.cobros.length, 1);
+  assert.equal(prisma.filas.get('org_alan').stripeScheduleId, 'sub_sched_1');
 });

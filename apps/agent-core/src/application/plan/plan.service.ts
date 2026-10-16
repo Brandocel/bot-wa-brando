@@ -72,6 +72,7 @@ export class PlanService {
   }
 
   async vista(organizationId: string): Promise<VistaPlan> {
+    await this.revisarLiga(organizationId);
     const s = await this.prisma.suscripcion.findUnique({ where: { organizationId } });
     return {
       disponible: this.disponible,
@@ -171,6 +172,28 @@ export class PlanService {
     return sesion.url as string;
   }
 
+  /**
+   * Respaldo del webhook: si la liga sigue «sin pagar» aquí, se le pregunta a
+   * Stripe. Si ya se pagó, se procesa igual que si hubiera llegado el aviso
+   * (los dos caminos son idempotentes). Un fallo aquí no rompe la vista.
+   */
+  async revisarLiga(organizationId: string): Promise<void> {
+    if (!this.stripe) return;
+    const s = await this.prisma.suscripcion.findUnique({ where: { organizationId } });
+    const sesionId = s?.estado === 'PENDIENTE' ? s.checkoutUrl?.match(/cs_(?:test|live)_[A-Za-z0-9]+/)?.[0] : undefined;
+    if (!sesionId) return;
+    try {
+      const sesion = await this.stripe.pedir('GET', `checkout/sessions/${sesionId}`);
+      if (sesion.status !== 'complete' || !sesion.subscription) return;
+      await this.alPagarLiga(sesion);
+      const facturas = await this.stripe.pedir('GET', 'invoices', { subscription: sesion.subscription, status: 'paid', limit: 10 });
+      // De la más vieja a la más nueva, para que el mes de cada cobro salga en orden.
+      for (const f of [...facturas.data].reverse()) await this.alCobrar(f);
+    } catch (err) {
+      this.log.warn(`revisar liga de ${organizationId}: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
   /** Deja de cobrar al cierre del mes ya pagado; el webhook la marca cancelada. */
   async cancelar(organizationId: string): Promise<void> {
     const s = await this.prisma.suscripcion.findUnique({ where: { organizationId } });
@@ -195,6 +218,8 @@ export class PlanService {
    * que se espera cobrar sin IVA en el próximo ciclo de los que pagan hoy.
    */
   async resumen(ahora = new Date()) {
+    const pendientes = await this.prisma.suscripcion.findMany({ where: { estado: 'PENDIENTE' }, select: { organizationId: true } });
+    for (const p of pendientes) await this.revisarLiga(p.organizationId);
     const inicioMes = new Date(Date.UTC(ahora.getUTCFullYear(), ahora.getUTCMonth(), 1));
     const [subs, ultimos, delMes, historico] = await Promise.all([
       this.prisma.suscripcion.findMany({
