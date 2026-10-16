@@ -52,3 +52,20 @@ export function cobroDelMes(mes: number, conFactura: boolean): Cobro {
 /** Clave estable del precio en Stripe: `persona_m1`, `persona_factura_m3`... */
 export const clavePrecio = (tipo: 'base' | 'factura', escalon: number): string =>
   `persona_${tipo === 'factura' ? 'factura_' : ''}m${escalon + 1}`;
+
+/** Prueba piloto: cuántas personas pueden tener su mes gratis a la vez. */
+export const PILOTOS_MAX = 3;
+
+/**
+ * Fin del mes gratis: el mismo día del mes siguiente. Si ese día no existe
+ * (31 de enero → febrero), el último día de ese mes.
+ */
+export function finDePrueba(desde: Date): Date {
+  const fin = new Date(desde);
+  const dia = fin.getUTCDate();
+  fin.setUTCDate(1);
+  fin.setUTCMonth(fin.getUTCMonth() + 1);
+  const ultimo = new Date(Date.UTC(fin.getUTCFullYear(), fin.getUTCMonth() + 1, 0)).getUTCDate();
+  fin.setUTCDate(Math.min(dia, ultimo));
+  return fin;
+}

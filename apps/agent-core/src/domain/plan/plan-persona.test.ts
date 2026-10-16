@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { clavePrecio, cobroDelMes, escalonDe } from './plan-persona';
+import { clavePrecio, cobroDelMes, escalonDe, finDePrueba } from './plan-persona';
 
 test('baja cada mes y se queda en el piso desde el quinto', () => {
   assert.deepEqual(
@@ -27,4 +27,9 @@ test('un mes inválido cuenta como el primero', () => {
 test('claves de precio', () => {
   assert.equal(clavePrecio('base', 0), 'persona_m1');
   assert.equal(clavePrecio('factura', 4), 'persona_factura_m5');
+});
+
+test('el mes gratis acaba el mismo día del mes siguiente', () => {
+  assert.equal(finDePrueba(new Date('2026-10-15T18:00:00Z')).toISOString(), '2026-11-15T18:00:00.000Z');
+  assert.equal(finDePrueba(new Date('2027-01-31T12:00:00Z')).toISOString(), '2027-02-28T12:00:00.000Z');
 });

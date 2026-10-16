@@ -5,8 +5,10 @@ import {
   ESCALONES_FACTURA,
   IVA,
   MESES_ESCALERA,
+  PILOTOS_MAX,
   clavePrecio,
   cobroDelMes,
+  finDePrueba,
 } from '../../domain/plan/plan-persona';
 import type { StripeClient } from '../../infrastructure/pagos/stripe.client';
 import { PrismaService } from '../../infrastructure/persistence/prisma.service';
@@ -37,8 +39,13 @@ export interface VistaPlan {
     siguiente: ReturnType<typeof cobroDelMes>;
     ultimoCobroAt: Date | null;
     checkoutUrl: string | null;
+    /** El mes gratis, si lo tiene o lo tuvo. */
+    prueba: { desde: Date; hasta: Date; vencida: boolean } | null;
   } | null;
 }
+
+/** Stripe pide que el fin de la prueba esté al menos 48 h adelante; con margen. */
+const MINIMO_PRUEBA_MS = 50 * 60 * 60 * 1000;
 
 /**
  * Plan Persona sobre Stripe. La escalera de precios vive en un Subscription
@@ -77,8 +84,38 @@ export class PlanService {
         siguiente: cobroDelMes(s.mesesPagados + 1, s.conFactura),
         ultimoCobroAt: s.ultimoCobroAt,
         checkoutUrl: s.estado === 'PENDIENTE' ? s.checkoutUrl : null,
+        prueba:
+          s.pruebaDesde && s.pruebaHasta
+            ? { desde: s.pruebaDesde, hasta: s.pruebaHasta, vencida: s.pruebaHasta.getTime() <= Date.now() }
+            : null,
       },
     };
+  }
+
+  /**
+   * Prueba piloto: un mes gratis desde `desde` (puede ser una fecha pasada,
+   * para quien ya la empezó). No toca Stripe; si después paga la liga, el
+   * primer cobro llega cuando acaba el mes gratis.
+   */
+  async darPrueba(organizationId: string, desde: Date): Promise<void> {
+    if (Number.isNaN(desde.getTime())) throw new Error('La fecha no es válida.');
+    const org = await this.prisma.organization.findUnique({ where: { id: organizationId }, include: { plan: true } });
+    if (!org) throw new Error('No encontré esa cuenta.');
+    if (org.plan && ['ACTIVA', 'ATRASADA'].includes(org.plan.estado)) throw new Error(`${org.name} ya tiene un plan activo.`);
+    if (org.plan?.pruebaDesde) throw new Error(`${org.name} ya tuvo su mes gratis.`);
+
+    const hasta = finDePrueba(desde);
+    if (hasta.getTime() <= Date.now()) throw new Error('Con esa fecha el mes gratis ya habría terminado.');
+    const enPrueba = await this.prisma.suscripcion.count({
+      where: { pruebaHasta: { gt: new Date() }, organizationId: { not: organizationId }, estado: { not: 'CANCELADA' } },
+    });
+    if (enPrueba >= PILOTOS_MAX) throw new Error(`Ya hay ${PILOTOS_MAX} personas con su mes gratis.`);
+
+    await this.prisma.suscripcion.upsert({
+      where: { organizationId },
+      create: { organizationId, estado: 'PRUEBA', pruebaDesde: desde, pruebaHasta: hasta },
+      update: { estado: 'PRUEBA', pruebaDesde: desde, pruebaHasta: hasta, checkoutUrl: null },
+    });
   }
 
   /**
@@ -97,6 +134,9 @@ export class PlanService {
 
     const { iva, precios } = await this.asegurarCatalogo();
     const renglon = (clave: string) => ({ price: precios[clave], quantity: 1, tax_rates: [iva] });
+    // En su mes gratis: deja la tarjeta y Stripe no cobra hasta que acabe.
+    const hasta = org.plan?.pruebaHasta;
+    const trialEnd = hasta && hasta.getTime() - Date.now() > MINIMO_PRUEBA_MS ? Math.floor(hasta.getTime() / 1000) : undefined;
     const sesion = await this.api().pedir('POST', 'checkout/sessions', {
       mode: 'subscription',
       locale: 'es',
@@ -108,7 +148,7 @@ export class PlanService {
       ],
       // Para quien quiera CFDI a su nombre: Stripe pide el RFC en el pago.
       tax_id_collection: { enabled: true },
-      subscription_data: { metadata: { organizationId } },
+      subscription_data: { metadata: { organizationId }, trial_end: trialEnd },
       success_url: `${config.publicUrl}/plan/listo`,
       cancel_url: `${config.publicUrl}/plan/cancelado`,
     });
@@ -116,6 +156,7 @@ export class PlanService {
     await this.prisma.suscripcion.upsert({
       where: { organizationId },
       create: { organizationId, conFactura, checkoutUrl: sesion.url },
+      // La prueba (pruebaDesde/Hasta) se conserva: cuenta para no dar otra.
       update: {
         conFactura,
         checkoutUrl: sesion.url,
@@ -226,7 +267,8 @@ export class PlanService {
 
   /**
    * Convierte la suscripción recién pagada en la escalera: el mes en curso
-   * se queda en el escalón 1 y cada fase siguiente dura un mes. Al terminar
+   * se queda en el escalón 1 (o es el mes gratis, y el 1 va después) y cada
+   * fase siguiente dura un mes. Al terminar
    * la última, Stripe suelta la suscripción y sigue cobrando el piso.
    */
   private async armarEscalera(subId: string, conFactura: boolean): Promise<string> {
@@ -238,12 +280,18 @@ export class PlanService {
 
     const sched = await this.api().pedir('POST', 'subscription_schedules', { from_subscription: subId });
     const actual = sched.phases[0];
+    // Con mes gratis, la fase en curso es la prueba (no cobra) y el escalón 1 va después.
+    const enPrueba = !!actual.trial_end;
+    const resto = Array.from({ length: enPrueba ? MESES_ESCALERA : MESES_ESCALERA - 1 }, (_, k) => ({
+      items: items(enPrueba ? k : k + 1),
+      iterations: 1,
+    }));
     await this.api().pedir('POST', `subscription_schedules/${sched.id}`, {
       end_behavior: 'release',
       proration_behavior: 'none',
       phases: [
-        { start_date: actual.start_date, end_date: actual.end_date, items: items(0) },
-        ...Array.from({ length: MESES_ESCALERA - 1 }, (_, k) => ({ items: items(k + 1), iterations: 1 })),
+        { start_date: actual.start_date, end_date: actual.end_date, items: items(0), ...(enPrueba ? { trial: true } : {}) },
+        ...resto,
       ],
     });
     return sched.id as string;

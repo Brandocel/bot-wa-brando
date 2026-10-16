@@ -951,8 +951,12 @@ model Suscripcion {
   /// null mientras la liga de pago no se ha pagado.
   stripeSubscriptionId String? @unique
   stripeScheduleId String?
-  /// PENDIENTE (liga enviada) | ACTIVA | ATRASADA | CANCELADA
+  /// PRUEBA (mes gratis) | PENDIENTE (liga enviada) | ACTIVA | ATRASADA | CANCELADA
   estado           String    @default("PENDIENTE")
+  /// Mes gratis de la prueba piloto. Si paga la liga antes de que acabe,
+  /// Stripe no cobra nada hasta pruebaHasta.
+  pruebaDesde      DateTime?
+  pruebaHasta      DateTime?
   conFactura       Boolean   @default(false)
   /// Cobros pagados en esta suscripción; el siguiente es el mes mesesPagados + 1.
   mesesPagados     Int       @default(0)

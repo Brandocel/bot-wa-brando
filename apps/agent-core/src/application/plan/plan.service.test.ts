@@ -30,6 +30,10 @@ function prismaFalso() {
         return nueva;
       },
       update: async ({ where, data }: any) => aplicar(por(where), data),
+      count: async ({ where }: any) =>
+        [...filas.entries()].filter(
+          ([id, f]) => id !== where.organizationId.not && f.estado !== 'CANCELADA' && f.pruebaHasta > where.pruebaHasta.gt,
+        ).length,
       updateMany: async ({ where, data }: any) => {
         const f = por(where);
         if (f) aplicar(f, data);
@@ -39,7 +43,7 @@ function prismaFalso() {
   };
 }
 
-function stripeFalso() {
+function stripeFalso(conPrueba = false) {
   const llamadas: Array<{ metodo: string; ruta: string; params?: any }> = [];
   const api: StripePort = {
     pedir: (async (metodo: string, ruta: string, params?: any) => {
@@ -48,7 +52,7 @@ function stripeFalso() {
       if (ruta === 'tax_rates') return metodo === 'GET' ? { data: [] } : { id: 'txr_iva' };
       if (ruta === 'prices') return metodo === 'GET' ? { data: [] } : { id: `price_${params.lookup_key}` };
       if (ruta === 'checkout/sessions') return { url: 'https://checkout.stripe.com/c/pay/x' };
-      if (ruta === 'subscription_schedules') return { id: 'sub_sched_1', phases: [{ start_date: 100, end_date: 200 }] };
+      if (ruta === 'subscription_schedules') return { id: 'sub_sched_1', phases: [{ start_date: 100, end_date: 200, trial_end: conPrueba ? 200 : null }] };
       return {};
     }) as StripePort['pedir'],
   };
@@ -150,4 +154,39 @@ test('firma del webhook', () => {
   assert.equal(firmaValida(cuerpo, `t=${t},v1=${v1}`, 'whsec_x', t * 1000), true);
   assert.equal(firmaValida(cuerpo, `t=${t},v1=${v1}`, 'whsec_otro', t * 1000), false);
   assert.equal(firmaValida(cuerpo, `t=${t},v1=${v1}`, 'whsec_x', (t + 600) * 1000), false);
+});
+
+test('mes gratis: hasta 3 a la vez y una sola vez por cuenta', async () => {
+  const prisma = prismaFalso();
+  const plan = new PlanService(prisma as any, null);
+  const ayer = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  for (const id of ['org_a', 'org_b', 'org_c']) await plan.darPrueba(id, ayer);
+  await assert.rejects(plan.darPrueba('org_d', new Date()), /Ya hay 3 personas/);
+  await assert.rejects(plan.darPrueba('org_a', new Date()), /ya tuvo su mes gratis/);
+  const vista = await plan.vista('org_a');
+  assert.equal(vista.suscripcion!.estado, 'PRUEBA');
+  assert.equal(vista.suscripcion!.prueba!.vencida, false);
+});
+
+test('una fecha que ya dejó atrás el mes gratis no se acepta', async () => {
+  const plan = new PlanService(prismaFalso() as any, null);
+  await assert.rejects(plan.darPrueba('org_a', new Date('2026-01-01')), /ya habría terminado/);
+});
+
+test('la liga en el mes gratis no cobra hasta que acaba, y luego empieza en el mes 1', async () => {
+  const prisma = prismaFalso();
+  const stripe = stripeFalso(true);
+  const plan = new PlanService(prisma as any, stripe.api);
+  await plan.darPrueba('org_alan', new Date());
+  await plan.crearLiga('org_alan', false);
+  const sesion = stripe.llamadas.find((l) => l.ruta === 'checkout/sessions')!;
+  assert.equal(sesion.params.subscription_data.trial_end, Math.floor(prisma.filas.get('org_alan').pruebaHasta.getTime() / 1000));
+
+  await plan.manejarEvento({ type: 'checkout.session.completed', data: { object: { client_reference_id: 'org_alan', subscription: 'sub_1' } } });
+  const fases = stripe.llamadas.find((l) => l.ruta === 'subscription_schedules/sub_sched_1')!.params.phases;
+  assert.equal(fases[0].trial, true);
+  assert.deepEqual(
+    fases.slice(1).map((f: any) => f.items[0].price),
+    [1, 2, 3, 4, 5].map((m) => `price_persona_m${m}`),
+  );
 });

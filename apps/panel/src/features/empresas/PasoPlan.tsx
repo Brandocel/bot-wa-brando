@@ -16,21 +16,26 @@ interface Plan {
   iva: number;
   escalones: Array<{ mes: number; base: number; factura: number }>;
   suscripcion: {
-    estado: 'PENDIENTE' | 'ACTIVA' | 'ATRASADA' | 'CANCELADA';
+    estado: 'PRUEBA' | 'PENDIENTE' | 'ACTIVA' | 'ATRASADA' | 'CANCELADA';
     conFactura: boolean;
     mesesPagados: number;
     siguiente: { subtotal: number; iva: number; total: number };
     ultimoCobroAt: string | null;
     checkoutUrl: string | null;
+    prueba: { desde: string; hasta: string; vencida: boolean } | null;
   } | null;
 }
 
 const ESTADO: Record<NonNullable<Plan['suscripcion']>['estado'], { texto: string; tono: Tone }> = {
+  PRUEBA: { texto: 'Mes gratis', tono: 'info' },
   PENDIENTE: { texto: 'Liga sin pagar', tono: 'warning' },
   ACTIVA: { texto: 'Activo', tono: 'success' },
   ATRASADA: { texto: 'Pago rechazado', tono: 'danger' },
   CANCELADA: { texto: 'Cancelado', tono: 'neutral' },
 };
+
+/** Hoy, como lo pide un <input type="date">: «2026-10-16», en la hora local. */
+const hoy = () => new Date().toLocaleDateString('en-CA');
 
 const pesos = (n: number) => `$${n.toLocaleString('es-MX', { maximumFractionDigits: 2 })}`;
 
@@ -78,6 +83,8 @@ export function PasoPlan({ empresaId }: { empresaId: string }) {
   const [cancelando, setCancelando] = useState(false);
   const [conFactura, setConFactura] = useState(false);
   const [email, setEmail] = useState('');
+  const [regalando, setRegalando] = useState(false);
+  const [desde, setDesde] = useState(hoy);
 
   const { data: plan } = usePlan(empresaId);
   const refrescar = () => void queryClient.invalidateQueries({ queryKey: clave(empresaId) });
@@ -85,6 +92,15 @@ export function PasoPlan({ empresaId }: { empresaId: string }) {
   const liga = useMutation({
     mutationFn: () => api.post<{ url: string }>('plan/liga', { empresa: empresaId, conFactura, email }),
     onSuccess: () => refrescar(),
+    onError: (err) => toast.error(err.message),
+  });
+  const regalar = useMutation({
+    mutationFn: () => api.post('plan/prueba', { empresa: empresaId, desde }),
+    onSuccess: () => {
+      setRegalando(false);
+      toast.success('Mes gratis activado');
+      refrescar();
+    },
     onError: (err) => toast.error(err.message),
   });
   const cancelar = useMutation({
@@ -101,12 +117,29 @@ export function PasoPlan({ empresaId }: { empresaId: string }) {
   const s = plan.suscripcion;
   const vivo = s && (s.estado === 'ACTIVA' || s.estado === 'ATRASADA');
   const url = liga.data?.url ?? s?.checkoutUrl;
+  const prueba = s?.prueba;
+  const gratis = prueba && !prueba.vencida ? prueba : null;
+  // El mes gratis se da una vez, y nunca encima de un plan pagado.
+  const puedeRegalar = usuario.role === 'ADMIN' && !prueba && !vivo;
   const copiar = (u: string) => void navigator.clipboard.writeText(u).then(() => toast.success('Liga copiada'));
 
   return (
     <div>
       <div className="flex flex-wrap items-center gap-2">
-        {s ? <Badge tone={ESTADO[s.estado].tono} dot>{ESTADO[s.estado].texto}</Badge> : <span>Sin plan</span>}
+        {s ? (
+          s.estado === 'PRUEBA' && prueba?.vencida ? (
+            <Badge tone="warning" dot>
+              Mes gratis vencido
+            </Badge>
+          ) : (
+            <Badge tone={ESTADO[s.estado].tono} dot>
+              {ESTADO[s.estado].texto}
+            </Badge>
+          )
+        ) : (
+          <span>Sin plan</span>
+        )}
+        {gratis && <span>Gratis hasta el {fecha(gratis.hasta)}</span>}
         {vivo && (
           <span>
             Próximo cobro {pesos(s.siguiente.total)} <span className="text-xs">con IVA</span>
@@ -116,6 +149,11 @@ export function PasoPlan({ empresaId }: { empresaId: string }) {
         {puede && plan.disponible && !vivo && (
           <Button variant="secondary" size="sm" onClick={() => setAbierto(true)}>
             {url ? 'Ver liga' : 'Liga de pago'}
+          </Button>
+        )}
+        {puedeRegalar && (
+          <Button variant="secondary" size="sm" onClick={() => setRegalando(true)}>
+            Mes gratis
           </Button>
         )}
         {puede && vivo && (
@@ -131,7 +169,11 @@ export function PasoPlan({ empresaId }: { empresaId: string }) {
         open={abierto}
         onOpenChange={setAbierto}
         title="Liga de pago"
-        description="Empieza en el mes 1 y Stripe cobra cada mes solo."
+        description={
+          gratis
+            ? `Deja su tarjeta ahora; el primer cobro llega al terminar su mes gratis, el ${fecha(gratis.hasta)}.`
+            : 'Empieza en el mes 1 y Stripe cobra cada mes solo.'
+        }
         footer={
           url ? (
             <Button onClick={() => copiar(url)}>
@@ -161,6 +203,22 @@ export function PasoPlan({ empresaId }: { empresaId: string }) {
             </Checkbox>
           </div>
         )}
+      </Dialog>
+
+      <Dialog
+        open={regalando}
+        onOpenChange={setRegalando}
+        title="Mes gratis"
+        description="Prueba piloto: un mes sin cobro desde el día que elijas. Una vez por persona."
+        footer={
+          <Button onClick={() => regalar.mutate()} loading={regalar.isPending}>
+            Dar mes gratis
+          </Button>
+        }
+      >
+        <Field label="Desde">
+          {(ids) => <Input {...ids} type="date" value={desde} max={hoy()} onChange={(e) => setDesde(e.target.value)} />}
+        </Field>
       </Dialog>
 
       <ConfirmDialog

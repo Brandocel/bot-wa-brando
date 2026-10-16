@@ -4,7 +4,7 @@ import { PanelGuard, ParaEmpresa, type PanelRequest } from './panel.guard';
 
 /**
  * El plan de una cuenta en el panel. La persona ve el suyo y saca su liga;
- * del equipo, solo un ADMIN genera ligas o cancela.
+ * del equipo, solo un ADMIN genera ligas, da el mes gratis o cancela.
  */
 @Controller('panel/api/plan')
 @UseGuards(PanelGuard)
@@ -38,6 +38,19 @@ export class PanelPlanController {
   liga(@Req() req: PanelRequest, @Body() body: { empresa?: string; conFactura?: boolean; email?: string }) {
     const id = this.cuenta(req, body.empresa, true);
     return this.intentar(async () => ({ url: await this.plan.crearLiga(id, !!body.conFactura, body.email?.trim()) }));
+  }
+
+  /** Mes gratis de la prueba piloto. Solo el equipo: una persona no se lo da a sí misma. */
+  @Post('prueba')
+  prueba(@Req() req: PanelRequest, @Body() body: { empresa?: string; desde?: string }) {
+    if (req.panelUser?.role !== 'ADMIN') throw new ForbiddenException('hace falta ser ADMIN');
+    const id = this.cuenta(req, body.empresa, true);
+    // "2026-10-15" se toma como ese día a mediodía en México, no a medianoche UTC.
+    const desde = body.desde ? new Date(`${body.desde}T12:00:00-06:00`) : new Date();
+    return this.intentar(async () => {
+      await this.plan.darPrueba(id, desde);
+      return { ok: true };
+    });
   }
 
   @Post('cancelar')
