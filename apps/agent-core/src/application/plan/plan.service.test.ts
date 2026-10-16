@@ -7,6 +7,7 @@ import { PlanService, type StripePort } from './plan.service';
 /** Prisma de mentira: solo la tabla Suscripcion y una organización. */
 function prismaFalso() {
   const filas = new Map<string, any>();
+  const cobros: any[] = [];
   const por = (where: any) =>
     where.organizationId
       ? filas.get(where.organizationId)
@@ -19,6 +20,12 @@ function prismaFalso() {
     filas,
     organization: {
       findUnique: async ({ where }: any) => ({ id: where.id, name: 'ALAN', plan: filas.get(where.id) ?? null }),
+    },
+    cobros,
+    $transaction: async (ops: Promise<unknown>[]) => Promise.all(ops),
+    cobro: {
+      findUnique: async ({ where }: any) => cobros.find((c) => c.stripeInvoiceId === where.stripeInvoiceId) ?? null,
+      create: async ({ data }: any) => (cobros.push(data), data),
     },
     suscripcion: {
       findUnique: async ({ where }: any) => por(where) ?? null,
@@ -188,5 +195,24 @@ test('la liga en el mes gratis no cobra hasta que acaba, y luego empieza en el m
   assert.deepEqual(
     fases.slice(1).map((f: any) => f.items[0].price),
     [1, 2, 3, 4, 5].map((m) => `price_persona_m${m}`),
+  );
+});
+
+test('cada cobro queda guardado con su monto y su mes', async () => {
+  const { prisma, plan } = await conLiga();
+  await plan.manejarEvento({ type: 'checkout.session.completed', data: { object: { client_reference_id: 'org_alan', subscription: 'sub_1' } } });
+  const cobro = (id: string, total: number, subtotal: number) => ({
+    type: 'invoice.paid',
+    data: { object: { id, subscription: 'sub_1', amount_paid: total, subtotal, tax: total - subtotal, hosted_invoice_url: `https://pay/${id}` } },
+  });
+  await plan.manejarEvento(cobro('in_1', 100804, 86900));
+  await plan.manejarEvento(cobro('in_1', 100804, 86900));
+  await plan.manejarEvento(cobro('in_2', 89088, 76800));
+  assert.deepEqual(
+    prisma.cobros.map((c) => [c.stripeInvoiceId, c.mes, c.total, c.iva]),
+    [
+      ['in_1', 1, 100804, 13904],
+      ['in_2', 2, 89088, 12288],
+    ],
   );
 });

@@ -62,3 +62,18 @@ export class PanelPlanController {
     });
   }
 }
+
+/**
+ * Cuántos pagan y cuánto entró, de todas las cuentas. Solo el equipo: sin
+ * @ParaEmpresa, el guard se lo niega a un usuario de empresa.
+ */
+@Controller('panel/api/cobros')
+@UseGuards(PanelGuard)
+export class PanelCobrosController {
+  constructor(private readonly plan: PlanService) {}
+
+  @Get()
+  resumen() {
+    return this.plan.resumen();
+  }
+}

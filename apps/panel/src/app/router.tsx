@@ -1,6 +1,7 @@
 import { createBrowserRouter, Navigate } from 'react-router-dom';
 import { AjustesPage } from '@/features/ajustes/AjustesPage';
 import { AuditoriaPage } from '@/features/auditoria/AuditoriaPage';
+import { CobrosPage } from '@/features/cobros/CobrosPage';
 import { EmpresasPage } from '@/features/empresas/EmpresasPage';
 import { MiWhatsAppPage } from '@/features/empresas/MiWhatsAppPage';
 import { LoginPage } from '@/features/auth/LoginPage';
@@ -31,6 +32,7 @@ export const router = createBrowserRouter(
         { path: 'tickets', element: <TicketsPage /> },
         { path: 'directorio', element: <ClientesPage /> },
         { path: 'empresas', element: <EmpresasPage /> },
+        { path: 'cobros', element: <CobrosPage /> },
         { path: 'whatsapp', element: <MiWhatsAppPage /> },
         { path: 'ventas', element: <VentasPage /> },
         { path: 'documentos', element: <DocumentosPage /> },

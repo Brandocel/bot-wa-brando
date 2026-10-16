@@ -44,7 +44,7 @@ import { FacturaComAdapter } from './infrastructure/facturacion/factura-com.adap
 import { PlanService, STRIPE } from './application/plan/plan.service';
 import { StripeClient } from './infrastructure/pagos/stripe.client';
 import { StripeController } from './infrastructure/http/stripe.controller';
-import { PanelPlanController } from './infrastructure/http/panel/panel-plan.controller';
+import { PanelCobrosController, PanelPlanController } from './infrastructure/http/panel/panel-plan.controller';
 import { config } from './config';
 import { PanelFacturasController } from './infrastructure/http/panel/panel-facturas.controller';
 import { PanelPendientesController } from './infrastructure/http/panel/panel-pendientes.controller';
@@ -87,6 +87,7 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     PanelVentasController,
     PanelFacturasController,
     PanelPlanController,
+    PanelCobrosController,
     StripeController,
     PanelPendientesController,
     PanelPruebaController,

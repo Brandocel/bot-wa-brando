@@ -11,6 +11,7 @@ import {
   ShoppingCart,
   Ticket,
   Users,
+  Wallet,
   type LucideIcon,
 } from 'lucide-react';
 import type { Rol } from '@/features/auth/sesion';
@@ -30,6 +31,7 @@ const SECCIONES: Seccion[] = [
   { ruta: 'tickets', nombre: 'Tickets', icono: Ticket },
   { ruta: 'directorio', nombre: 'Clientes', icono: Users },
   { ruta: 'empresas', nombre: 'Empresas', icono: Building2 },
+  { ruta: 'cobros', nombre: 'Cobros', icono: Wallet },
   { ruta: 'whatsapp', nombre: 'WhatsApp', icono: MessageCircle },
   { ruta: 'ventas', nombre: 'Ventas', icono: ShoppingCart },
   { ruta: 'documentos', nombre: 'Documentos', icono: FileText },

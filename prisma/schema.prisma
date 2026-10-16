@@ -968,4 +968,28 @@ model Suscripcion {
   updatedAt        DateTime  @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  cobros       Cobro[]
+}
+
+/// Cada pago que Stripe confirmó (invoice.paid con monto). Es lo que se
+/// suma para saber cuánto entró; Stripe sigue siendo la fuente de verdad.
+model Cobro {
+  id              String   @id @default(cuid())
+  organizationId  String
+  /// in_... de Stripe: un webhook repetido no crea otro.
+  stripeInvoiceId String   @unique
+  /// Centavos MXN. subtotal sin IVA; total es lo que se cobró.
+  subtotal        Int
+  iva             Int
+  total           Int
+  /// El mes de la escalera que pagó (1 = el primero).
+  mes             Int
+  pagadoAt        DateTime
+  /// El recibo de Stripe, para abrirlo desde el panel.
+  reciboUrl       String?
+  createdAt       DateTime @default(now())
+
+  suscripcion Suscripcion @relation(fields: [organizationId], references: [organizationId], onDelete: Cascade)
+
+  @@index([pagadoAt])
 }

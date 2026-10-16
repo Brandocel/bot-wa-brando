@@ -188,6 +188,62 @@ export class PlanService {
     await this.api().pedir('POST', `subscriptions/${s.stripeSubscriptionId}`, { cancel_at_period_end: true });
   }
 
+  // ── Cobros: cuántos pagan y cuánto entró ─────────────────────────
+
+  /**
+   * Lo que el equipo ve en «Cobros». Montos en centavos MXN. «Al mes» es lo
+   * que se espera cobrar sin IVA en el próximo ciclo de los que pagan hoy.
+   */
+  async resumen(ahora = new Date()) {
+    const inicioMes = new Date(Date.UTC(ahora.getUTCFullYear(), ahora.getUTCMonth(), 1));
+    const [subs, ultimos, delMes, historico] = await Promise.all([
+      this.prisma.suscripcion.findMany({
+        include: { organization: { select: { name: true } }, cobros: { select: { total: true } } },
+        orderBy: { updatedAt: 'desc' },
+      }),
+      this.prisma.cobro.findMany({
+        orderBy: { pagadoAt: 'desc' },
+        take: 20,
+        include: { suscripcion: { select: { organization: { select: { name: true } } } } },
+      }),
+      this.prisma.cobro.aggregate({ where: { pagadoAt: { gte: inicioMes } }, _sum: { total: true }, _count: true }),
+      this.prisma.cobro.aggregate({ _sum: { total: true }, _count: true }),
+    ]);
+
+    const enPrueba = (s: (typeof subs)[number]) => !!s.pruebaHasta && s.pruebaHasta > ahora && s.estado !== 'CANCELADA';
+    const pagando = subs.filter((s) => s.estado === 'ACTIVA' && s.mesesPagados > 0);
+    return {
+      disponible: this.disponible,
+      totales: {
+        pagando: pagando.length,
+        enPrueba: subs.filter(enPrueba).length,
+        atrasados: subs.filter((s) => s.estado === 'ATRASADA').length,
+        alMes: pagando.reduce((suma, s) => suma + cobroDelMes(s.mesesPagados + 1, s.conFactura).subtotal * 100, 0),
+        esteMes: { total: delMes._sum.total ?? 0, cobros: delMes._count },
+        historico: { total: historico._sum.total ?? 0, cobros: historico._count },
+      },
+      cuentas: subs.map((s) => ({
+        organizationId: s.organizationId,
+        nombre: s.organization.name,
+        estado: s.estado,
+        conFactura: s.conFactura,
+        mesesPagados: s.mesesPagados,
+        pagado: s.cobros.reduce((suma, c) => suma + c.total, 0),
+        ultimoCobroAt: s.ultimoCobroAt,
+        siguiente: cobroDelMes(s.mesesPagados + 1, s.conFactura),
+        pruebaHasta: enPrueba(s) ? s.pruebaHasta : null,
+      })),
+      ultimos: ultimos.map((c) => ({
+        id: c.id,
+        nombre: c.suscripcion.organization.name,
+        total: c.total,
+        mes: c.mes,
+        pagadoAt: c.pagadoAt,
+        reciboUrl: c.reciboUrl,
+      })),
+    };
+  }
+
   // ── Webhooks ───────────────────────────────────────────────────────
 
   async manejarEvento(evento: { type: string; data: { object: any } }): Promise<void> {
@@ -233,16 +289,30 @@ export class PlanService {
     const s = await this.prisma.suscripcion.findUnique({ where: { stripeSubscriptionId: subId } });
     // El primer cobro puede llegar antes que checkout.session.completed.
     if (!s) return this.cobroSinLigar(factura, subId);
-    if (s.ultimoCobroId === factura.id) return;
-    await this.prisma.suscripcion.update({
-      where: { organizationId: s.organizationId },
-      data: {
-        mesesPagados: { increment: 1 },
-        ultimoCobroId: factura.id,
-        ultimoCobroAt: new Date((factura.status_transitions?.paid_at ?? Date.now() / 1000) * 1000),
-        estado: 'ACTIVA',
-      },
-    });
+    // Stripe reintenta webhooks: el recibo ya guardado no se cuenta otra vez.
+    if (await this.prisma.cobro.findUnique({ where: { stripeInvoiceId: factura.id } })) return;
+
+    const pagadoAt = new Date((factura.status_transitions?.paid_at ?? Date.now() / 1000) * 1000);
+    const total: number = factura.amount_paid;
+    const subtotal: number = factura.subtotal ?? total;
+    await this.prisma.$transaction([
+      this.prisma.cobro.create({
+        data: {
+          organizationId: s.organizationId,
+          stripeInvoiceId: factura.id,
+          subtotal,
+          iva: factura.tax ?? total - subtotal,
+          total,
+          mes: s.mesesPagados + 1,
+          pagadoAt,
+          reciboUrl: factura.hosted_invoice_url ?? null,
+        },
+      }),
+      this.prisma.suscripcion.update({
+        where: { organizationId: s.organizationId },
+        data: { mesesPagados: { increment: 1 }, ultimoCobroId: factura.id, ultimoCobroAt: pagadoAt, estado: 'ACTIVA' },
+      }),
+    ]);
   }
 
   /** Primer cobro que se adelantó a la liga: se liga por la metadata de la suscripción. */
