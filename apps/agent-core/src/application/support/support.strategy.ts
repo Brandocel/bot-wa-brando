@@ -512,6 +512,15 @@ export class SupportStrategy {
       companyName: scope.scopes.find((s) => s.organizationId === empresaEnTexto)?.organizationName ?? null,
     });
     if (intent.kind === 'other') {
+      /**
+       * "Dame las altas de empleados de septiembre": no dice "documento"
+       * ni un tipo conocido, pero pide algo con tema. Si ese tema existe
+       * en sus archivos, se le enseña la lista; sin esto el modelo
+       * contestaba que "las altas no están en el sistema".
+       */
+      if (pidePorTema(message.body) && (await this.hayDeTema(turn, sol))) {
+        return this.inventario(turn, sol);
+      }
       if (clas.tipo === 'SOLICITUD') clas.tipo = 'OTRO';
       // El contexto puede describir la última entrega: antes de dárselo al
       // redactor se revalida contra el alcance actual. El historial ya va
@@ -1839,6 +1848,22 @@ ${reply.text}` : gracias };
     };
   }
 
+  /** ¿Lo que pide por tema existe en sus archivos? Misma lectura que inventario(). */
+  private async hayDeTema(turn: Turn, sol: Solicitud): Promise<boolean> {
+    const { scopes } = turn;
+    const organizationId =
+      scopes.length === 1 ? scopes[0]!.organizationId : empresaGuardada(sol, scopes);
+    const { period, category, text } = parseQuery(turn.message.body);
+    const tema = text && text !== turn.message.body.trim() ? text : null;
+    if (!tema) return false;
+    const { docs } = await this.buscarConTema(
+      scopes,
+      { category, period, folio: null, text: null, organizationId },
+      tema,
+    );
+    return docs.length > 0;
+  }
+
   /**
    * Busca con el tema que dijo la persona. Todas sus palabras primero; si
    * así no hay nada, cada palabra sola y en singular: "alta de empleados"
@@ -2789,6 +2814,13 @@ function describirInventario(
 
   const quien = empresa ? `De *${empresa}* tengo:` : 'Tengo:';
   return [quien, ...partes.map((p) => `• ${p}`)].join('\n');
+}
+
+/** "Dame…", "mándame…", "necesito…": el mensaje pide algo. "Quiero" y "¿tienes…?" no: "quiero viajar", "¿tienes hambre?". */
+function pidePorTema(texto: string): boolean {
+  return /\b(?:dame|da|damelas?|mandame|manda|mandalas?|pasame|pasa|pasalas?|enviame|envia|necesito|necesitamos|ocupo|ocupamos|requiero|buscame|compartime|comparteme)\b/.test(
+    normalizar(texto),
+  );
 }
 
 /**

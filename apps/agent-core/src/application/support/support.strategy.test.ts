@@ -2875,3 +2875,37 @@ test('el redactor no repite la misma frase que ya dijo el bot', async () => {
   const reply = await h.handle('Cuántos años tienes?');
   assert.notEqual(reply?.text, repetida);
 });
+
+test('"dame las altas de empleados de septiembre" lista las altas, no dice que no existen', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-16T12:00:00Z') });
+  t.mock.method(Math, 'random', () => 0);
+  const h = makeHarness({ draftResponse: 'Las altas de empleados no están en ese sistema.' });
+  h.search.catalog = [
+    document('alta-1', 'CONSTANCIA DE ALTA ABNER GARCIA 05-09-2026.pdf', 'FACTURA', '2026-09'),
+    document('alta-2', 'CONSTANCIA DE ALTA RAYMUNDO VAZQUEZ 11-09-2026.pdf', 'FACTURA', '2026-09'),
+    document('baja-1', 'CONSTANCIA DE BAJA KEVIN RIZO 26-09-2026.pdf', 'FACTURA', '2026-09'),
+  ];
+
+  const reply = await h.handle('dame las altas de empleados de septiembre del 2026');
+  const texto = (reply?.text ?? '').replaceAll('*', '');
+  assert.match(texto, /ABNER GARCIA/);
+  assert.match(texto, /RAYMUNDO VAZQUEZ/);
+  assert.doesNotMatch(texto, /KEVIN RIZO/);
+  assert.doesNotMatch(texto, /no están en ese sistema/);
+  assert.deepEqual(h.delivered, []);
+});
+
+test('"¿cuáles documentos de alta tienes?" no repite el inventario entero', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-16T12:00:00Z') });
+  t.mock.method(Math, 'random', () => 0);
+  const h = makeHarness();
+  h.search.catalog = [
+    document('alta-1', 'CONSTANCIA DE ALTA ABNER GARCIA.pdf', 'FACTURA', '2026-09'),
+    document('fac-1', 'FACTURA_OCTUBRE.pdf', 'FACTURA', '2026-10'),
+  ];
+
+  const reply = await h.handle('Requiero un documento de alta de un empleado, ¿cuáles tienes?');
+  const texto = (reply?.text ?? '').replaceAll('*', '');
+  assert.match(texto, /ABNER GARCIA/);
+  assert.doesNotMatch(texto, /FACTURA_OCTUBRE/);
+});
