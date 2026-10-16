@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Badge, type Tone } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -42,12 +42,36 @@ const pesos = (n: number) => `$${n.toLocaleString('es-MX', { maximumFractionDigi
 /** Clave de la consulta del plan de una cuenta. */
 const clave = (id: string) => ['empresas', id, 'plan'] as const;
 
+/**
+ * El plan de una cuenta. Mientras haya una liga sin pagar se pregunta cada
+ * 5 s (el servidor, a su vez, le pregunta a Stripe): el pago aparece solo,
+ * sin recargar. Y al volver a la pestaña, siempre, que es justo lo que pasa
+ * al regresar del checkout.
+ */
 export function usePlan(empresaId: string, activo = true) {
   return useQuery({
     queryKey: clave(empresaId),
     queryFn: () => api.get<Plan>('plan', { empresa: empresaId }),
     enabled: activo,
+    staleTime: 0,
+    refetchOnWindowFocus: 'always',
+    refetchInterval: (q) => (q.state.data?.suscripcion?.estado === 'PENDIENTE' ? 5_000 : 60_000),
   });
+}
+
+/** Avisa cuando la cuenta pasa a pagada mientras se está viendo, y refresca lo que depende de eso. */
+function useAvisoDePago(estado: string | undefined, nombre: string) {
+  const queryClient = useQueryClient();
+  const antes = useRef(estado);
+  useEffect(() => {
+    if (antes.current && antes.current !== 'ACTIVA' && estado === 'ACTIVA') {
+      toast.success(`${nombre} ya pagó`);
+      void queryClient.invalidateQueries({ queryKey: ['cobros'] });
+      void queryClient.invalidateQueries({ queryKey: ['empresas'] });
+    }
+    if (antes.current === 'ACTIVA' && estado === 'ATRASADA') toast.error(`A ${nombre} le rechazaron el pago`);
+    antes.current = estado;
+  }, [estado, nombre, queryClient]);
 }
 
 /** Los cinco escalones, con el que toca resaltado. */
@@ -75,7 +99,7 @@ function Escalera({ plan, siguiente }: { plan: Plan; siguiente: number }) {
 }
 
 /** El plan Persona: en qué escalón va, la liga para pagarlo y cancelarlo. */
-export function PasoPlan({ empresaId }: { empresaId: string }) {
+export function PasoPlan({ empresaId, nombre }: { empresaId: string; nombre: string }) {
   const usuario = useUsuario();
   const puede = usuario.role === 'ADMIN' || (usuario.role === 'EMPRESA' && usuario.organizationId === empresaId);
   const queryClient = useQueryClient();
@@ -87,6 +111,7 @@ export function PasoPlan({ empresaId }: { empresaId: string }) {
   const [desde, setDesde] = useState(hoy);
 
   const { data: plan } = usePlan(empresaId);
+  useAvisoDePago(plan?.suscripcion?.estado, nombre);
   const refrescar = () => void queryClient.invalidateQueries({ queryKey: clave(empresaId) });
 
   const liga = useMutation({

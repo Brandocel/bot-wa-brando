@@ -69,7 +69,10 @@ export function CobrosPage() {
   const resumen = useQuery({
     queryKey: ['cobros'],
     queryFn: () => api.get<Resumen>('cobros'),
-    refetchInterval: 30_000,
+    // Con ligas pendientes, cada 5 s: el servidor revisa en Stripe y el pago aparece solo.
+    staleTime: 0,
+    refetchOnWindowFocus: 'always',
+    refetchInterval: (q) => (q.state.data?.cuentas.some((c) => c.estado === 'PENDIENTE') ? 5_000 : 30_000),
   });
 
   return (

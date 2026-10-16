@@ -136,7 +136,7 @@ export function PasosEmpresa({ empresa: o, onVerPersonas }: Props) {
 
         {persona && (
           <Paso n={6} listo={plan?.estado === 'ACTIVA' || (plan?.estado === 'PRUEBA' && !plan.prueba?.vencida)} titulo="Su plan">
-            <PasoPlan empresaId={o.id} />
+            <PasoPlan empresaId={o.id} nombre={o.name} />
           </Paso>
         )}
       </ol>
