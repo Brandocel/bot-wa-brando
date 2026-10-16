@@ -19,6 +19,8 @@ interface Mensaje {
   body: string;
   sentBy: string | null;
   createdAt: string;
+  /** El archivo que se entregó, para abrirlo y revisar. */
+  documentId: string | null;
 }
 
 interface Chat {
@@ -141,7 +143,7 @@ export function PruebaPage() {
 
           <div className="flex-1 space-y-2 overflow-y-auto p-4">
             {cuantos === 0 && <p className="py-10 text-center text-[13px] text-muted-foreground">Escribe el primer mensaje.</p>}
-            {chat.data?.mensajes.map((m) => <Burbuja key={m.id} m={m} />)}
+            {numerar(chat.data?.mensajes ?? []).map(({ m, n }) => <Burbuja key={m.id} m={m} n={n} />)}
             {enviar.isPending && <p className="text-[13px] text-muted-foreground">El bot está pensando…</p>}
             <div ref={fondo} />
           </div>
@@ -176,7 +178,16 @@ function ConFormato({ texto }: { texto: string }) {
 }
 
 /** Lo del cliente a la derecha (somos nosotros); lo del bot a la izquierda. */
-function Burbuja({ m }: { m: Mensaje }) {
+/** Los documentos de cada respuesta, numerados en el orden en que salieron. */
+function numerar(mensajes: readonly Mensaje[]): Array<{ m: Mensaje; n: number | null }> {
+  let n = 0;
+  return mensajes.map((m) => {
+    if (m.direction === 'IN') n = 0;
+    return { m, n: m.kind === 'DOCUMENT' ? ++n : null };
+  });
+}
+
+function Burbuja({ m, n }: { m: Mensaje; n: number | null }) {
   const cliente = m.direction === 'IN';
   const doc = m.kind === 'DOCUMENT';
   const [titulo, ...resto] = m.body.split('\n');
@@ -191,8 +202,19 @@ function Burbuja({ m }: { m: Mensaje }) {
         {doc ? (
           <>
             <span className="flex items-center gap-1.5 font-medium">
+              {n !== null && <span className="tabular-nums opacity-60">{n}.</span>}
               <FileText className="size-4 shrink-0" aria-hidden />
-              {titulo?.replace(/^\[documento\]\s*/, '')}
+              <span className="min-w-0 flex-1">{titulo?.replace(/^\[documento\]\s*/, '')}</span>
+              {m.documentId && (
+                <a
+                  href={`/panel/api/prueba/documento?id=${encodeURIComponent(m.documentId)}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="ml-2 shrink-0 rounded-md border px-2 py-0.5 text-xs font-medium hover:bg-surface"
+                >
+                  Ver
+                </a>
+              )}
             </span>
             {resto.length > 0 && (
               <span className="mt-1 block">

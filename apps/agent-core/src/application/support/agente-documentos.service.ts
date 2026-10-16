@@ -140,7 +140,8 @@ export class AgenteDocumentosService {
             const r = await this.delivery.deliver(
               { chatId: turno.chatId, waId: turno.waId, origen: turno.mensajeId },
               doc,
-              leyenda || doc.name,
+              // Sin leyenda no se repite el nombre: el archivo ya lo lleva.
+              leyenda,
               `No pude mandarte ${doc.name} por aquí. Pídemelo otra vez en un rato.`,
             );
             if (r.ok) {
@@ -243,7 +244,8 @@ const HERRAMIENTAS: readonly HerramientaLlm[] = [
   {
     nombre: 'entregar_documentos',
     descripcion:
-      'Manda por WhatsApp los documentos con esas refs (de búsquedas de este turno o de la lista anterior). ' +
+      'Manda por WhatsApp los documentos con esas refs (de búsquedas de este turno o de la lista anterior), ' +
+      'EN EL ORDEN EN QUE LA PERSONA LOS PIDIÓ ("del 5 al 14 y la 4" = 5,6,…,14,4). ' +
       `Máximo ${MAX_ENTREGA} por vez. Es la ÚNICA forma de mandar algo: solo di que mandaste lo que esta ` +
       'herramienta confirme como "en camino".',
     esquema: {

@@ -228,7 +228,10 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
       });
 
       const autor = payload.kind === 'text' && payload.autor ? payload.autor : 'bot';
-      await this.recordOutbound(row.chatId, sent.id, sent.body, sent.kind, autor);
+      await this.recordOutbound(
+        row.chatId, sent.id, sent.body, sent.kind, autor,
+        payload.kind === 'file' ? payload.documentId : undefined,
+      );
       return true;
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
@@ -348,6 +351,7 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
     body: string,
     kind: 'TEXT' | 'DOCUMENT',
     sentBy: string,
+    documentId?: string,
   ): Promise<void> {
     try {
       const conversation = await this.prisma.conversation.findUnique({
@@ -364,6 +368,8 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
           kind,
           body,
           sentBy,
+          // Qué archivo salió: el panel lo abre para revisar la entrega.
+          ...(documentId ? { raw: { documentId } } : {}),
         },
       });
     } catch (err) {

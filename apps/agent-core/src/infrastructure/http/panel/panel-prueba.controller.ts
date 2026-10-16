@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { BadRequestException, Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Inject, NotFoundException, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
+import type { Response } from 'express';
+import { DOCUMENT_SOURCE_PORT, type DocumentSourcePort } from '../../../application/ports/document-source.port';
 import { HandleIncomingMessageUseCase } from '../../../application/use-cases/handle-incoming-message.use-case';
 import { InvalidPhoneError, normalizePhone } from '../../../domain/contact/phone';
 import { LINEA_PRINCIPAL } from '../../../domain/message/linea';
 import { MARCA_PRUEBA, chatDePrueba } from '../../../domain/message/prueba';
 import { OutboxDispatcher } from '../../persistence/outbox.dispatcher';
 import { PrismaService } from '../../persistence/prisma.service';
-import { PanelGuard } from './panel.guard';
+import { PanelGuard, type PanelRequest } from './panel.guard';
 
 interface Destino {
   linea: string | null;
@@ -34,6 +36,7 @@ export class PanelPruebaController {
     private readonly prisma: PrismaService,
     private readonly entrante: HandleIncomingMessageUseCase,
     private readonly outbox: OutboxDispatcher,
+    @Inject(DOCUMENT_SOURCE_PORT) private readonly source: DocumentSourcePort,
   ) {}
 
   @Get()
@@ -47,7 +50,7 @@ export class PanelPruebaController {
         messages: {
           orderBy: { createdAt: 'asc' },
           take: 300,
-          select: { id: true, direction: true, kind: true, body: true, sentBy: true, createdAt: true },
+          select: { id: true, direction: true, kind: true, body: true, sentBy: true, createdAt: true, raw: true },
         },
         tickets: {
           where: { state: { not: 'CERRADO' } },
@@ -62,8 +65,37 @@ export class PanelPruebaController {
       awaiting: conv?.awaiting ?? null,
       topic: conv?.topic ?? null,
       tickets: conv?.tickets ?? [],
-      mensajes: conv?.messages ?? [],
+      mensajes: (conv?.messages ?? []).map(({ raw, ...m }) => ({
+        ...m,
+        documentId: (raw as { documentId?: unknown } | null)?.documentId ?? null,
+      })),
     };
+  }
+
+  /**
+   * El archivo que el bot entregó en la prueba, para revisar que sea lo que
+   * se pidió. Se abre en el navegador; solo el equipo (el guard niega a
+   * una empresa) y queda en la auditoría.
+   */
+  @Get('documento')
+  async documento(@Req() req: PanelRequest, @Query('id') id: string | undefined, @Res() res: Response): Promise<void> {
+    const doc = id ? await this.prisma.document.findUnique({ where: { id } }) : null;
+    if (!doc || doc.status === 'DELETED') throw new NotFoundException('ese documento ya no existe');
+
+    const bytes = await this.source.download(doc.driveFileId);
+    await this.prisma.accessAudit.create({
+      data: {
+        waId: `panel:${req.panelUser?.email ?? '?'}`,
+        query: `prueba: ver ${doc.name}`,
+        documentId: doc.id,
+        decision: 'ALLOW',
+        decidedBy: 'chat de prueba del equipo',
+      },
+    });
+    res.setHeader('Content-Type', doc.mimeType);
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(doc.name)}"`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(bytes);
   }
 
   /** Manda un mensaje como esa persona y corre el turno completo. */
