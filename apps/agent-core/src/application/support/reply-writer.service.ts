@@ -164,6 +164,15 @@ function validar(text: string, brief: ReplyBrief, ctx?: ReplyContext): string | 
   // Lo peor que puede decir: "te envío los 45" sin que salga nada. Las
   // entregas y los conteos son de las plantillas, que sí los conocen.
   if (prometeEnvio(text)) return 'promete un envío';
+  // "Voy a buscar…" deja a la persona esperando algo que no va a llegar:
+  // la búsqueda la hace el flujo, no el redactor.
+  if (/\b(?:voy a|vamos a|dejame|deja que)\s+(?:buscar|revisar|checar|ver|consultar)\b/i.test(text)) {
+    return 'promete una búsqueda';
+  }
+  // Se le salió el papel: habla del "cliente" o de "contestar" en vez de con la persona.
+  if (/\b(?:el|del|al)\s+cliente\b|\bdebo\s+(?:contestar|responder)\b|\bmensaje\s+nuevo\b/i.test(text)) {
+    return 'habla de su tarea';
+  }
   if (/\b\d+\s+(?:documentos?|archivos?|facturas?|contratos?|constancias?|reportes?|p[oó]lizas?)\b/i.test(text)) {
     return 'inventa un conteo';
   }

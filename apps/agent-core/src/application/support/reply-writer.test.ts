@@ -24,3 +24,15 @@ test('lo que no promete nada pasa', () => {
     assert.equal(prometeEnvio(t), false, t);
   }
 });
+
+test('el redactor no promete búsquedas ni habla de su tarea', async () => {
+  const { ReplyWriterService } = await import('./reply-writer.service');
+  for (const borrador of [
+    'Perfecto, voy a buscar los contratos de octubre del 2026.',
+    'No veo el mensaje nuevo del cliente. ¿Cuál es el que debo contestar?',
+  ]) {
+    const w = new ReplyWriterService({ draft: async () => borrador, extract: async () => null } as never);
+    const r = await w.write({ intent: 'charla', facts: [], fallback: 'FIJO' }, { history: [], incoming: '??', scopes: [] });
+    assert.equal(r, 'FIJO', borrador);
+  }
+});

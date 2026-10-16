@@ -72,12 +72,18 @@ export function documentIntent(
     if (short && query.category && /^(?:no|mejor)\s+(?:(?:el|la|un|una)\s+)?[a-zñ]+(?:\s+de\s+cuenta)?$/.test(clean)) {
       return { kind: 'document', request: text };
     }
-    const monthAnswer = /^(?:(?:no|mejor|y|ahora)\s+)?(?:(?:la|el|lo)\s+de(?:l)?\s+|de\s+|del\s+|mes\s+de\s+)?(?:[a-zñ]{4,12}|20\d{2}[-/]\d{1,2})(?:\s+(?:de\s+)?20\d{2})?$/.test(clean) ||
-      /^(?:(?:la|el)\s+de\s+)?(?:este mes|mes pasado|mes anterior|mes actual)$/.test(clean);
+    const monthAnswer = /^(?:(?:no|mejor|y|ahora)\s+)?(?:(?:la|el|lo)\s+de(?:l)?\s+|de\s+|del\s+|mes\s+de\s+)?(?:[a-zñ]{4,12}|20\d{2}[-/]\d{1,2})(?:\s+(?:del?\s+)?20\d{2})?$/.test(clean) ||
+      /^(?:(?:la|el)\s+de\s+)?(?:este mes|mes pasado|mes anterior|mes actual)$/.test(clean) ||
+      // "de este mes tienes", "todos los de este mes", "del mes de
+      // octubre": con el pedido en curso, todo lo que no es el mes es relleno.
+      soloMesYRelleno(clean);
     const folioAnswer = /^(?:(?:no|mejor|y)\s+)?(?:(?:la|el|lo)\s+)?(?:(?:de|del)\s+)?(?:folio\s+)?[a-z]{1,3}-?\d{3,}[a-z0-9-]*$/.test(clean);
     const fileAnswer = nombreDeArchivo(text) !== null &&
       /^(?:(?:el|la|archivo|documento|nombre|de|del)\s+)*\S+$/.test(text);
-    if (short && ((query.period && monthAnswer) || (query.folio && folioAnswer) || fileAnswer)) {
+    // "¿De este mes tienes?" lleva signo y no cuenta como corto, pero es
+    // solo un mes.
+    if ((short && ((query.period && monthAnswer) || (query.folio && folioAnswer) || fileAnswer)) ||
+        (query.period && soloMesYRelleno(clean))) {
       return { kind: 'document', request: text };
     }
     if (context.pendiente === 'categoria' && short && query.category &&
@@ -130,6 +136,18 @@ export function documentIntent(
     return { kind: 'ambiguous' };
   }
   return { kind: 'other' };
+}
+
+const MESES = 'enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre';
+
+/** Nada más que un mes dicho de cualquier forma, con palabras que no piden otra cosa. */
+export function soloMesYRelleno(clean: string): boolean {
+  if (!new RegExp(`\\b(?:${MESES}|mes|20\\d{2})\\b`).test(clean)) return false;
+  const resto = clean
+    .replace(new RegExp(`\\b(?:${MESES})\\b`, 'g'), ' ')
+    .replace(/\b(?:20\d{2}|y|ahora|mejor|todos|todas|los|las|lo|la|el|de|del|mes|me|tienes|tienen|hay|dame|mandame|pasame|porfa|por|favor|este|esta|pasado|anterior|actual|ano|que|cuales)\b/g, ' ')
+    .trim();
+  return resto === '';
 }
 
 /** Una errata en la respuesta a “¿de qué empresa?”, sin aceptar una oración. */

@@ -50,7 +50,7 @@ import {
   type Clasificacion,
 } from './message-classifier';
 import { dividirPedidos, leerVariasOpciones, type SeleccionOpciones, type VariosPedidos } from './pedidos';
-import { documentIntent } from './document-intent';
+import { documentIntent, soloMesYRelleno } from './document-intent';
 import * as voz from './voz';
 
 /**
@@ -338,7 +338,11 @@ export class SupportStrategy {
     }
 
     // "a las 1 y 3 salgo" no es elegir la 1 y la 3.
-    const varias = numeroCasual(message.body) ? null : leerVariasOpciones(message.body);
+    // "Todos los de este mes" con la lista de ese mes a la vista es "todos".
+    const todosDelMes = /\b(?:todos|todas)\b/.test(normalizar(message.body)) && soloMesYRelleno(normalizar(message.body));
+    const varias = numeroCasual(message.body)
+      ? null
+      : leerVariasOpciones(todosDelMes ? 'todos' : message.body);
     if (varias !== null && hayListaDeDocumentos) {
       return this.entregarVariasOpciones(varias, turn, sol);
     }

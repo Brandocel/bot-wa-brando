@@ -2909,3 +2909,26 @@ test('"¿cuáles documentos de alta tienes?" no repite el inventario entero', as
   assert.match(texto, /ABNER GARCIA/);
   assert.doesNotMatch(texto, /FACTURA_OCTUBRE/);
 });
+
+test('con contratos en curso: "de este mes tienes", "octubre del 2026" y "todos los de este mes" siguen el pedido', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-16T12:00:00Z') });
+  t.mock.method(Math, 'random', () => 0);
+  const h = makeHarness({ draftResponse: 'Perfecto, voy a buscar los contratos.' });
+  h.search.catalog = [
+    document('c1', 'CONTRATO ALAN OCT.pdf', 'CONTRATO', '2026-10'),
+    document('c2', 'CONTRATO PEDRO OCT.pdf', 'CONTRATO', '2026-10'),
+    document('c3', 'CONTRATO LUIS SEP.pdf', 'CONTRATO', '2026-09'),
+  ];
+
+  await h.handle('me puedes dar contratos rey');
+  const esteMes = (await h.handle('de este mes tienes'))?.text.replaceAll('*', '') ?? '';
+  assert.match(esteMes, /2 contratos de octubre de 2026/);
+  assert.doesNotMatch(esteMes, /LUIS/);
+
+  const octubre = (await h.handle('octubre del 2026'))?.text.replaceAll('*', '') ?? '';
+  assert.match(octubre, /2 contratos de octubre de 2026/);
+
+  await h.handle('todos los de este mes');
+  assert.equal(h.delivered.length, 2);
+  assert.equal(h.writerCalls.length, 0, 'nada de esto pasa por el redactor libre');
+});
