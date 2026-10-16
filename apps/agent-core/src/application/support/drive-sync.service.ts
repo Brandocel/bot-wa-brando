@@ -397,6 +397,10 @@ export class DriveSyncService implements OnModuleInit {
     // versión: aprobó "el Excel del contador", no una versión concreta.
     let clase: DocClass | null = clas?.clase ?? null;
     let classifiedBy: string | null = clas?.fuente ?? null;
+
+    // Una PERSONA guarda en su carpeta lo suyo: no hay "interno" ni "ajeno"
+    // que separar. Todo se entrega; las credenciales ya se cortaron arriba.
+    if (organization.kind === 'PERSONA') clase = 'ENTREGABLE';
     if (
       previo?.classifiedBy === 'operador' &&
       (previo.docClass === 'ENTREGABLE' || previo.docClass === 'INTERNO')
@@ -633,6 +637,29 @@ export class DriveSyncService implements OnModuleInit {
       }
     }
     return { aprobados, omitidos };
+  }
+
+  /**
+   * Al volverse PERSONA, lo que el clasificador dejó fuera o en revisión
+   * pasa a entregable. Lo que rechazó una persona a mano y lo sensible se
+   * quedan como están.
+   */
+  async liberarPersona(organizationId: string): Promise<number> {
+    const r = await this.prisma.document.updateMany({
+      where: {
+        organizationId,
+        status: { in: ['EXCLUDED', 'QUARANTINE'] },
+        // Con OR explícitos: un NOT sobre columnas nulas deja fuera filas
+        // que sí tocaba liberar.
+        AND: [
+          { OR: [{ docClass: null }, { docClass: { not: 'SENSIBLE' } }] },
+          { OR: [{ classifiedBy: null }, { classifiedBy: { not: 'operador' } }, { status: 'QUARANTINE' }] },
+        ],
+      },
+      data: { status: 'INDEXED', docClass: 'ENTREGABLE' },
+    });
+    if (r.count > 0) this.logger.log(`${r.count} documento(s) liberados al volverse persona`);
+    return r.count;
   }
 
   /** Fuerza un barrido completo: borra el cursor y vuelve a leer todo. */

@@ -1278,6 +1278,8 @@ export class PanelApiController {
       },
     });
 
+    if (body.kind === 'PERSONA') await this.sync.liberarPersona(body.id);
+
     // Cambiar de carpeta invalida el cursor de Drive: el barrido incremental
     // solo trae CAMBIOS, y la carpeta nueva no ha cambiado desde entonces —
     // sus archivos son viejos y no aparecerían nunca. Borrar el cursor
