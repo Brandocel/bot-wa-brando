@@ -9,6 +9,7 @@ import { cn } from '@/lib/cn';
 import { plural } from '@/lib/format';
 import { juntar, pasosDe, type Empresa } from './api';
 import { PasoDocumentos } from './PasoDocumentos';
+import { PasoPlan, usePlan } from './PasoPlan';
 import { PasoWhatsApp } from './PasoWhatsApp';
 
 interface PasoProps {
@@ -50,6 +51,8 @@ export function PasosEmpresa({ empresa: o, onVerPersonas }: Props) {
   const [cajon, setCajon] = useState<'ventas' | 'facturacion' | null>(null);
 
   const pasos = pasosDe(o);
+  const persona = o.kind === 'PERSONA';
+  const plan = usePlan(o.id, persona).data?.suscripcion;
   const faltan = pasos.filter((p) => !p.listo).map((p) => p.nombre);
   const [, ventas, facturacion, quienFactura, documentos] = pasos;
   const productos = o._count.products;
@@ -130,6 +133,12 @@ export function PasosEmpresa({ empresa: o, onVerPersonas }: Props) {
           {/* La clave reinicia la carpeta capturada si cambia la guardada. */}
           <PasoDocumentos key={`${o.id}|${o.driveFolderId}`} empresa={o} />
         </Paso>
+
+        {persona && (
+          <Paso n={6} listo={plan?.estado === 'ACTIVA'} titulo="Su plan">
+            <PasoPlan empresaId={o.id} />
+          </Paso>
+        )}
       </ol>
 
       <Sheet

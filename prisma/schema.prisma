@@ -356,6 +356,7 @@ model Organization {
   invoicing   InvoicingSettings?
   fiscalProfiles FiscalProfile[]
   invoices    Invoice[]
+  plan        Suscripcion?
 }
 
 enum MemberRole {
@@ -938,4 +939,29 @@ model InvoiceRequest {
   updatedAt      DateTime @updatedAt
 
   @@index([expiresAt])
+}
+
+// ─── Plan Persona (cobro con Stripe) ─────────────────────────────────────
+
+/// La suscripción de una organización en Stripe. Una por organización: si
+/// cancela y vuelve, se reemplaza por una nueva que empieza en el mes 1.
+model Suscripcion {
+  organizationId   String    @id
+  stripeCustomerId String?
+  /// null mientras la liga de pago no se ha pagado.
+  stripeSubscriptionId String? @unique
+  stripeScheduleId String?
+  /// PENDIENTE (liga enviada) | ACTIVA | ATRASADA | CANCELADA
+  estado           String    @default("PENDIENTE")
+  conFactura       Boolean   @default(false)
+  /// Cobros pagados en esta suscripción; el siguiente es el mes mesesPagados + 1.
+  mesesPagados     Int       @default(0)
+  /// Último invoice de Stripe contado, para no contar dos veces un webhook repetido.
+  ultimoCobroId    String?
+  ultimoCobroAt    DateTime?
+  checkoutUrl      String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 }

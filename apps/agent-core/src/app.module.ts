@@ -41,6 +41,11 @@ import { FacturacionService } from './application/facturacion/facturacion.servic
 import { FacturaChatService } from './application/facturacion/factura-chat.service';
 import { FacturaEquipoService } from './application/facturacion/factura-equipo.service';
 import { FacturaComAdapter } from './infrastructure/facturacion/factura-com.adapter';
+import { PlanService, STRIPE } from './application/plan/plan.service';
+import { StripeClient } from './infrastructure/pagos/stripe.client';
+import { StripeController } from './infrastructure/http/stripe.controller';
+import { PanelPlanController } from './infrastructure/http/panel/panel-plan.controller';
+import { config } from './config';
 import { PanelFacturasController } from './infrastructure/http/panel/panel-facturas.controller';
 import { PanelPendientesController } from './infrastructure/http/panel/panel-pendientes.controller';
 import { PanelPruebaController } from './infrastructure/http/panel/panel-prueba.controller';
@@ -81,6 +86,8 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     PanelConnectorController,
     PanelVentasController,
     PanelFacturasController,
+    PanelPlanController,
+    StripeController,
     PanelPendientesController,
     PanelPruebaController,
     ConnectorController,
@@ -110,6 +117,8 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     { provide: LLM_PORT, useClass: AnthropicAdapter },
     // El PAC. Cambiar de proveedor = otro adaptador aquí.
     { provide: FACTURACION_PORT, useClass: FacturaComAdapter },
+    // Cobro del plan Persona. Sin llave, null: el panel no ofrece ligas.
+    { provide: STRIPE, useFactory: () => (config.stripe.secretKey ? new StripeClient(config.stripe.secretKey) : null) },
 
     // ── Pipeline ───────────────────────────────────────────────────────
     SourceFilter,
@@ -148,6 +157,7 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     FacturacionService,
     FacturaChatService,
     FacturaEquipoService,
+    PlanService,
 
     // ── Casos de uso ───────────────────────────────────────────────────
     DriveCommandsService,

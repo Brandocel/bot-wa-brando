@@ -78,6 +78,16 @@ export const config = {
    */
   facturacionSecret: parseFacturacionSecret(process.env.FACTURACION_SECRET),
 
+  /**
+   * Cobro del plan Persona. Vacío = el panel no ofrece ligas de pago y el
+   * resto del bot sigue igual. Con sk_test_ se prueba sin cobrar de verdad.
+   */
+  stripe: {
+    secretKey: process.env.STRIPE_SECRET_KEY?.trim() || null,
+    /** whsec_... del endpoint /stripe/webhook en el dashboard de Stripe. */
+    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET?.trim() || null,
+  },
+
   queue: {
     /**
      * Cuántos mensajes entrantes se atienden a la vez (de chats distintos;

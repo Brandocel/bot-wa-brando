@@ -9,6 +9,8 @@ import { montarPanelNuevo } from './infrastructure/http/panel/panel-spa';
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     logger: ['error', 'warn', 'log'],
+    // El webhook de Stripe firma el cuerpo tal cual llegó: hay que guardarlo.
+    rawBody: true,
   });
 
   // Render pone un proxy delante: sin esto req.ip es la del proxy y el
