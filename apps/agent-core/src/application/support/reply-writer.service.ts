@@ -94,6 +94,7 @@ function persona(ctx: ReplyContext, brief: ReplyBrief): string {
     'Qué SÍ puedes hacer: buscar y mandar por aquí facturas, contratos, cotizaciones, reportes, pólizas, estados de cuenta y documentos contables; decir qué documentos hay de un mes o tipo; reenviar uno que ya se mandó; y pasar la conversación con una persona del equipo.',
     'Si preguntan quién o qué eres, di con honestidad que eres el asistente automático de documentos; no inventes edad, nombre propio ni detalles técnicos.',
     'No inventes horarios, precios, trámites, políticas, documentos, fechas ni folios. Si no sabes algo, dilo una vez y di qué sí puedes hacer.',
+    'En este mensaje NO mandas ningún archivo. Nunca digas que enviaste, envías o vas a enviar documentos, ni que van en camino o están por llegar, ni cuántos hay: eso lo hace el sistema aparte. Si en la conversación no aparece "[documento enviado]", no se ha mandado nada: dilo con honestidad. Si te piden documentos, pide que digan cuál (tipo, nombre o mes).',
     'No repitas una frase que ya dijiste en la conversación: si ya ofreciste pasarlo con alguien, no lo vuelvas a ofrecer igual.',
     '',
     TONO[brief.intent],
@@ -129,6 +130,28 @@ function mismaFrase(a: string, b: string): boolean {
   return n(a) === n(b);
 }
 
+/** "Te envío…", "ya van en camino", "te los mandé": dice que salió algo. */
+export function prometeEnvio(text: string): boolean {
+  const t = text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    // "No te he mandado nada" es justo la honestidad que se busca.
+    .replace(/\b(?:no|nada)\s+(?:te\s+)?(?:(?:lo|la|los|las|le)\s+)?(?:he|hemos|ha)?\s*\w+/g, ' ');
+  return (
+    /\b(?:te\s+)?(?:(?:los|las|lo|la|le)\s+)?(?:envio|envie|mando|mande|paso|pase|comparto|adjunto)\b/.test(t) ||
+    /\b(?:te\s+)?(?:(?:los|las|lo|la)\s+)?(?:enviare|mandare|voy\s+a\s+(?:enviar|mandar|pasar))\b/.test(t) ||
+    /\ben\s+camino\b/.test(t) ||
+    /\b(?:ya\s+)?(?:fueron|fue|estan|esta|quedaron|quedo)\s+(?:enviad|mandad|compartid)[oa]s?\b/.test(t) ||
+    /\b(?:he|hemos|ya)\s+(?:enviado|mandado|compartido)\b/.test(t) ||
+    /\brevisa\s+que\s+(?:hayan|haya)\s+llegado\b/.test(t) ||
+    // "Mientras llegan los documentos", "normalmente llegan en segundos":
+    // da por hecho un envío que nadie hizo.
+    /\b(?:llegan|llegaran|lleguen|llegue|llega)\s+(?:los|las|tus|el|la|en)\b/.test(t) ||
+    /\btiempos?\s+de\s+entrega\b/.test(t)
+  );
+}
+
 /** Por qué se descarta un borrador, o null si sirve. */
 function validar(text: string, brief: ReplyBrief, ctx?: ReplyContext): string | null {
   if (!text) return 'vacío';
@@ -138,6 +161,12 @@ function validar(text: string, brief: ReplyBrief, ctx?: ReplyContext): string | 
   if (/\n\s*\n/.test(text)) return 'más de un párrafo';
   if (/^(?:cliente|usuario|bot|asistente)\s*:/im.test(text)) return 'trae diálogo';
   if (ctx?.history.some((t) => t.role === 'bot' && mismaFrase(t.text, text))) return 'repite lo que ya dijo';
+  // Lo peor que puede decir: "te envío los 45" sin que salga nada. Las
+  // entregas y los conteos son de las plantillas, que sí los conocen.
+  if (prometeEnvio(text)) return 'promete un envío';
+  if (/\b\d+\s+(?:documentos?|archivos?|facturas?|contratos?|constancias?|reportes?|p[oó]lizas?)\b/i.test(text)) {
+    return 'inventa un conteo';
+  }
 
   for (const literal of brief.mustInclude ?? []) {
     if (!text.includes(literal)) return `falta "${literal}"`;

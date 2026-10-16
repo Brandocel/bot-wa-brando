@@ -183,7 +183,7 @@ export function parseQuery(raw: string): SearchQuery {
  */
 const RUIDO = new Set([
   'hola', 'buenas', 'buenos', 'dias', 'tardes', 'noches', 'oye', 'oiga', 'que', 'tal',
-  'necesito', 'quiero', 'quisiera', 'ocupo', 'busco', 'dame', 'mandame', 'pasame', 'enviame',
+  'necesito', 'necesitamos', 'quiero', 'quisiera', 'ocupo', 'ocupamos', 'requiero', 'requerimos', 'busco', 'dame', 'mandame', 'pasame', 'enviame',
   'manda', 'pasa', 'envia', 'mandar', 'pasar', 'enviar', 'compartir', 'comparteme', 'tienes',
   'tendras', 'tendra', 'tiene', 'habra', 'hay', 'puedes', 'podrias', 'puede', 'podria',
   'favor', 'porfa', 'porfavor', 'gracias', 'ayuda', 'ayudame', 'apoyo', 'apoyame', 'urgente',

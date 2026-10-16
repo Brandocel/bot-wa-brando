@@ -1731,7 +1731,11 @@ ${reply.text}` : gracias };
       scopes.length === 1 ? scopes[0]!.organizationId : empresaGuardada(sol, scopes);
 
     const empresa = nombreEmpresa(scopes, organizationId);
-    const { period, category: categoriaDicha } = parseQuery(turn.message.body);
+    const { period, category: categoriaDicha, text } = parseQuery(turn.message.body);
+    // "¿Qué documentos de alta tienes?": lo que sobra después de tipo y mes
+    // es el tema. Sin palabras clave, parseQuery devuelve el mensaje entero,
+    // y eso no es un tema.
+    const tema = text && text !== turn.message.body.trim() ? text : null;
 
     /**
      * "¿De qué meses hay?": meses del tipo en juego, con cuántos en cada
@@ -1775,11 +1779,11 @@ ${reply.text}` : gracias };
 
     const category = categoriaDicha;
 
-    if (period || category) {
-      const docs = await this.search.search(
+    if (period || category || tema) {
+      const { docs, texto } = await this.buscarConTema(
         scopes,
         { category, period, folio: null, text: null, organizationId },
-        MAX_OPCIONES + 1,
+        tema,
       );
 
       if (docs.length === 0) {
@@ -1797,25 +1801,27 @@ ${reply.text}` : gracias };
         };
       }
 
-      if (period || docs.length <= MAX_OPCIONES) {
+      // Con tema, siempre la lista: repetirle el inventario entero a quien
+      // ya dijo qué busca es no haberle hecho caso.
+      if (period || texto || docs.length <= MAX_OPCIONES) {
         const mostrados = docs.slice(0, MAX_OPCIONES);
         const total = docs.length > MAX_OPCIONES
-          ? await this.search.count(scopes, { category, period, folio: null, text: null, organizationId })
+          ? await this.search.count(scopes, { category, period, folio: null, text: texto, organizationId })
           : docs.length;
+        const que =
+          `${nombrePlural(category)}${texto ? ` de *${texto}*` : ''}` +
+          `${period ? ` de ${mesEnPalabras(period)}` : ''}`;
         await this.guardarOpciones(turn, mostrados);
         return {
           text: [
             total > mostrados.length
-              ? voz.encabezadoListaLimitada(
-                total, mostrados.length,
-                `${nombrePlural(category)}${period ? ` de ${mesEnPalabras(period)}` : ''}`,
-              )
-              : period
+              ? voz.encabezadoListaLimitada(total, mostrados.length, que)
+              : period && !texto
                 ? voz.encabezadoInventarioMes(mesEnPalabras(period), docs.length)
-                : voz.encabezadoLista(docs.length, nombrePlural(category)),
+                : voz.encabezadoLista(docs.length, que),
             ...mostrados.map((doc, i) => `*${i + 1}.* ${describe(doc)}`),
             '',
-            voz.pieInventario(),
+            total > mostrados.length ? voz.pieListaLimitada(!!period) : voz.pieInventario(),
           ].join('\n'),
           awaiting: 'CLIENTE',
         };
@@ -1831,6 +1837,24 @@ ${reply.text}` : gracias };
       text: voz.inventarioGeneral(describirInventario(lineas, empresa)),
       awaiting: 'NADIE',
     };
+  }
+
+  /**
+   * Busca con el tema que dijo la persona. Todas sus palabras primero; si
+   * así no hay nada, cada palabra sola y en singular: "alta de empleados"
+   * da con "CONSTANCIA DE ALTA…" aunque el archivo no diga "empleados".
+   */
+  private async buscarConTema(
+    scopes: readonly OrgScope[],
+    base: SearchQuery,
+    tema: string | null,
+  ): Promise<{ docs: Document[]; texto: string | null }> {
+    const intentos = tema ? [tema, ...variantesDeTema(tema)] : [null];
+    for (const texto of intentos) {
+      const docs = await this.search.search(scopes, { ...base, text: texto }, MAX_OPCIONES + 1);
+      if (docs.length > 0) return { docs, texto };
+    }
+    return { docs: [], texto: null };
   }
 
   /**
@@ -2767,11 +2791,30 @@ function describirInventario(
   return [quien, ...partes.map((p) => `• ${p}`)].join('\n');
 }
 
+/**
+ * Las palabras del tema por separado, en el orden en que las dijo, y en
+ * singular: "alta empleados" → alta, empleados, empleado.
+ */
+function variantesDeTema(tema: string): string[] {
+  const palabras = tema.split(/\s+/).filter((p) => p.length >= 4);
+  const singular = (p: string) => p.replace(/(?<=[aeiou])s$/, '').replace(/(?<=[^aeiou])es$/, '');
+  const todas = palabras.flatMap((p) => [p, singular(p)]);
+  return [...new Set(todas)].filter((p) => p !== tema);
+}
+
 function rangoMeses(from: Date | null, to: Date | null): string {
   if (!from) return '';
+  // Un mes que todavía no llega es un nombre de archivo mal leído, no un
+  // dato: "(feb 2025 a ago 2028)" solo confunde.
+  if (to && to >= inicioDelMesQueViene()) return '';
   const a = mesCorto(from);
   const b = to ? mesCorto(to) : a;
   return a === b ? ` (${a})` : ` (${a} a ${b})`;
+}
+
+function inicioDelMesQueViene(): Date {
+  const hoy = new Date();
+  return new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth() + 1, 1));
 }
 
 function mesCorto(d: Date): string {

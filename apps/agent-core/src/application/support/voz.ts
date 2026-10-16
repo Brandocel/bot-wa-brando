@@ -254,6 +254,13 @@ export function encabezadoInventarioMes(mes: string, cuantos: number): string {
   return `De ${n(mes)} tengo ${cuantos === 1 ? 'esto' : `estos ${n(String(cuantos))}`}:`;
 }
 
+/** Bajo una lista recortada: cómo llegar al que busca sin leerse todos. */
+export function pieListaLimitada(conMes: boolean): string {
+  return conMes
+    ? 'Si es uno de estos, dime el *número*. Si no, dime el *nombre* de la persona y lo busco.'
+    : 'Si es uno de estos, dime el *número*. Si no, dime el *nombre* o el *mes* y lo busco.';
+}
+
 export function pieInventario(): string {
   return una(['Si quieres alguno, dime el *número*.', 'Pide el que necesites con el *número*.']);
 }
@@ -330,8 +337,8 @@ export function sinDocumentosDe(que: string, mes: string | null, empresa: string
 
 export function inventarioGeneral(inventario: string): string {
   return una([
-    `${inventario}\nDime cuál necesitas y de qué mes.`,
-    `${inventario}\n¿Cuál te busco?`,
+    `${inventario}\n\nDime qué buscas. Por ejemplo: *alta de Juan Pérez* o *facturas de octubre*.`,
+    `${inventario}\n\n¿Qué te busco? Por ejemplo: *contrato de Juan Pérez* o *facturas de octubre*.`,
   ]);
 }
 

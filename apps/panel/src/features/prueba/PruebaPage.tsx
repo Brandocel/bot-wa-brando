@@ -164,6 +164,17 @@ export function PruebaPage() {
   );
 }
 
+/** Las *negritas* de WhatsApp, como se verían en el teléfono. */
+function ConFormato({ texto }: { texto: string }) {
+  return (
+    <>
+      {texto.split(/(\*[^*\n]+\*)/g).map((parte, i) =>
+        /^\*[^*\n]+\*$/.test(parte) ? <strong key={i}>{parte.slice(1, -1)}</strong> : parte,
+      )}
+    </>
+  );
+}
+
 /** Lo del cliente a la derecha (somos nosotros); lo del bot a la izquierda. */
 function Burbuja({ m }: { m: Mensaje }) {
   const cliente = m.direction === 'IN';
@@ -186,7 +197,7 @@ function Burbuja({ m }: { m: Mensaje }) {
             {resto.length > 0 && <span className="mt-1 block">{resto.join('\n')}</span>}
           </>
         ) : (
-          m.body
+          <ConFormato texto={m.body} />
         )}
         <span className="mt-1 block text-right text-[11px] opacity-60">
           {hora(m.createdAt)}
