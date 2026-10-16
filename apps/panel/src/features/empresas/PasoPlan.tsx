@@ -164,6 +164,10 @@ export function PasoPlan({ empresaId }: { empresaId: string }) {
       </div>
       <Escalera plan={plan} siguiente={(s && vivo ? s.mesesPagados : 0) + 1} />
       <p className="mt-1.5 text-[11px]">Sin IVA. Baja cada mes; si cancela, vuelve a empezar.</p>
+      {/* Sin llave de Stripe no hay liga que dar: que el ADMIN sepa por qué no ve el botón. */}
+      {usuario.role === 'ADMIN' && !plan.disponible && (
+        <p className="mt-2 text-xs text-warning">Para cobrar falta conectar Stripe: pon STRIPE_SECRET_KEY en Render.</p>
+      )}
 
       <Dialog
         open={abierto}
