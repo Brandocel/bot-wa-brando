@@ -58,6 +58,8 @@ import { PanelVentasController } from './infrastructure/http/panel/panel-ventas.
 import { PanelConnectorController } from './infrastructure/http/panel/panel-connector.controller';
 import { RoutingDocumentSource } from './infrastructure/storage/routing-document-source';
 import { HealthController } from './infrastructure/http/health.controller';
+import { DemoController } from './infrastructure/http/demo.controller';
+import { DemoAgenteService } from './application/demo/demo-agente.service';
 import { WaWebhookController } from './infrastructure/http/wa-webhook.controller';
 import { PanelApiController } from './infrastructure/http/panel/panel-api.controller';
 import { PanelAuthService } from './infrastructure/http/panel/panel-auth.service';
@@ -92,6 +94,7 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     PanelPendientesController,
     PanelPruebaController,
     ConnectorController,
+    DemoController,
   ],
   providers: [
     // ── Infraestructura ────────────────────────────────────────────────
@@ -134,6 +137,7 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     AccessScopeService,
     EntregasEnCursoService,
     AgenteDocumentosService,
+    DemoAgenteService,
     DocumentSearchService,
     DocumentContentService,
     DocumentClassifierService,

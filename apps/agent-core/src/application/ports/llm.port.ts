@@ -52,6 +52,8 @@ export interface LlmPort {
     herramientas: readonly HerramientaLlm[];
     ejecutar: (nombre: string, entrada: Record<string, unknown>) => Promise<string>;
     maxPasos?: number;
+    /** Un modelo fijo en vez del que se eligió en el panel para la tarea (la demo pública va con uno barato). */
+    modelo?: string;
   }): Promise<string | null>;
 }
 

@@ -135,7 +135,7 @@ export class AnthropicAdapter implements LlmPort {
   async agente(input: Parameters<NonNullable<LlmPort['agente']>>[0]): Promise<string | null> {
     const client = this.sdk();
     if (!client) return null;
-    const model = await this.modelo(input.tarea);
+    const model = input.modelo ?? (await this.modelo(input.tarea));
 
     const tools: Anthropic.Tool[] = input.herramientas.map((h) => ({
       name: h.nombre,

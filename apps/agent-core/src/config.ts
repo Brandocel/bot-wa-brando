@@ -98,6 +98,24 @@ export const config = {
      */
     workers: Math.max(1, Number(process.env.INCOMING_WORKERS ?? 4)),
   },
+
+  /**
+   * La demo pública de la web (POST /demo/chat): el agente de documentos
+   * sobre un archivero de ejemplo. Apagada con DEMO_ACTIVA=0. Va con un
+   * modelo barato y con topes, porque cualquiera puede escribirle.
+   */
+  demo: {
+    activa: process.env.DEMO_ACTIVA !== '0',
+    modelo: process.env.DEMO_MODELO?.trim() || 'claude-haiku-4-5-20251001',
+    /** Las páginas que pueden llamarla (CORS), separadas por coma. */
+    origenes: (process.env.DEMO_ORIGENES ?? 'http://localhost:3100')
+      .split(',')
+      .map((o) => o.trim().replace(/\/+$/, ''))
+      .filter(Boolean),
+    porSesion: Math.max(1, Number(process.env.DEMO_MAX_SESION ?? 15)),
+    porIpHora: Math.max(1, Number(process.env.DEMO_MAX_IP_HORA ?? 40)),
+    porDia: Math.max(1, Number(process.env.DEMO_MAX_DIA ?? 600)),
+  },
 } as const;
 
 /**

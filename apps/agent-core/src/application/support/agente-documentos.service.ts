@@ -11,8 +11,8 @@ import { SolicitudService, type Opcion } from './solicitud.service';
 import { TicketService } from './ticket.service';
 
 /** Cuántos se le enseñan al modelo por búsqueda, y cuántos manda de una vez. */
-const MAX_RESULTADOS = 15;
-const MAX_ENTREGA = 10;
+export const MAX_RESULTADOS = 15;
+export const MAX_ENTREGA = 10;
 
 const TIPOS: Record<DocCategory, string> = {
   FACTURA: 'facturas y CFDI',
@@ -216,7 +216,8 @@ export class AgenteDocumentosService {
   }
 }
 
-const HERRAMIENTAS: readonly HerramientaLlm[] = [
+/** Exportadas para la demo pública: las mismas herramientas, sobre un archivero de ejemplo. */
+export const HERRAMIENTAS: readonly HerramientaLlm[] = [
   {
     nombre: 'buscar_documentos',
     descripcion:
