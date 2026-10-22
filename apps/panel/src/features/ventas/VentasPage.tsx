@@ -9,15 +9,17 @@ import { useUsuario } from '@/features/auth/sesion';
 import { plural } from '@/lib/format';
 import { useEmpresas, type Empresa } from './api';
 import { Catalogo } from './Catalogo';
+import { ClientesVenta } from './ClientesVenta';
 import { ConfigFacturacion } from './ConfigFacturacion';
 import { ConfigVentas } from './ConfigVentas';
 import { Facturas } from './Facturas';
 import { Pedidos } from './Pedidos';
 
-type Pestana = 'pedidos' | 'catalogo' | 'config' | 'facturas' | 'facturacion';
+type Pestana = 'pedidos' | 'clientes' | 'catalogo' | 'config' | 'facturas' | 'facturacion';
 
 const PESTANAS: ReadonlyArray<{ value: Pestana; label: string }> = [
   { value: 'pedidos', label: 'Pedidos' },
+  { value: 'clientes', label: 'Clientes' },
   { value: 'catalogo', label: 'Catálogo' },
   { value: 'config', label: 'Configuración' },
   { value: 'facturas', label: 'Facturas' },
@@ -127,6 +129,7 @@ export function VentasPage() {
 
           {/* La clave por empresa reinicia filtros y formularios al cambiar de empresa. */}
           {pestana === 'pedidos' && <Pedidos key={actual.id} empresaId={actual.id} />}
+          {pestana === 'clientes' && <ClientesVenta key={actual.id} empresaId={actual.id} />}
           {pestana === 'catalogo' && <Catalogo key={actual.id} empresaId={actual.id} />}
           {pestana === 'config' && <ConfigVentas key={actual.id} empresaId={actual.id} />}
           {pestana === 'facturas' && <Facturas key={actual.id} empresaId={actual.id} />}

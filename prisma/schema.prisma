@@ -58,15 +58,18 @@ model Contact {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  conversations Conversation[]
-  memoryFacts   MemoryFact[]
-  reminders     Reminder[]
-  lead          Lead?
-  orders        Order[]
-  memberships   Membership[]
-  tickets       Ticket[]
+  conversations  Conversation[]
+  memoryFacts    MemoryFact[]
+  reminders      Reminder[]
+  lead           Lead?
+  orders         Order[]
+  perfilesVenta  PerfilCliente[]
+  eventosVenta   EventoCliente[]
+  preferencias   PreferenciaCliente[]
+  memberships    Membership[]
+  tickets        Ticket[]
   fiscalProfiles FiscalProfile[]
-  invoices      Invoice[]
+  invoices       Invoice[]
 
   @@index([role])
 }
@@ -343,20 +346,23 @@ model Organization {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  memberships Membership[]
-  documents   Document[]
-  tickets     Ticket[]
-  connectors  ConnectorDevice[]
-  pairCodes   ConnectorPairCode[]
-  storedFiles StoredFile[]
-  panelUsers  PanelUser[]
-  sales       SalesSettings?
-  products    Product[]
-  orders      Order[]
-  invoicing   InvoicingSettings?
-  fiscalProfiles FiscalProfile[]
-  invoices    Invoice[]
-  plan        Suscripcion?
+  memberships         Membership[]
+  documents           Document[]
+  tickets             Ticket[]
+  connectors          ConnectorDevice[]
+  pairCodes           ConnectorPairCode[]
+  storedFiles         StoredFile[]
+  panelUsers          PanelUser[]
+  sales               SalesSettings?
+  products            Product[]
+  orders              Order[]
+  perfilesCliente     PerfilCliente[]
+  eventosCliente      EventoCliente[]
+  preferenciasCliente PreferenciaCliente[]
+  invoicing           InvoicingSettings?
+  fiscalProfiles      FiscalProfile[]
+  invoices            Invoice[]
+  plan                Suscripcion?
 }
 
 enum MemberRole {
@@ -712,36 +718,36 @@ enum DeliveryMode {
 /// Ventas de UNA empresa por su línea de WhatsApp. Sin esta fila, o con
 /// enabled en false, la línea solo atiende a sus clientes registrados.
 model SalesSettings {
-  organizationId String  @id
-  enabled        Boolean @default(false)
+  organizationId String         @id
+  enabled        Boolean        @default(false)
   /// Qué es el negocio, en una frase: "pollos asados al carbón", "equipo de cómputo".
-  businessType   String  @default("")
+  businessType   String         @default("")
   /// Lo que el bot debe saber para recomendar: especialidades, para cuántos
   /// rinde cada cosa, promociones vigentes. Texto de la empresa, no del bot.
-  pitch          String  @default("") @db.Text
+  pitch          String         @default("") @db.Text
   /// Horario semanal: { "lun": [["11:00","21:00"]], "dom": [] ... }, hora local.
-  hours          Json    @default("{}")
-  timezone       String  @default("America/Mexico_City")
+  hours          Json           @default("{}")
+  timezone       String         @default("America/Mexico_City")
   deliveryModes  DeliveryMode[]
   /// Zonas de domicilio: [{ "nombre": "Centro", "costo": 30 }]. Costo en pesos.
-  zones          Json    @default("[]")
+  zones          Json           @default("[]")
   /// Minutos que tarda en estar listo un pedido normal.
-  prepMinutes    Int     @default(30)
+  prepMinutes    Int            @default(30)
   /// Pedido mínimo en pesos (0 = sin mínimo).
-  minOrder       Int     @default(0)
-  updatedAt      DateTime @updatedAt
+  minOrder       Int            @default(0)
+  updatedAt      DateTime       @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 }
 
 /// Lo que vende una empresa. El bot solo ofrece lo que está aquí y activo.
 model Product {
-  id             String  @id @default(cuid())
+  id             String   @id @default(cuid())
   organizationId String
   name           String
-  description    String  @default("")
+  description    String   @default("")
   /// Para agrupar en la carta: "Pollos", "Complementos", "Bebidas".
-  section        String  @default("")
+  section        String   @default("")
   /// Centavos: sin decimales flotantes en los totales.
   priceCents     Int
   /// Días en que se vende ("lun".."dom"). Vacío = todos. "Súper Miércoles" = ["mie"].
@@ -750,8 +756,8 @@ model Product {
   satProdCode    String?
   /// c_ClaveUnidad del SAT (H87 pieza, KGM kilo...). null = la de la empresa.
   satUnitCode    String?
-  active         Boolean @default(true)
-  sortOrder      Int     @default(0)
+  active         Boolean  @default(true)
+  sortOrder      Int      @default(0)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -772,25 +778,25 @@ enum OrderStatus {
 /// Un pedido. Los renglones copian nombre y precio del producto en ese
 /// momento: cambiar el catálogo después no altera un pedido ya hecho.
 model Order {
-  id             String       @id @default(cuid())
+  id             String        @id @default(cuid())
   /// Folio corto para hablar del pedido: "P-1042".
-  number         Int          @default(autoincrement())
+  number         Int           @default(autoincrement())
   organizationId String
   contactId      String
   conversationId String
-  status         OrderStatus  @default(ARMANDO)
+  status         OrderStatus   @default(ARMANDO)
   /// La última probabilidad de compra (0-100) leída en la conversación.
   buyingScore    Int?
   /// Se le mostró el resumen final y se espera su "sí". Un sí sin esto
   /// no confirma nada: así un "ok" suelto no manda un pedido.
-  confirmPending Boolean      @default(false)
+  confirmPending Boolean       @default(false)
   /// [{ productId, nombre, precioCents, cantidad, nota }]
-  items          Json         @default("[]")
+  items          Json          @default("[]")
   deliveryMode   DeliveryMode?
   address        String?
   zone           String?
-  deliveryCents  Int          @default(0)
-  totalCents     Int          @default(0)
+  deliveryCents  Int           @default(0)
+  totalCents     Int           @default(0)
   customerName   String?
   notes          String?
   /// null = lo antes posible; si no, para cuándo lo quiere.
@@ -800,8 +806,8 @@ model Order {
   decidedBy      String?
   rejectReason   String?
   submittedAt    DateTime?
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
@@ -816,6 +822,116 @@ model Order {
 
 /// Cómo factura UNA empresa. Cada empresa timbra con su propio RFC y CSD,
 /// dados de alta en Factura.com; aquí solo van sus llaves de API, cifradas.
+// ─── Clientes de venta: trazabilidad, preferencias, recomendación ──────
+
+enum EtapaCliente {
+  NUEVO // escribió, todavía no arma nada
+  PROSPECTO // armó o preguntó por productos, sin pedido enviado
+  COMPRADOR // un pedido
+  RECURRENTE // dos o más
+  EN_RIESGO // ya tardó más de lo que suele tardar en volver
+  PERDIDO // más de 90 días sin pedir
+}
+
+/// Lo que se sabe de un cliente EN UNA EMPRESA. Se recalcula de sus
+/// pedidos (ClientesVentaService.aprender): nada aquí lo inventa el modelo.
+model PerfilCliente {
+  id             String       @id @default(cuid())
+  organizationId String
+  contactId      String
+  etapa          EtapaCliente @default(NUEVO)
+  nombre         String?
+
+  primerContactoAt DateTime  @default(now())
+  ultimoContactoAt DateTime  @default(now())
+  ultimoPedidoAt   DateTime?
+
+  pedidos             Int  @default(0)
+  gastoCents          Int  @default(0)
+  ticketPromedioCents Int  @default(0)
+  /// Días promedio entre pedidos (null con menos de dos).
+  frecuenciaDias      Int?
+
+  entregaPreferida  DeliveryMode?
+  zonaPreferida     String?
+  direccionHabitual String?
+  /// Hora local (0-23) en que suele pedir, y días ("lun".."dom").
+  horaHabitual      Int?
+  diasHabituales    String[]      @default([])
+
+  /// La última lectura de la plática (emoción y probabilidad de compra).
+  ultimaEmocion String?
+  ultimoScore   Int?
+
+  /// Sentimiento acumulado de sus mensajes de venta: -100 (molesto) a 100
+  /// (entusiasmado), hacia dónde va y la emoción que más se repite.
+  sentimiento      Int?
+  tendencia        String? // mejora | estable | empeora
+  emocionDominante String?
+
+  /// Clasificación del lead: puntaje 0-100, segmento y RFM ("R4F3M5":
+  /// recencia, frecuencia y monto, 1 a 5). Ver perfil-cliente.ts.
+  puntaje  Int     @default(0)
+  segmento String  @default("NUEVO")
+  rfm      String?
+
+  /// Postventa: lo siguiente que conviene hacer con este cliente y cuándo.
+  proximaAccion   String?
+  proximaAccionAt DateTime?
+
+  /// Lo que anote el equipo a mano.
+  notas     String?  @db.Text
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, contactId])
+  @@index([organizationId, etapa])
+  @@index([organizationId, segmento])
+  @@index([organizationId, proximaAccionAt])
+}
+
+/// La trazabilidad: cada paso del cliente con la empresa, en orden.
+model EventoCliente {
+  id             String   @id @default(cuid())
+  organizationId String
+  contactId      String
+  /// primer_contacto | pedido_armando | pedido_confirmado | pedido_aceptado |
+  /// pedido_rechazado | pedido_entregado | pedido_cancelado | reclamo | pidio_persona
+  tipo           String
+  detalle        Json     @default("{}")
+  orderId        String?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, contactId, createdAt])
+  @@index([organizationId, tipo, createdAt])
+}
+
+/// Qué le gusta: cada producto que ha pedido, cuántas veces y cómo.
+model PreferenciaCliente {
+  id             String   @id @default(cuid())
+  organizationId String
+  contactId      String
+  producto       String
+  productId      String?
+  /// En cuántos pedidos aparece, y cuántas piezas en total.
+  veces          Int      @default(0)
+  unidades       Int      @default(0)
+  /// Notas que repite: "sin picante", "bien dorado".
+  notas          String[] @default([])
+  ultimaVez      DateTime
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, contactId, producto])
+  @@index([organizationId, contactId])
+}
+
 model InvoicingSettings {
   organizationId   String   @id
   enabled          Boolean  @default(false)
@@ -946,26 +1062,26 @@ model InvoiceRequest {
 /// La suscripción de una organización en Stripe. Una por organización: si
 /// cancela y vuelve, se reemplaza por una nueva que empieza en el mes 1.
 model Suscripcion {
-  organizationId   String    @id
-  stripeCustomerId String?
+  organizationId       String    @id
+  stripeCustomerId     String?
   /// null mientras la liga de pago no se ha pagado.
-  stripeSubscriptionId String? @unique
-  stripeScheduleId String?
+  stripeSubscriptionId String?   @unique
+  stripeScheduleId     String?
   /// PRUEBA (mes gratis) | PENDIENTE (liga enviada) | ACTIVA | ATRASADA | CANCELADA
-  estado           String    @default("PENDIENTE")
+  estado               String    @default("PENDIENTE")
   /// Mes gratis de la prueba piloto. Si paga la liga antes de que acabe,
   /// Stripe no cobra nada hasta pruebaHasta.
-  pruebaDesde      DateTime?
-  pruebaHasta      DateTime?
-  conFactura       Boolean   @default(false)
+  pruebaDesde          DateTime?
+  pruebaHasta          DateTime?
+  conFactura           Boolean   @default(false)
   /// Cobros pagados en esta suscripción; el siguiente es el mes mesesPagados + 1.
-  mesesPagados     Int       @default(0)
+  mesesPagados         Int       @default(0)
   /// Último invoice de Stripe contado, para no contar dos veces un webhook repetido.
-  ultimoCobroId    String?
-  ultimoCobroAt    DateTime?
-  checkoutUrl      String?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  ultimoCobroId        String?
+  ultimoCobroAt        DateTime?
+  checkoutUrl          String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   cobros       Cobro[]

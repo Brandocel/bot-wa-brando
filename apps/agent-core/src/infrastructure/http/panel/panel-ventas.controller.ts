@@ -4,6 +4,7 @@ import {
   Controller,
   ForbiddenException,
   Get,
+  Optional,
   Post,
   Query,
   Req,
@@ -14,6 +15,7 @@ import { PrismaService } from '../../persistence/prisma.service';
 import { OutboxDispatcher } from '../../persistence/outbox.dispatcher';
 import { DIAS, cuandoEnPalabras, leerHorario } from '../../../application/sales/horario';
 import { PanelGuard, ParaEmpresa, type PanelRequest } from './panel.guard';
+import { ClientesVentaService, type TipoEvento } from '../../../application/sales/clientes-venta.service';
 
 const MODOS: DeliveryMode[] = ['RECOGER', 'DOMICILIO', 'PAQUETERIA', 'DIGITAL'];
 
@@ -31,6 +33,7 @@ export class PanelVentasController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly outbox: OutboxDispatcher,
+    @Optional() private readonly clientes?: ClientesVentaService,
   ) {}
 
   /** La empresa sobre la que se trabaja. Para escribir hace falta ADMIN o EMPRESA. */
@@ -158,6 +161,84 @@ export class PanelVentasController {
     return this.prisma.product.create({ data: { ...datos, organizationId } });
   }
 
+  // ── Clientes: perfil, preferencias y trazabilidad ──────────────────
+
+  /**
+   * Los clientes de venta de la empresa. `vista`: un segmento, "seguimientos"
+   * (los que tienen una acción para hoy o vencida) o todos, del contacto más
+   * reciente al más viejo.
+   */
+  @Get('clientes')
+  async customers(@Req() req: PanelRequest, @Query('empresa') empresa?: string, @Query('vista') vista?: string) {
+    const { id } = this.empresa(req, empresa, false);
+    const manana = new Date(Date.now() + 24 * 3600 * 1000);
+    const seguimientos = vista === 'seguimientos';
+    const where: Prisma.PerfilClienteWhereInput = {
+      organizationId: id,
+      ...(seguimientos ? { proximaAccionAt: { lte: manana } } : vista && vista !== 'todos' ? { segmento: vista } : {}),
+    };
+
+    const [perfiles, conteo, pendientes] = await Promise.all([
+      this.prisma.perfilCliente.findMany({
+        where,
+        orderBy: seguimientos ? { proximaAccionAt: 'asc' } : { ultimoContactoAt: 'desc' },
+        take: 200,
+        include: { contact: { select: { id: true, waId: true, displayName: true } } },
+      }),
+      this.prisma.perfilCliente.groupBy({ by: ['segmento'], where: { organizationId: id }, _count: { _all: true } }),
+      this.prisma.perfilCliente.count({ where: { organizationId: id, proximaAccionAt: { lte: manana } } }),
+    ]);
+    const favoritos = await this.prisma.preferenciaCliente.findMany({
+      where: { organizationId: id, contactId: { in: perfiles.map((p) => p.contactId) } },
+      orderBy: [{ veces: 'desc' }, { unidades: 'desc' }],
+      select: { contactId: true, producto: true, veces: true },
+    });
+    return {
+      segmentos: Object.fromEntries(conteo.map((c) => [c.segmento, c._count._all])),
+      seguimientos: pendientes,
+      clientes: perfiles.map((p) => ({
+        ...p,
+        favoritos: favoritos.filter((f) => f.contactId === p.contactId).slice(0, 3),
+      })),
+    };
+  }
+
+  /** Un cliente: su perfil, todo lo que le gusta y su bitácora completa. */
+  @Get('cliente')
+  async customer(@Req() req: PanelRequest, @Query('empresa') empresa?: string, @Query('contacto') contactId?: string) {
+    const { id } = this.empresa(req, empresa, false);
+    if (!contactId) throw new BadRequestException('falta el cliente');
+    const [perfil, preferencias, eventos] = await Promise.all([
+      this.prisma.perfilCliente.findUnique({
+        where: { organizationId_contactId: { organizationId: id, contactId } },
+        include: { contact: { select: { id: true, waId: true, displayName: true } } },
+      }),
+      this.prisma.preferenciaCliente.findMany({
+        where: { organizationId: id, contactId },
+        orderBy: [{ veces: 'desc' }, { unidades: 'desc' }],
+      }),
+      this.prisma.eventoCliente.findMany({
+        where: { organizationId: id, contactId },
+        orderBy: { createdAt: 'desc' },
+        take: 200,
+      }),
+    ]);
+    if (!perfil) throw new BadRequestException('no existe ese cliente');
+    return { perfil, preferencias, eventos };
+  }
+
+  /** Lo que el equipo quiera recordar de un cliente. */
+  @Post('cliente/notas')
+  async customerNotes(@Req() req: PanelRequest, @Body() body: { organizationId?: string; contacto?: string; notas?: string }) {
+    const { id } = this.empresa(req, body.organizationId, true);
+    if (!body.contacto) throw new BadRequestException('falta el cliente');
+    await this.prisma.perfilCliente.updateMany({
+      where: { organizationId: id, contactId: body.contacto },
+      data: { notas: body.notas?.trim().slice(0, 2000) || null },
+    });
+    return { ok: true };
+  }
+
   // ── Pedidos ─────────────────────────────────────────────────────────
 
   @Get('pedidos')
@@ -195,6 +276,7 @@ export class PanelVentasController {
       where: { id: orden.id },
       data: { status: 'ACEPTADO', etaAt: eta, decidedBy: email },
     });
+    await this.trazar(orden, 'pedido_aceptado', { minutos, por: email });
 
     const tz = orden.organization.sales?.timezone ?? 'America/Mexico_City';
     const cuando = cuandoEnPalabras(eta, ahora, tz);
@@ -215,6 +297,7 @@ export class PanelVentasController {
       where: { id: orden.id },
       data: { status: 'RECHAZADO', rejectReason: motivo, decidedBy: email },
     });
+    await this.trazar(orden, 'pedido_rechazado', { motivo, por: email });
     await this.avisar(orden.conversationId,
       `Lo siento, ${orden.organization.name} no puede tomar tu pedido *P-${orden.number}*: ${motivo}. ¿Te ayudo a armar otro?`);
     return { ok: true };
@@ -225,7 +308,18 @@ export class PanelVentasController {
     const { id: organizationId, email } = this.empresa(req, body.organizationId, true);
     const orden = await this.pedidoDe(organizationId, body.id, ['ACEPTADO']);
     await this.prisma.order.update({ where: { id: orden.id }, data: { status: 'ENTREGADO', decidedBy: email } });
+    await this.trazar(orden, 'pedido_entregado', { por: email });
     return { ok: true };
+  }
+
+  /** Bitácora del cliente y su perfil al día con lo que decidió la empresa. */
+  private async trazar(
+    orden: { id: string; organizationId: string; contactId: string; number: number },
+    tipo: TipoEvento,
+    detalle: Record<string, unknown>,
+  ): Promise<void> {
+    await this.clientes?.registrar(orden.organizationId, orden.contactId, tipo, { numero: orden.number, ...detalle }, orden.id);
+    await this.clientes?.aprender(orden.organizationId, orden.contactId);
   }
 
   private async pedidoDe(organizationId: string, id: string | undefined, estados: OrderStatus[]) {

@@ -10,6 +10,7 @@ import { TicketService } from '../support/ticket.service';
 import { FacturaChatService } from '../facturacion/factura-chat.service';
 import type { LecturaVenta, StrategyContext, StrategyReply } from '../support/support.strategy';
 import { ESQUEMA_VENTA, SISTEMA_CORRECCION, SISTEMA_VENTA } from './guion-venta';
+import { ClientesVentaService } from './clientes-venta.service';
 import {
   abiertoEn,
   cuandoEnPalabras,
@@ -95,6 +96,7 @@ export class SalesStrategy {
     private readonly history: ConversationHistoryService,
     private readonly tickets: TicketService,
     @Optional() private readonly facturas?: FacturaChatService,
+    @Optional() private readonly clientes?: ClientesVentaService,
   ) {}
 
   /** La empresa que vende por la línea de este chat, o null si no vende. */
@@ -144,6 +146,9 @@ export class SalesStrategy {
   ): Promise<StrategyReply | null> {
     const lectura: { v?: LecturaVenta } = {};
     const reply = await this.atender(message, ctx, negocio, lectura);
+    if (lectura.v) {
+      await this.clientes?.lectura(negocio.organizationId, ctx.contactId, lectura.v.salesEmotion, lectura.v.salesScore);
+    }
     return reply && lectura.v ? { ...reply, lecturaVenta: lectura.v } : reply;
   }
 
@@ -169,6 +174,8 @@ export class SalesStrategy {
 
     if (texto === '') return null;
     const ahora = new Date();
+    // Trazabilidad: el perfil existe desde el primer mensaje (arranque en frío).
+    await this.clientes?.tocar(negocio.organizationId, ctx.contactId);
 
     // Hay un caso con una persona (envío, reclamo, alergia) y nadie lo ha
     // tomado todavía: se le vuelve a avisar al equipo y al cliente se le dice
@@ -213,10 +220,15 @@ export class SalesStrategy {
       texto,
       ...turnos.filter((t) => t.role === 'cliente').map((t) => t.text).reverse(),
     ]);
+    // Lo que se sabe de este cliente: lo que suele pedir, sus hábitos y qué
+    // recomendar. Vacío en frío: entonces mandan la carta y el pitch.
+    const cliente = (await this.clientes?.paraVenta(
+      negocio.organizationId, ctx.contactId, negocio.catalogo.map((c) => c.name),
+    )) ?? '';
     const modelo = await this.llm.extract<RespuestaModelo>({
       tarea: 'conversacion',
       system: SISTEMA_VENTA,
-      user: contexto(negocio, pedido, recientes, turnos, texto, ahora, presupuesto),
+      user: contexto(negocio, pedido, recientes, turnos, texto, ahora, presupuesto, cliente),
       schema: ESQUEMA_VENTA,
       validate: validarRespuesta,
     });
@@ -240,6 +252,7 @@ export class SalesStrategy {
         slots: { venta: true, reclamo: r.reclamo, mensaje: texto, pedidos: recientes.map((o) => `P-${o.number} ${o.status}`) },
         reason: 'queja',
       });
+      await this.clientes?.registrar(negocio.organizationId, ctx.contactId, 'reclamo', { texto: texto.slice(0, 300) }, orden?.id ?? null);
       await this.guardarLectura(lectura, orden?.id ?? null, modelo.lectura, pedido, false, { cancelo: false, enviado: false });
       return {
         text: `Lamento mucho lo que pasó${ultimo ? ` con tu pedido P-${ultimo.number}` : ''} 🙏 ` +
@@ -259,6 +272,7 @@ export class SalesStrategy {
         slots: { venta: true, lleva: pedido.items.map((i) => `${i.cantidad} × ${i.nombre}`) },
         reason: 'pidio_humano',
       });
+      await this.clientes?.registrar(negocio.organizationId, ctx.contactId, 'pidio_persona', { texto: texto.slice(0, 300) }, orden?.id ?? null);
       await this.guardarLectura(lectura, orden?.id ?? null, modelo.lectura, pedido, false, { cancelo: false, enviado: false });
       return {
         text: `Claro, le paso tu mensaje a alguien de ${negocio.nombre} y te escribe por aquí.`,
@@ -268,7 +282,10 @@ export class SalesStrategy {
     }
 
     if (r.cancelar) {
-      if (orden) await this.prisma.order.update({ where: { id: orden.id }, data: { status: 'CANCELADO', confirmPending: false } });
+      if (orden) {
+        await this.prisma.order.update({ where: { id: orden.id }, data: { status: 'CANCELADO', confirmPending: false } });
+        await this.clientes?.registrar(negocio.organizationId, ctx.contactId, 'pedido_cancelado', { lleva: pedido.items.map((i) => `${i.cantidad} × ${i.nombre}`) }, orden.id);
+      }
       await this.guardarLectura(lectura, orden?.id ?? null, modelo.lectura, pedido, false, { cancelo: true, enviado: false });
       return { text: textoSeguro(modelo.respuesta, 'Va, lo dejo así. Aquí estoy si se te antoja algo después.', pedido, negocio), awaiting: 'NADIE' };
     }
@@ -439,6 +456,10 @@ export class SalesStrategy {
       data: { status: 'POR_ACEPTAR', confirmPending: false, submittedAt: ahora, buyingScore: 100 },
     });
     lectura.v = { salesEmotion: 'entusiasmado', salesIntensity: 3, salesStage: 'cerrando', salesScore: 100, salesSignal: 'confirmó el resumen' };
+    await this.clientes?.registrar(orden.organizationId, orden.contactId, 'pedido_confirmado', {
+      numero: enviado.number, totalCents: enviado.totalCents, lleva: pedido.items.map((i) => `${i.cantidad} × ${i.nombre}`),
+    }, orden.id);
+    await this.clientes?.aprender(orden.organizationId, orden.contactId);
 
     const nombre = pedido.customerName?.split(' ')[0] ?? '';
     return {
@@ -479,11 +500,14 @@ export class SalesStrategy {
       scheduledFor: p.scheduledFor,
       confirmPending,
     };
-    return orden
-      ? this.prisma.order.update({ where: { id: orden.id }, data: datos })
-      : this.prisma.order.create({
-          data: { ...datos, organizationId, contactId: ctx.contactId, conversationId: ctx.conversationId },
-        });
+    if (orden) return this.prisma.order.update({ where: { id: orden.id }, data: datos });
+    const nueva = await this.prisma.order.create({
+      data: { ...datos, organizationId, contactId: ctx.contactId, conversationId: ctx.conversationId },
+    });
+    await this.clientes?.registrar(organizationId, ctx.contactId, 'pedido_armando', {
+      lleva: p.items.map((i) => `${i.cantidad} × ${i.nombre}`),
+    }, nueva.id);
+    return nueva;
   }
 
   /**
@@ -596,6 +620,7 @@ function contexto(
   texto: string,
   ahora: Date,
   presupuesto: number | null = null,
+  cliente = '',
 ): string {
   const { reglas } = n;
   const local = enZona(ahora, reglas.timezone);
@@ -639,6 +664,7 @@ function contexto(
           (o.rejectReason ? ` (${o.rejectReason})` : '')).join('; ')
       : '',
     presupuesto ? presupuestoParaModelo(n.catalogo, presupuesto, subtotal(p)) : '',
+    cliente,
     turnos.length ? 'PLÁTICA RECIENTE:\n' + turnos.map((t) => `${t.role}: ${t.text}`).join('\n') : '',
     `MENSAJE NUEVO DEL CLIENTE:\n${texto}`,
   ].filter(Boolean).join('\n\n');
