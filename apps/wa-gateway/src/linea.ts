@@ -164,6 +164,25 @@ async function pdfDe(m: WAMessage): Promise<PayloadParaCore['media']> {
   }
 }
 
+/** Tope de un audio: un minuto de nota de voz pesa ~100 KB. */
+const MAX_AUDIO_BYTES = 8 * 1024 * 1024;
+
+/** Los bytes de una nota de voz o un audio, para transcribirlos en el core. */
+async function audioDe(m: WAMessage): Promise<PayloadParaCore['media']> {
+  const audio = m.message?.audioMessage;
+  if (!audio) return undefined;
+  if (Number(audio.fileLength ?? 0) > MAX_AUDIO_BYTES) return undefined;
+  try {
+    const buf = await downloadMediaMessage(m, 'buffer', {});
+    if (buf.length > MAX_AUDIO_BYTES) return undefined;
+    const mimetype = (audio.mimetype ?? 'audio/ogg').split(';')[0]!.trim();
+    return { mimetype, filename: audio.ptt ? 'nota-de-voz.ogg' : 'audio', base64: buf.toString('base64') };
+  } catch (err) {
+    console.error(`[media] no se pudo bajar el audio: ${String(err)}`);
+    return undefined;
+  }
+}
+
 /** El texto que escribió la persona, venga suelto o como pie de un archivo. */
 function textoDe(m: WAMessage): { body: string; caption: string } {
   const c = m.message ?? {};
@@ -352,7 +371,9 @@ export class Linea {
 
     const miJid = this.yo?.id ? haciaCore(this.yo.id) : '';
     const { body, caption } = textoDe(m);
-    const media = fromMe ? undefined : await pdfDe(m);
+    // Los audios también: el core los transcribe. Los del chat propio
+    // (fromMe) cuentan, porque ahí habla la persona que usa el bot.
+    const media = fromMe ? await audioDe(m) : (await pdfDe(m)) ?? (await audioDe(m));
 
     const esChatPropio = this.esChatPropio(remoteJid);
 
@@ -660,9 +681,13 @@ export class Linea {
     }
 
     // Las imágenes van como imagen: como documento llegan sin vista previa.
+    // Los audios, como audio que se reproduce ahí mismo; con OGG/Opus, como
+    // nota de voz (es el único formato que WhatsApp acepta así).
     const contenido = mimetype.startsWith('image/')
       ? { image: bytes, caption, mimetype }
-      : { document: bytes, fileName: filename, mimetype, caption };
+      : mimetype.startsWith('audio/')
+        ? { audio: bytes, mimetype, ptt: mimetype.includes('ogg') }
+        : { document: bytes, fileName: filename, mimetype, caption };
 
     const resultado = await this.requireSock().sendMessage(destino, contenido);
     if (!resultado?.key?.id) {

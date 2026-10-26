@@ -49,6 +49,8 @@ export const config = {
 
   /** Vacío = el bot funciona igual, pero sin conversación en lenguaje normal. */
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || null,
+  /** Groq (plan gratuito): transcribe las notas de voz. Sin llave, no se transcribe. */
+  groqApiKey: process.env.GROQ_API_KEY || null,
 
   google: {
     /**

@@ -28,7 +28,9 @@ export class SourceFilter implements MessageFilter {
     // documento que el bot acaba de entregar. Si llegara a procesarse, su
     // leyenda ("Ticket #98 — FACTURA...") se leería como una petición nueva
     // y el bot se lo volvería a mandar a sí mismo, en bucle.
-    if (message.isFromMe && message.kind !== 'TEXT') {
+    // La nota de voz que la persona se manda en su chat propio sí cuenta: el
+    // eco de lo que manda el bot ya lo tira el gateway.
+    if (message.isFromMe && message.kind !== 'TEXT' && !(message.kind === 'AUDIO' && message.isLineSelfChat)) {
       return stop(ctx, this.name, 'archivo propio');
     }
 

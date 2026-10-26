@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { FileText, FlaskConical, RotateCcw, Send } from 'lucide-react';
+import { FileText, FlaskConical, Mic, RotateCcw, Send, Volume2 } from 'lucide-react';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { toast } from 'sonner';
 import { PageHeader } from '@/app/layout/PageHeader';
@@ -11,6 +11,7 @@ import { useEmpresas } from '@/features/ventas/api';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { hora, numeroBonito } from '@/lib/format';
+import { Microfono, type AudioGrabado } from './Microfono';
 
 interface Mensaje {
   id: string;
@@ -21,6 +22,8 @@ interface Mensaje {
   createdAt: string;
   /** El archivo que se entregó, para abrirlo y revisar. */
   documentId: string | null;
+  /** Lo mandó como nota de voz; el texto es la transcripción. */
+  esVoz?: boolean;
 }
 
 interface Chat {
@@ -57,7 +60,8 @@ export function PruebaPage() {
   });
 
   const enviar = useMutation({
-    mutationFn: (t: string) => api.post<{ procesado: boolean }>('prueba/mensaje', { ...params, texto: t }),
+    mutationFn: (m: { texto?: string; audio?: AudioGrabado }) =>
+      api.post<{ procesado: boolean }>('prueba/mensaje', { ...params, ...m }),
     onSuccess: (r) => {
       if (!r.procesado) toast.warning('El bot ignoró este mensaje: lo cortó un filtro antes de contestar.');
       void queryClient.invalidateQueries({ queryKey: clave });
@@ -84,7 +88,7 @@ export function PruebaPage() {
     const t = texto.trim();
     if (!t || enviar.isPending) return;
     setTexto('');
-    enviar.mutate(t);
+    enviar.mutate({ texto: t });
   };
 
   return (
@@ -156,6 +160,7 @@ export function PruebaPage() {
               autoFocus
               onChange={(e) => setTexto(e.target.value)}
             />
+            <Microfono disabled={enviar.isPending} onAudio={(audio) => enviar.mutate({ audio })} />
             <Button type="submit" disabled={!texto.trim()} loading={enviar.isPending} aria-label="Enviar">
               <Send />
             </Button>
@@ -190,6 +195,7 @@ function numerar(mensajes: readonly Mensaje[]): Array<{ m: Mensaje; n: number | 
 function Burbuja({ m, n }: { m: Mensaje; n: number | null }) {
   const cliente = m.direction === 'IN';
   const doc = m.kind === 'DOCUMENT';
+  const vozDelBot = !cliente && m.kind === 'AUDIO' && m.body.startsWith('[voz]');
   const [titulo, ...resto] = m.body.split('\n');
   return (
     <div className={cn('flex', cliente ? 'justify-end' : 'justify-start')}>
@@ -222,8 +228,24 @@ function Burbuja({ m, n }: { m: Mensaje; n: number | null }) {
               </span>
             )}
           </>
+        ) : vozDelBot ? (
+          <>
+            <span className="flex items-center gap-1.5 text-xs font-medium opacity-70">
+              <Volume2 className="size-4" aria-hidden />
+              Nota de voz
+            </span>
+            <audio controls preload="none" className="mt-1 h-9 max-w-full" src={`/panel/api/prueba/voz?id=${encodeURIComponent(m.id)}`} />
+          </>
         ) : (
-          <ConFormato texto={m.body} />
+          <>
+            {cliente && m.esVoz && (
+              <span className="mb-0.5 flex items-center gap-1 text-[11px] opacity-75">
+                <Mic className="size-3" aria-hidden />
+                transcrito de su audio
+              </span>
+            )}
+            <ConFormato texto={m.body} />
+          </>
         )}
         <span className="mt-1 block text-right text-[11px] opacity-60">
           {hora(m.createdAt)}

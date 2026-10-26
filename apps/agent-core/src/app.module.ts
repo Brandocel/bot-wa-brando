@@ -78,6 +78,8 @@ import { GoogleDriveAdapter } from './infrastructure/drive/google-drive.adapter'
 import { AnthropicAdapter } from './infrastructure/llm/anthropic.adapter';
 import { GatewayMessagingAdapter } from './infrastructure/whatsapp/gateway-messaging.adapter';
 import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
+import { VozService } from './infrastructure/voz/voz.service';
+import { TranscripcionFilter } from './application/pipeline/filters/transcripcion.filter';
 
 @Module({
   controllers: [
@@ -128,6 +130,8 @@ import { OpenWaMessageMapper } from './infrastructure/whatsapp/open-wa.mapper';
     // ── Pipeline ───────────────────────────────────────────────────────
     SourceFilter,
     LineaPropiaFilter,
+    TranscripcionFilter,
+    VozService,
     IdempotencyFilter,
     LoopGuardFilter,
     AuthorizationFilter,

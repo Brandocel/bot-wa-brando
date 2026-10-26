@@ -8,6 +8,7 @@ import { LINEA_PRINCIPAL } from '../../../domain/message/linea';
 import { MARCA_PRUEBA, chatDePrueba } from '../../../domain/message/prueba';
 import { OutboxDispatcher } from '../../persistence/outbox.dispatcher';
 import { PrismaService } from '../../persistence/prisma.service';
+import { VozService } from '../../voz/voz.service';
 import { PanelGuard, type PanelRequest } from './panel.guard';
 
 interface Destino {
@@ -37,6 +38,7 @@ export class PanelPruebaController {
     private readonly entrante: HandleIncomingMessageUseCase,
     private readonly outbox: OutboxDispatcher,
     @Inject(DOCUMENT_SOURCE_PORT) private readonly source: DocumentSourcePort,
+    private readonly voz: VozService,
   ) {}
 
   @Get()
@@ -65,10 +67,15 @@ export class PanelPruebaController {
       awaiting: conv?.awaiting ?? null,
       topic: conv?.topic ?? null,
       tickets: conv?.tickets ?? [],
-      mensajes: (conv?.messages ?? []).map(({ raw, ...m }) => ({
-        ...m,
-        documentId: (raw as { documentId?: unknown } | null)?.documentId ?? null,
-      })),
+      mensajes: (conv?.messages ?? []).map(({ raw, ...m }) => {
+        const r = raw as { documentId?: unknown; type?: unknown } | null;
+        return {
+          ...m,
+          documentId: r?.documentId ?? null,
+          // Lo mandó como nota de voz: el texto es la transcripción.
+          esVoz: r?.type === 'ptt' || r?.type === 'audio',
+        };
+      }),
     };
   }
 
@@ -98,11 +105,16 @@ export class PanelPruebaController {
     res.send(bytes);
   }
 
-  /** Manda un mensaje como esa persona y corre el turno completo. */
+  /**
+   * Manda un mensaje como esa persona y corre el turno completo. Con
+   * `audio` (lo grabado en el navegador) entra como nota de voz y pasa por
+   * la misma transcripción que una de WhatsApp.
+   */
   @Post('mensaje')
-  async mensaje(@Body() body: { empresa?: string; numero?: string; texto?: string }) {
-    const texto = body.texto?.trim();
-    if (!texto) throw new BadRequestException('escribe algo');
+  async mensaje(@Body() body: { empresa?: string; numero?: string; texto?: string; audio?: { base64?: string; mimetype?: string } }) {
+    const texto = body.texto?.trim() ?? '';
+    const audio = body.audio?.base64 && body.audio.mimetype?.startsWith('audio/') ? body.audio : null;
+    if (!texto && !audio) throw new BadRequestException('escribe algo o graba un audio');
     const d = await this.destino(body.empresa, body.numero);
 
     const id = `${MARCA_PRUEBA}${randomUUID()}`;
@@ -117,8 +129,11 @@ export class PanelPruebaController {
       to: d.propio ? d.waId : 'bot@prueba',
       sender: { id: d.waId, pushname: null, formattedName: null },
       chat: { id: chat, contact: { isMe: d.propio } },
-      type: 'chat',
-      body: texto,
+      type: audio ? 'ptt' : 'chat',
+      body: audio ? '' : texto,
+      ...(audio
+        ? { media: { mimetype: audio.mimetype!.split(';')[0], filename: 'nota-de-voz', base64: audio.base64!.replace(/^data:[^;]+;base64,/, '') } }
+        : {}),
       fromMe: d.propio,
       isGroupMsg: false,
       isBroadcast: false,
@@ -129,6 +144,18 @@ export class PanelPruebaController {
     const procesado = (await this.prisma.message.count({ where: { id } })) > 0;
     void this.outbox.drain().catch(() => undefined);
     return { procesado };
+  }
+
+  /** La respuesta en voz de un mensaje del bot en la prueba, para escucharla en el panel. */
+  @Get('voz')
+  async escuchar(@Query('id') id: string | undefined, @Res() res: Response): Promise<void> {
+    const m = id ? await this.prisma.message.findUnique({ where: { id }, select: { body: true, conversation: { select: { chatId: true } } } }) : null;
+    if (!m || !m.conversation.chatId.includes(MARCA_PRUEBA)) throw new NotFoundException('no existe ese mensaje');
+    const mp3 = await this.voz.hablar(m.body.replace(/^\[voz\]\s*/, ''));
+    if (!mp3) throw new NotFoundException('no se pudo generar la voz');
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.send(mp3);
   }
 
   /** Borra el chat de prueba: el bot vuelve a atenderlo desde cero. */

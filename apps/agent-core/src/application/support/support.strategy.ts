@@ -125,6 +125,8 @@ export interface StrategyReply {
    * persona. Se escribe con la transacción del turno, como lecturaVenta.
    */
   silencioMs?: number;
+  /** Lo contestó el flujo de ventas (no se contesta con voz). */
+  ventas?: boolean;
 }
 
 export interface LecturaVenta {
@@ -237,7 +239,10 @@ export class SupportStrategy {
     // empresa vende por WhatsApp, viene a comprar: eso lo atiende ventas.
     if (scope.decision === 'DENY_NO_MEMBERSHIP' && this.ventas) {
       const negocio = await this.ventas.negocioDe(message.chatId);
-      if (negocio) return this.ventas.handle(message, ctx, negocio);
+      if (negocio) {
+        const r = await this.ventas.handle(message, ctx, negocio);
+        return r ? { ...r, ventas: true } : r;
+      }
     }
 
     if (scope.decision === 'NEEDS_NAME' || scope.decision === 'DENY_NO_MEMBERSHIP') {

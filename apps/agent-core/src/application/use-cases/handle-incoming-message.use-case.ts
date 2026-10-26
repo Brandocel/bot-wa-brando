@@ -17,6 +17,7 @@ import type { TransactionClient } from '../../infrastructure/persistence/prisma.
 import { SourceFilter } from '../pipeline/filters/source.filter';
 import { LineaPropiaFilter } from '../pipeline/filters/linea-propia.filter';
 import { runPipeline, type MessageFilter, type PipelineContext } from '../pipeline/pipeline';
+import { TranscripcionFilter } from '../pipeline/filters/transcripcion.filter';
 
 /** Cuánto espera un mensaje a que se atiendan los anteriores del mismo chat. */
 const ESPERA_TURNO_MS = 15_000;
@@ -51,6 +52,7 @@ export class HandleIncomingMessageUseCase {
     source: SourceFilter,
     lineaPropia: LineaPropiaFilter,
     idempotency: IdempotencyFilter,
+    transcripcion: TranscripcionFilter,
     loopGuard: LoopGuardFilter,
     authorization: AuthorizationFilter,
     killSwitch: KillSwitchFilter,
@@ -69,6 +71,8 @@ export class HandleIncomingMessageUseCase {
       // debe quedar ni en Conversaciones.
       lineaPropia,
       idempotency,
+      // Después de idempotencia: una reentrega no se vuelve a transcribir.
+      transcripcion,
       loopGuard,
       authorization,
       killSwitch,
@@ -275,6 +279,14 @@ export class HandleIncomingMessageUseCase {
       // Texto vacío = la Strategy ya encoló lo que había que mandar (un
       // archivo con su leyenda) y no quiere un mensaje aparte.
       if (reply !== '') {
+        // Le hablaron con voz en documentos: la respuesta va también en
+        // voz, primero, y el texto abajo por si no puede escucharla. En
+        // ventas no: ahí el resumen y los precios se tienen que leer.
+        if (message.esVoz && strategyReply && !strategyReply.ventas) {
+          await tx.outboxMessage.create({
+            data: { chatId: message.chatId, payload: { kind: 'voz', text: reply } },
+          });
+        }
         await tx.outboxMessage.create({
           data: { chatId: message.chatId, payload: { kind: 'text', text: reply } },
         });

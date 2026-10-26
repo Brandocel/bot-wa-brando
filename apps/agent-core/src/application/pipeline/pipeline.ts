@@ -9,7 +9,8 @@ import type { IncomingMessage, Role } from '../../domain/message/incoming-messag
  */
 
 export interface PipelineContext {
-  readonly message: IncomingMessage;
+  /** Un filtro puede reemplazarlo (la transcripción de un audio). */
+  message: IncomingMessage;
   role: Role | null;
   /** Nombre del filtro que cortó la cadena, si alguno lo hizo. */
   stoppedBy: string | null;

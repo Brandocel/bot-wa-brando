@@ -2,6 +2,7 @@ import {
   Inject,
   Injectable,
   Logger,
+  Optional,
   type OnModuleDestroy,
   type OnModuleInit,
 } from '@nestjs/common';
@@ -12,6 +13,7 @@ import {
 import { EntregaVigenteService } from '../../application/support/entrega-vigente.service';
 import { PrismaService } from './prisma.service';
 import { esChatDePrueba } from '../../domain/message/prueba';
+import { VozService } from '../voz/voz.service';
 
 /** Chats a los que se les manda a la vez. Cada uno sigue yendo en orden. */
 const CHATS_EN_PARALELO = 3;
@@ -64,12 +66,18 @@ function sinArchivo(payload: OutboxPayload): object {
   return resto;
 }
 
-type OutboxPayload = OutboxTextPayload | OutboxFilePayload;
+/** La respuesta leída en voz: se sintetiza al enviar, no al encolar. */
+interface OutboxVozPayload {
+  kind: 'voz';
+  text: string;
+}
+
+type OutboxPayload = OutboxTextPayload | OutboxFilePayload | OutboxVozPayload;
 
 interface SentMessage {
   id: string;
   body: string;
-  kind: 'TEXT' | 'DOCUMENT';
+  kind: 'TEXT' | 'DOCUMENT' | 'AUDIO';
 }
 
 /**
@@ -92,6 +100,7 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
     private readonly prisma: PrismaService,
     @Inject(MESSAGING_PORT) private readonly messaging: MessagingPort,
     private readonly entregas: EntregaVigenteService,
+    @Optional() private readonly voz?: VozService,
   ) {}
 
   onModuleInit(): void {
@@ -218,7 +227,20 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
       const sent =
         payload.kind === 'file'
           ? await this.sendFilePayload(row.chatId, payload)
-          : await this.sendTextPayload(row.chatId, payload);
+          : payload.kind === 'voz'
+            ? await this.sendVozPayload(row.chatId, payload)
+            : await this.sendTextPayload(row.chatId, payload);
+
+      // Sin voz (texto largo o el servicio no respondió): no pasa nada, el
+      // texto va en la fila siguiente.
+      if (!sent) {
+        await this.messaging.setTyping(row.chatId, false);
+        await this.prisma.outboxMessage.update({
+          where: { id: row.id },
+          data: { status: 'SENT', sentAt: new Date(), lastError: 'sin voz: se queda el texto' },
+        });
+        return true;
+      }
 
       await this.messaging.setTyping(row.chatId, false);
 
@@ -285,6 +307,22 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
       .join('\n\n');
   }
 
+  /** La respuesta en voz. null = no se pudo sintetizar. */
+  private async sendVozPayload(chatId: string, payload: OutboxVozPayload): Promise<SentMessage | null> {
+    const body = `[voz] ${payload.text}`;
+    // En el chat de prueba no sale nada: el panel la sintetiza al escucharla.
+    if (esChatDePrueba(chatId)) {
+      return { id: await this.messaging.sendText(chatId, body), body, kind: 'AUDIO' };
+    }
+    const mp3 = await this.voz?.hablar(payload.text);
+    if (!mp3) return null;
+    const id = await this.messaging.sendFile(chatId, {
+      base64: `data:audio/mpeg;base64,${mp3.toString('base64')}`,
+      filename: 'respuesta.mp3',
+    });
+    return { id, body, kind: 'AUDIO' };
+  }
+
   private async sendTextPayload(
     chatId: string,
     payload: OutboxTextPayload,
@@ -349,7 +387,7 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     messageId: string,
     body: string,
-    kind: 'TEXT' | 'DOCUMENT',
+    kind: 'TEXT' | 'DOCUMENT' | 'AUDIO',
     sentBy: string,
     documentId?: string,
   ): Promise<void> {
