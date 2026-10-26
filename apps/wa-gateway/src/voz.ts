@@ -59,7 +59,12 @@ async function conCarpeta<T>(fn: (dir: string) => Promise<T>): Promise<T> {
  * que no son voz, menos ruido de fondo y volumen parejo. Las notas de voz
  * de WhatsApp vienen de la calle, del coche, de la oficina.
  */
-const LIMPIEZA = 'highpass=f=80,lowpass=f=7600,afftdn=nf=-25,loudnorm=I=-16:TP=-1.5:LRA=11';
+// Medio segundo de silencio al inicio y uno y medio al final: sin silencio
+// después de la última palabra, Whisper la deja a medias ("de…") porque
+// la gente suelta el botón justo al terminar de hablar.
+const LIMPIEZA =
+  'highpass=f=80,lowpass=f=7600,afftdn=nf=-25,loudnorm=I=-16:TP=-1.5:LRA=11,' +
+  'adelay=500:all=1,apad=pad_dur=1.5';
 
 /**
  * El texto de una nota de voz, o null si no se pudo. `pistas` son nombres
