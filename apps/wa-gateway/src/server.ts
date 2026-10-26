@@ -279,7 +279,7 @@ export function buildServer() {
     requireApiKey,
     wrap(async (req, res) => {
       const { base64 } = req.body as { base64?: string };
-      const texto = base64 ? await transcribir(Buffer.from(base64.replace(/^data:[^;]+;base64,/, ''), 'base64')) : null;
+      const texto = base64 ? await transcribir(Buffer.from(base64.replace(/^data:[^,]*,/, ''), 'base64')) : null;
       res.json({ texto });
     }),
   );

@@ -134,7 +134,7 @@ export class PanelPruebaController {
       type: audio ? 'ptt' : 'chat',
       body: audio ? '' : texto,
       ...(audio
-        ? { media: { mimetype: audio.mimetype!.split(';')[0], filename: 'nota-de-voz', base64: audio.base64!.replace(/^data:[^;]+;base64,/, '') } }
+        ? { media: { mimetype: audio.mimetype!.split(';')[0], filename: 'nota-de-voz', base64: audio.base64!.replace(/^data:[^,]*,/, '') } }
         : {}),
       fromMe: d.propio,
       isGroupMsg: false,

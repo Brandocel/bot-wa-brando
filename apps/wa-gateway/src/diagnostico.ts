@@ -143,7 +143,7 @@ export async function probarEnvio(
 
   try {
     const bytes = Buffer.from(
-      base64.replace(/^data:[^;]+;base64,/, ''),
+      base64.replace(/^data:[^,]*,/, ''),
       'base64',
     );
 

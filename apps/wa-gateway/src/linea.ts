@@ -231,7 +231,7 @@ const MIMES: Record<string, string> = {
 function mimeDe(filename: string, dataUri: string | undefined): string {
   // El data URI trae el tipo que dijo Drive, que es más fiable que adivinar
   // por el nombre — en Drive la gente sube archivos sin extensión a diario.
-  const delUri = dataUri?.match(/^data:([^;]+);base64,/)?.[1];
+  const delUri = dataUri?.match(/^data:([^;,]+)/)?.[1];
   if (delUri) return delUri;
 
   const extension = filename.split('.').pop()?.toLowerCase() ?? '';
@@ -682,7 +682,7 @@ export class Linea {
 
     let bytes: Buffer;
     if (base64) {
-      bytes = Buffer.from(base64.replace(/^data:[^;]+;base64,/, ''), 'base64');
+      bytes = Buffer.from(base64.replace(/^data:[^,]*,/, ''), 'base64');
     } else if (url) {
       const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
       if (!res.ok) throw new Error(`no se pudo descargar ${url}: HTTP ${res.status}`);

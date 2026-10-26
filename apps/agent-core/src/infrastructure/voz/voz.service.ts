@@ -28,7 +28,7 @@ export class VozService {
   async transcribir(audio: { base64: string; mimetype: string }): Promise<string | null> {
     if (!config.groqApiKey) return null;
     try {
-      const bytes = Buffer.from(audio.base64.replace(/^data:[^;]+;base64,/, ''), 'base64');
+      const bytes = Buffer.from(audio.base64.replace(/^data:[^,]*,/, ''), 'base64');
       const form = new FormData();
       form.append('file', new Blob([bytes], { type: audio.mimetype }), nombreDeArchivo(audio.mimetype));
       form.append('model', 'whisper-large-v3-turbo');
