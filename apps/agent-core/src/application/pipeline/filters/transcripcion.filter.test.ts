@@ -41,3 +41,23 @@ test('lo que se lee en voz va sin asteriscos, viñetas ni enlaces', () => {
     'Encontré 2 constancias:\n1. Alta Abner\n2. Alta Raymundo',
   );
 });
+
+test('las pistas llevan empresa, titulares y productos, sin repetidos ni basura', async () => {
+  const { armarPistas } = await import('../../support/pistas-voz.service');
+  assert.equal(
+    armarPistas('Somos del Mundo', ['Abner Neftali García', 'Abner Neftali García', 'IMSS', 'x'], ['Pollo entero']),
+    'Somos del Mundo. Abner Neftali García, IMSS. Pollo entero',
+  );
+});
+
+test('la transcripción usa las pistas de la cuenta', async () => {
+  let recibidas = '';
+  const filtro = new TranscripcionFilter(
+    { transcribir: async (_a: unknown, p: string) => { recibidas = p; return 'hola'; } } as never,
+    undefined,
+    { para: async () => 'Abner Neftali' } as never,
+  );
+  const ctx = { message: { kind: 'AUDIO', body: '', chatId: 'c', attachment: { mimetype: 'audio/ogg', filename: 'n', base64: 'AA' } } } as unknown as PipelineContext;
+  await filtro.handle(ctx, async () => undefined);
+  assert.equal(recibidas, 'Abner Neftali');
+});

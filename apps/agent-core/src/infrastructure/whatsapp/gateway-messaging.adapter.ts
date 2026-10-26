@@ -82,9 +82,9 @@ export class GatewayMessagingAdapter implements MessagingPort {
     return ((await res.json()) as { messageId: string }).messageId;
   }
 
-  async transcribir(audio: { base64: string; mimetype: string }): Promise<string | null> {
+  async transcribir(audio: { base64: string; mimetype: string }, pistas = ''): Promise<string | null> {
     try {
-      const res = await this.crudo('/voz/transcribir', { base64: audio.base64 }, 120_000);
+      const res = await this.crudo('/voz/transcribir', { base64: audio.base64, pistas }, 180_000);
       return ((await res.json()) as { texto: string | null }).texto;
     } catch (err) {
       this.logger.warn(`no se pudo transcribir en el gateway: ${String(err)}`);

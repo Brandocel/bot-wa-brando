@@ -11,7 +11,6 @@ import makeWASocket, {
 import type { Boom } from '@hapi/boom';
 import pino from 'pino';
 import { toBuffer as qrToBuffer } from 'qrcode';
-import { transcribir } from './voz';
 
 /**
  * Una línea de WhatsApp: un número vinculado, con su propia sesión.
@@ -376,14 +375,9 @@ export class Linea {
     const { body, caption } = textoDe(m);
     // Los audios también: el core los transcribe. Los del chat propio
     // (fromMe) cuentan, porque ahí habla la persona que usa el bot.
-    let media = fromMe ? await audioDe(m) : (await pdfDe(m)) ?? (await audioDe(m));
-    // La nota de voz se transcribe aquí, que hay memoria de sobra. Si sale,
-    // el audio ya no viaja al core; si no, viaja y el core lo intenta.
-    let transcripcion: string | undefined;
-    if (media?.mimetype.startsWith('audio/')) {
-      transcripcion = (await transcribir(Buffer.from(media.base64, 'base64'))) ?? undefined;
-      if (transcripcion) media = undefined;
-    }
+    // La nota de voz viaja al core: él sabe de qué cuenta es y pide la
+    // transcripción con los nombres de esa cuenta como pistas.
+    const media = fromMe ? await audioDe(m) : (await pdfDe(m)) ?? (await audioDe(m));
 
     const esChatPropio = this.esChatPropio(remoteJid);
 
@@ -410,7 +404,6 @@ export class Linea {
       caption,
       ...ubicacionDe(m),
       ...(media ? { media } : {}),
-      ...(transcripcion ? { transcripcion } : {}),
       isGroupMsg: esGrupo,
       fromMe,
       isBroadcast: remoteJid === 'status@broadcast',

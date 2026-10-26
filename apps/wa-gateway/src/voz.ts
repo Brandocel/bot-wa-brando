@@ -54,7 +54,19 @@ async function conCarpeta<T>(fn: (dir: string) => Promise<T>): Promise<T> {
 }
 
 /** El texto de una nota de voz, o null si no se pudo. */
-export async function transcribir(audio: Buffer): Promise<string | null> {
+/**
+ * Limpieza antes de transcribir: fuera graves (golpes, viento) y agudos
+ * que no son voz, menos ruido de fondo y volumen parejo. Las notas de voz
+ * de WhatsApp vienen de la calle, del coche, de la oficina.
+ */
+const LIMPIEZA = 'highpass=f=80,lowpass=f=7600,afftdn=nf=-25,loudnorm=I=-16:TP=-1.5:LRA=11';
+
+/**
+ * El texto de una nota de voz, o null si no se pudo. `pistas` son nombres
+ * y palabras de esa cuenta (titulares, empresas, productos): con ellas el
+ * modelo "oye" bien "Abner Neftali" en vez de "a ver nefalí".
+ */
+export async function transcribir(audio: Buffer, pistas = ''): Promise<string | null> {
   if (!puedeEscuchar()) return null;
   try {
     return await enFila(() =>
@@ -63,14 +75,20 @@ export async function transcribir(audio: Buffer): Promise<string | null> {
         const wav = join(dir, 'audio.wav');
         await writeFile(entrada, audio);
         // Whisper quiere WAV de 16 kHz, mono.
-        await ejecutar('ffmpeg', ['-y', '-loglevel', 'error', '-i', entrada, '-ar', '16000', '-ac', '1', '-f', 'wav', wav], {
-          timeout: 30_000,
-        });
+        await ejecutar(
+          'ffmpeg',
+          ['-y', '-loglevel', 'error', '-i', entrada, '-af', LIMPIEZA, '-ar', '16000', '-ac', '1', '-f', 'wav', wav],
+          { timeout: 30_000 },
+        );
+        // Whisper toma solo el final del contexto si es largo: las pistas
+        // de la cuenta van al final, que es lo que más pesa.
+        const contexto = `${CONTEXTO} ${pistas}`.replace(/\s+/g, ' ').trim().slice(-800);
         const { stdout } = await ejecutar(
           WHISPER,
           // El contexto inicial orienta al modelo: frases cortas de WhatsApp
           // ("buen día") y palabras del negocio que oye seguido.
-          ['-m', MODELO, '-f', wav, '-l', 'es', '-t', HILOS, '-nt', '-np', '--prompt', CONTEXTO],
+          // Búsqueda con 5 candidatos: más lenta, bastante más acertada.
+          ['-m', MODELO, '-f', wav, '-l', 'es', '-t', HILOS, '-nt', '-np', '-bs', '5', '-bo', '5', '--prompt', contexto],
           { timeout: 120_000, maxBuffer: 4 * 1024 * 1024 },
         );
         const texto = stdout.replace(/\s+/g, ' ').trim();

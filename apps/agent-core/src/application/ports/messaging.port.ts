@@ -47,7 +47,7 @@ export interface MessagingPort {
    */
   sendVoice?(to: string, text: string): Promise<string | null>;
   /** Transcribe un audio en el gateway (whisper.cpp). null = no se pudo. */
-  transcribir?(audio: { base64: string; mimetype: string }): Promise<string | null>;
+  transcribir?(audio: { base64: string; mimetype: string }, pistas?: string): Promise<string | null>;
   /** Solo la voz (OGG/Opus), sin mandarla. null = no disponible. */
   sintetizar?(text: string): Promise<Buffer | null>;
 }

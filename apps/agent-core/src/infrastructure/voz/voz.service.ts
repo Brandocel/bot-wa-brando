@@ -25,7 +25,7 @@ export class VozService {
   }
 
   /** El texto de un audio, o null si no se pudo. */
-  async transcribir(audio: { base64: string; mimetype: string }): Promise<string | null> {
+  async transcribir(audio: { base64: string; mimetype: string }, pistas = ''): Promise<string | null> {
     if (!config.groqApiKey) return null;
     try {
       const bytes = Buffer.from(audio.base64.replace(/^data:[^,]*,/, ''), 'base64');
@@ -34,6 +34,8 @@ export class VozService {
       form.append('model', 'whisper-large-v3-turbo');
       form.append('language', 'es');
       form.append('response_format', 'json');
+      // Nombres de la cuenta: Whisper los reconoce mejor si los espera.
+      form.append('prompt', `Mensaje de voz por WhatsApp, español de México. ${pistas}`.slice(0, 800));
 
       const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
         method: 'POST',

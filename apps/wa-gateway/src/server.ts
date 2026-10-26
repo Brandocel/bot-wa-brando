@@ -278,8 +278,10 @@ export function buildServer() {
     '/voz/transcribir',
     requireApiKey,
     wrap(async (req, res) => {
-      const { base64 } = req.body as { base64?: string };
-      const texto = base64 ? await transcribir(Buffer.from(base64.replace(/^data:[^,]*,/, ''), 'base64')) : null;
+      const { base64, pistas } = req.body as { base64?: string; pistas?: string };
+      const texto = base64
+        ? await transcribir(Buffer.from(base64.replace(/^data:[^,]*,/, ''), 'base64'), String(pistas ?? '').slice(0, 1000))
+        : null;
       res.json({ texto });
     }),
   );
