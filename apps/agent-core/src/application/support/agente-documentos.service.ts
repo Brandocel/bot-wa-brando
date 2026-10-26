@@ -273,8 +273,9 @@ export const HERRAMIENTAS: readonly HerramientaLlm[] = [
   {
     nombre: 'pasar_a_persona',
     descripcion:
-      'Abre un ticket para que alguien del equipo atienda. Úsala si lo pide, si está molesto, o si de verdad ' +
-      'no encuentras lo que necesita después de buscar de varias formas.',
+      'Abre un ticket para que alguien del equipo atienda. SOLO si pide hablar con una persona con esas palabras, ' +
+      'si está molesto, o si ya buscaste al menos dos veces de distintas formas y no hay nada. Un pedido raro o ' +
+      'mal escrito NO es motivo: busca lo que más se parezca o pregunta en una frase.',
     esquema: {
       type: 'object',
       properties: { motivo: { type: 'string', description: 'Qué necesita, en una frase.' } },
@@ -305,6 +306,8 @@ function instrucciones(
     '- Un solo resultado claro: mándalo. Varios: enséñalos numerados con su ref, en orden ("*1.* nombre — mes", "*2.* …") y pregunta cuál; si pidió "todos" o un rango, mándalos.',
     '- Los números que ve la persona SON las refs de la última búsqueda. No busques otra vez solo para mandar algo de la lista que ya vio: usa sus números.',
     '- Si el pedido se puede entender de dos formas, pregunta en una frase en vez de adivinar.',
+    '- "La última", "la más reciente", "la nueva": busca sin mes (los resultados vienen del más reciente al más viejo) y toma la primera; "de cualquier empresa" = sin filtrar por empresa.',
+    '- Muchos mensajes llegan de audios transcritos y pueden traer palabras mal oídas ("facturado" por "factura", "cargado" por "subido"): interpreta la intención más probable.',
     '- "Mándame la 3", "del 1 al 4", "todos": son refs de la lista que ya vio.',
     '- "Gracias", "listo", "ok": contesta corto y amable. No repitas lo que ya mandaste ni hables de números.',
     '- "¿Cómo va?", "¿ya salieron?": usa estado_entregas y di lo real.',
