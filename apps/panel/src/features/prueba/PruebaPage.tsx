@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FileText, FlaskConical, Mic, RotateCcw, Send, Volume2 } from 'lucide-react';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { PageHeader } from '@/app/layout/PageHeader';
 import { Badge } from '@/components/ui/badge';
@@ -41,8 +42,20 @@ interface Chat {
 export function PruebaPage() {
   const empresas = useEmpresas();
   const queryClient = useQueryClient();
-  const [empresa, setEmpresa] = useState('');
-  const [numero, setNumero] = useState('');
+  // Empresa y número van en la URL: al recargar sigue donde estabas.
+  const [url, setUrl] = useSearchParams();
+  const empresa = url.get('empresa') ?? '';
+  const numero = url.get('numero') ?? '';
+  const poner = (cambios: Record<string, string>) => {
+    const sig = new URLSearchParams(url);
+    for (const [k, v] of Object.entries(cambios)) {
+      if (v) sig.set(k, v);
+      else sig.delete(k);
+    }
+    setUrl(sig, { replace: true });
+  };
+  const setEmpresa = (v: string) => poner({ empresa: v });
+  const setNumero = (v: string) => poner({ numero: v });
   const [texto, setTexto] = useState('');
   const fondo = useRef<HTMLDivElement>(null);
 
