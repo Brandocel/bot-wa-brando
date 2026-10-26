@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { FileText, FlaskConical, Mic, RotateCcw, Send, Volume2 } from 'lucide-react';
+import { Download, FileText, FlaskConical, Mic, RotateCcw, Send, Volume2 } from 'lucide-react';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -25,6 +25,8 @@ interface Mensaje {
   documentId: string | null;
   /** Lo mandó como nota de voz; el texto es la transcripción. */
   esVoz?: boolean;
+  /** Se guardó el audio que se grabó en la prueba. */
+  tieneAudio?: boolean;
 }
 
 interface Chat {
@@ -184,6 +186,24 @@ export function PruebaPage() {
   );
 }
 
+/** Escuchar un audio de la prueba y bajarlo para calibrar. */
+function Reproductor({ src }: { src: string }) {
+  return (
+    <span className="mt-1 mb-1 flex items-center gap-2">
+      <audio controls preload="metadata" className="h-9 max-w-full" src={src} />
+      <a
+        href={`${src}&descargar=1`}
+        download
+        className="shrink-0 rounded-md border p-1.5 hover:bg-surface"
+        aria-label="Descargar audio"
+        title="Descargar audio"
+      >
+        <Download className="size-4" />
+      </a>
+    </span>
+  );
+}
+
 /** Las *negritas* de WhatsApp, como se verían en el teléfono. */
 function ConFormato({ texto }: { texto: string }) {
   return (
@@ -247,7 +267,7 @@ function Burbuja({ m, n }: { m: Mensaje; n: number | null }) {
               <Volume2 className="size-4" aria-hidden />
               Nota de voz
             </span>
-            <audio controls preload="none" className="mt-1 h-9 max-w-full" src={`/panel/api/prueba/voz?id=${encodeURIComponent(m.id)}`} />
+            <Reproductor src={`/panel/api/prueba/voz?id=${encodeURIComponent(m.id)}`} />
           </>
         ) : (
           <>
@@ -257,6 +277,7 @@ function Burbuja({ m, n }: { m: Mensaje; n: number | null }) {
                 {m.body ? 'transcrito de su audio' : 'audio sin transcribir'}
               </span>
             )}
+            {cliente && m.tieneAudio && <Reproductor src={`/panel/api/prueba/audio?id=${encodeURIComponent(m.id)}`} />}
             <ConFormato texto={m.body} />
           </>
         )}

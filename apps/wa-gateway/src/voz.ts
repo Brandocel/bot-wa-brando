@@ -24,6 +24,11 @@ const MODELO = join(DIR, 'whisper.bin');
 const PIPER = join(DIR, 'piper', 'piper');
 const VOZ = join(DIR, 'voz.onnx');
 
+const CONTEXTO =
+  'Mensaje de voz por WhatsApp, español de México. Hola, buen día, buenas tardes, gracias. ' +
+  'Mándame la factura, el contrato, la constancia de alta, la baja, el finiquito, el recibo de nómina, ' +
+  'el pedido, de octubre, de este mes.';
+
 /** Tope de texto a voz: más largo, se queda en texto. */
 const MAX_VOZ_CHARS = 900;
 const HILOS = String(Math.max(1, Math.min(4, cpus().length)));
@@ -63,7 +68,9 @@ export async function transcribir(audio: Buffer): Promise<string | null> {
         });
         const { stdout } = await ejecutar(
           WHISPER,
-          ['-m', MODELO, '-f', wav, '-l', 'es', '-t', HILOS, '-nt', '-np'],
+          // El contexto inicial orienta al modelo: frases cortas de WhatsApp
+          // ("buen día") y palabras del negocio que oye seguido.
+          ['-m', MODELO, '-f', wav, '-l', 'es', '-t', HILOS, '-nt', '-np', '--prompt', CONTEXTO],
           { timeout: 120_000, maxBuffer: 4 * 1024 * 1024 },
         );
         const texto = stdout.replace(/\s+/g, ' ').trim();

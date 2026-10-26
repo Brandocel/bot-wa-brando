@@ -42,7 +42,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 ARG WHISPER_VERSION=v1.7.6
-ARG WHISPER_MODEL=ggml-base-q5_1.bin
+ARG WHISPER_MODEL=ggml-small-q5_1.bin
 ARG PIPER_VERSION=2023.11.14-2
 ARG PIPER_VOZ=es/es_MX/claude/high/es_MX-claude-high
 

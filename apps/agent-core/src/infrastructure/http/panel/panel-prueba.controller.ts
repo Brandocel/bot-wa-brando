@@ -70,10 +70,11 @@ export class PanelPruebaController {
       topic: conv?.topic ?? null,
       tickets: conv?.tickets ?? [],
       mensajes: (conv?.messages ?? []).map(({ raw, ...m }) => {
-        const r = raw as { documentId?: unknown; type?: unknown } | null;
+        const r = raw as { documentId?: unknown; type?: unknown; audioPrueba?: unknown } | null;
         return {
           ...m,
           documentId: r?.documentId ?? null,
+          tieneAudio: Boolean(r?.audioPrueba),
           // Lo mandó como nota de voz: el texto es la transcripción.
           esVoz: r?.type === 'ptt' || r?.type === 'audio',
         };
@@ -143,14 +144,28 @@ export class PanelPruebaController {
     });
 
     // Lo que no llegó a guardarse lo cortó un filtro antes del turno.
-    const procesado = (await this.prisma.message.count({ where: { id } })) > 0;
+    const registrado = await this.prisma.message.findUnique({ where: { id }, select: { raw: true } });
+    const procesado = registrado !== null;
+    // El audio grabado se queda en la prueba para escucharlo o bajarlo y
+    // calibrar la transcripción (en WhatsApp real no se guarda).
+    if (registrado && audio) {
+      await this.prisma.message.update({
+        where: { id },
+        data: {
+          raw: {
+            ...((registrado.raw as Record<string, unknown> | null) ?? {}),
+            audioPrueba: { mimetype: audio.mimetype!.split(';')[0], base64: audio.base64!.replace(/^data:[^,]*,/, '') },
+          },
+        },
+      });
+    }
     void this.outbox.drain().catch(() => undefined);
     return { procesado };
   }
 
   /** La respuesta en voz de un mensaje del bot en la prueba, para escucharla en el panel. */
   @Get('voz')
-  async escuchar(@Query('id') id: string | undefined, @Res() res: Response): Promise<void> {
+  async escuchar(@Query('id') id: string | undefined, @Query('descargar') descargar: string | undefined, @Res() res: Response): Promise<void> {
     const m = id ? await this.prisma.message.findUnique({ where: { id }, select: { body: true, conversation: { select: { chatId: true } } } }) : null;
     if (!m || !m.conversation.chatId.includes(MARCA_PRUEBA)) throw new NotFoundException('no existe ese mensaje');
     const texto = m.body.replace(/^\[voz\]\s*/, '');
@@ -160,7 +175,21 @@ export class PanelPruebaController {
     if (!audio) throw new NotFoundException('no se pudo generar la voz');
     res.setHeader('Content-Type', ogg ? 'audio/ogg' : 'audio/mpeg');
     res.setHeader('Cache-Control', 'private, max-age=3600');
+    if (descargar) res.setHeader('Content-Disposition', `attachment; filename="voz-bot-${id}.${ogg ? 'ogg' : 'mp3'}"`);
     res.send(audio);
+  }
+
+  /** El audio que grabó el equipo en la prueba, tal cual se transcribió. */
+  @Get('audio')
+  async audioGrabado(@Query('id') id: string | undefined, @Query('descargar') descargar: string | undefined, @Res() res: Response): Promise<void> {
+    const m = id ? await this.prisma.message.findUnique({ where: { id }, select: { raw: true } }) : null;
+    const a = (m?.raw as { audioPrueba?: { mimetype: string; base64: string } } | null)?.audioPrueba;
+    if (!a || !id?.startsWith(MARCA_PRUEBA)) throw new NotFoundException('no hay audio guardado');
+    const ext = a.mimetype.includes('ogg') ? 'ogg' : a.mimetype.includes('webm') ? 'webm' : 'audio';
+    res.setHeader('Content-Type', a.mimetype);
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    if (descargar) res.setHeader('Content-Disposition', `attachment; filename="voz-cliente-${id}.${ext}"`);
+    res.send(Buffer.from(a.base64, 'base64'));
   }
 
   /** Borra el chat de prueba: el bot vuelve a atenderlo desde cero. */
