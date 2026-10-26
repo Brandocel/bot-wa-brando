@@ -38,6 +38,8 @@ services:
       # Carpeta nueva a propósito: la sesión de open-wa se queda intacta en
       # /data/session por si hubiera que volver atrás. Son credenciales de
       # WhatsApp, no cuestan nada y borrarlas no se puede deshacer.
+      # Sesión del número principal: solo se usa con WA_PRINCIPAL=on. Por
+      # omisión no hay principal; cada empresa o persona tiene su línea.
       - key: WA_SESSION_PATH
         value: /data/baileys
       # La cola de mensajes pendientes va en el DISCO, no en el contenedor:

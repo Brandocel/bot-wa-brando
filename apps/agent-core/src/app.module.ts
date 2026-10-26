@@ -64,7 +64,6 @@ import { DemoAgenteService } from './application/demo/demo-agente.service';
 import { WaWebhookController } from './infrastructure/http/wa-webhook.controller';
 import { PanelApiController } from './infrastructure/http/panel/panel-api.controller';
 import { PanelAuthService } from './infrastructure/http/panel/panel-auth.service';
-import { PanelController } from './infrastructure/http/panel/panel.controller';
 import { PanelGuard } from './infrastructure/http/panel/panel.guard';
 import { OutboxDispatcher } from './infrastructure/persistence/outbox.dispatcher';
 import { FlagsService } from './infrastructure/persistence/flags.service';
@@ -87,7 +86,6 @@ import { TranscripcionFilter } from './application/pipeline/filters/transcripcio
     HealthController,
     DownloadController,
     WaWebhookController,
-    PanelController,
     PanelApiController,
     PanelConnectorController,
     PanelVentasController,

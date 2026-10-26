@@ -105,7 +105,7 @@ export class PanelPendientesController {
           tipo: persona ? 'persona' : 'sin_responder',
           quien,
           titulo: persona ? `${quien} quiere hablar con alguien` : `${quien} espera respuesta`,
-          empresa: org?.name ?? 'Número principal',
+          empresa: org?.name ?? 'Sin línea',
           organizationId: org?.id ?? null,
           detalle: (t?.subject && persona ? t.subject : ultimo?.body ?? '').slice(0, 400),
           desde: (ultimo?.createdAt ?? c.lastInboundAt ?? ahora).toISOString(),

@@ -118,14 +118,14 @@ function arrancar(linea: Linea): void {
 }
 
 /**
- * Arranca la principal y todas las líneas que tengan carpeta en el disco.
- * Una que falle no detiene a las demás.
+ * Arranca todas las líneas que tengan carpeta en el disco (una por empresa
+ * o persona) y la principal solo si WA_PRINCIPAL=on. Una que falle no
+ * detiene a las demás.
  */
 export async function startWhatsApp(): Promise<void> {
   mkdirSync(config.lineasPath, { recursive: true });
 
-  const principal = nuevaLinea(LINEA_PRINCIPAL);
-  await principal.start();
+  if (config.principal) arrancar(nuevaLinea(LINEA_PRINCIPAL));
 
   for (const entrada of readdirSync(config.lineasPath, { withFileTypes: true })) {
     if (!entrada.isDirectory() || !ID_VALIDO.test(entrada.name)) continue;
@@ -136,12 +136,33 @@ export async function startWhatsApp(): Promise<void> {
   startPendingDrain();
 }
 
-/** La línea pedida, o la principal si no se pidió ninguna. */
+/** La línea pedida, o la principal si no se pidió ninguna (y está prendida). */
 export function linea(id?: string | null): Linea {
   const clave = id && id !== '' ? id : LINEA_PRINCIPAL;
   const encontrada = lineas.get(clave);
-  if (!encontrada) throw new Error(`no existe la línea "${clave}"`);
+  if (!encontrada) {
+    throw new Error(
+      clave === LINEA_PRINCIPAL
+        ? 'no hay número principal: cada envío tiene que ir por la línea de una empresa'
+        : `no existe la línea "${clave}"`,
+    );
+  }
   return encontrada;
+}
+
+/**
+ * Salud del servicio: con principal, la suya; sin ella, CRASHED solo si
+ * TODAS las líneas lo están. Que una empresa desvincule su número no es
+ * motivo para que Render reinicie a las demás.
+ */
+export function salud(): { state: string; lineas: number; conectadas: number } {
+  const todas = [...lineas.values()].map((l) => l.status());
+  const conectadas = todas.filter((l) => l.state === 'CONNECTED').length;
+  if (config.principal && lineas.has(LINEA_PRINCIPAL)) {
+    return { state: lineas.get(LINEA_PRINCIPAL)!.status().state, lineas: todas.length, conectadas };
+  }
+  const caidas = todas.length > 0 && todas.every((l) => l.state === 'CRASHED');
+  return { state: caidas ? 'CRASHED' : 'CONNECTED', lineas: todas.length, conectadas };
 }
 
 export function listarLineas() {

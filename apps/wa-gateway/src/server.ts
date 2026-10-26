@@ -15,6 +15,7 @@ import {
   sendFile,
   sendText,
   setTyping,
+  salud,
   status,
   whoAmI,
 } from './whatsapp';
@@ -74,14 +75,7 @@ export function buildServer() {
    * habría tiempo de escanear nada.
    */
   app.get('/healthz', (_req, res) => {
-    // La salud del servicio es la de la línea principal: que una empresa
-    // desvincule su número no es motivo para que Render reinicie a todas.
-    let estado: ReturnType<typeof status> | { state: 'BOOTING' };
-    try {
-      estado = status();
-    } catch {
-      estado = { state: 'BOOTING' };
-    }
+    const estado = salud();
     res.status(estado.state === 'CRASHED' ? 503 : 200).json({
       ok: estado.state !== 'CRASHED',
       ...estado,

@@ -51,6 +51,13 @@ export const config = {
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || null,
   /** Groq (plan gratuito): transcribe las notas de voz. Sin llave, no se transcribe. */
   groqApiKey: process.env.GROQ_API_KEY || null,
+  /**
+   * ¿Hay número principal? Apagado por omisión: cada empresa o persona tiene
+   * su línea. Sin principal, lo que iba "al número de siempre" (avisos al
+   * dueño, chats sin línea) no se manda; lo de un ticket sale por la línea
+   * de su empresa. Mismo valor que WA_PRINCIPAL del gateway.
+   */
+  waPrincipal: process.env.WA_PRINCIPAL === 'on',
 
   google: {
     /**

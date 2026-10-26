@@ -159,6 +159,11 @@ export class RateLimitFilter implements MessageFilter {
   }
 
   private async avisarDueno(text: string): Promise<void> {
+    // Sin número principal no hay por dónde avisarle: queda en el log.
+    if (!config.waPrincipal) {
+      this.logger.warn(text);
+      return;
+    }
     try {
       await this.prisma.outboxMessage.create({
         data: { chatId: config.ownerWaId, payload: { kind: 'text', text } },

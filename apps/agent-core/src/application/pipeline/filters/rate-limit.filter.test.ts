@@ -7,6 +7,8 @@ process.env.DATABASE_URL ??= 'postgresql://test@localhost/test';
 process.env.GATEWAY_URL ??= 'http://localhost:1';
 process.env.GATEWAY_API_KEY ??= 'x';
 process.env.OWNER_WA_ID ??= 'dueno@c.us';
+// Los avisos al dueño salen por el número principal: aquí se prueba con él.
+process.env.WA_PRINCIPAL ??= 'on';
 
 const LIMITES = { porChatHora: 60, globalHora: 100, porChatMinuto: 8, contarDocumentos: false };
 

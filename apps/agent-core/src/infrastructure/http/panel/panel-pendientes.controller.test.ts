@@ -65,7 +65,7 @@ test('junta chats, pedidos, facturas y documentos; urgente primero y luego lo m�
   assert.equal(pedido!.ref.minutos, 25);
   assert.equal(sinResp!.tipo, 'sin_responder');
   assert.equal(sinResp!.quien, '523');
-  assert.equal(sinResp!.empresa, 'Número principal');
+  assert.equal(sinResp!.empresa, 'Sin línea');
 });
 
 test('un usuario de empresa solo ve pedidos y facturas de su empresa', async () => {

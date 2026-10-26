@@ -92,7 +92,7 @@ export function ConversacionesPage() {
                     separarLinea(c.chatId).linea
                       ? (lineas[separarLinea(c.chatId).linea!] ?? 'Otra línea')
                       : hayLineas
-                        ? 'Número principal'
+                        ? 'Sin línea'
                         : null
                   }
                   onAbrir={() => abrir(c.chatId)}

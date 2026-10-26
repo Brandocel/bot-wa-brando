@@ -128,7 +128,7 @@ export function Hilo({ chatId, onCerrar }: HiloProps) {
             {/* Por qué número escribió: la misma persona por dos números son dos chats. */}
             <Badge>
               {linea && <Building2 className="size-3" aria-hidden />}
-              {linea ? (lineas[linea] ?? 'Otra empresa') : 'Número principal'}
+              {linea ? (lineas[linea] ?? 'Otra empresa') : 'Sin línea'}
             </Badge>
             {datos.contact?.memberships.map((m) => (
               <Badge key={m.organization.name + m.role}>

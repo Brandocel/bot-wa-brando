@@ -14,6 +14,8 @@ import { EntregaVigenteService } from '../../application/support/entrega-vigente
 import { PrismaService } from './prisma.service';
 import { esChatDePrueba } from '../../domain/message/prueba';
 import { VozService } from '../voz/voz.service';
+import { config } from '../../config';
+import { separarChat } from '../../domain/message/linea';
 
 /** Chats a los que se les manda a la vez. Cada uno sigue yendo en orden. */
 const CHATS_EN_PARALELO = 3;
@@ -178,6 +180,16 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
     payload: unknown;
   }): Promise<boolean> {
     const payload = row.payload as unknown as OutboxPayload;
+
+    // Sin número principal, un chat sin línea no tiene por dónde salir: se
+    // marca de una vez en lugar de reintentarlo cinco veces.
+    if (!config.waPrincipal && !separarChat(row.chatId).linea && !esChatDePrueba(row.chatId)) {
+      await this.prisma.outboxMessage.update({
+        where: { id: row.id },
+        data: { status: 'FAILED', lastError: 'sin número principal: este chat no tiene línea de empresa' },
+      });
+      return true;
+    }
     const attempts = row.attempts + 1;
 
     /**

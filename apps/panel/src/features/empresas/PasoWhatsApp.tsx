@@ -17,7 +17,7 @@ const ESTADO: Partial<Record<EstadoLinea, { texto: string; tono: Tone }>> = {
 };
 
 /**
- * El WhatsApp de una empresa. Sin número propio se atiende por el principal;
+ * El WhatsApp de una empresa. Sin número conectado el bot no la atiende;
  * con él, se enseña si está conectado, esperando el QR o si lo desvincularon
  * desde el teléfono.
  */
@@ -56,7 +56,7 @@ export function PasoWhatsApp({ empresa: o }: { empresa: Empresa }) {
     <div className="flex flex-wrap items-center gap-2">
       {!conectada ? (
         <>
-          <span className="text-[13px] text-muted-foreground">Se atiende por el número principal</span>
+          <span className="text-[13px] text-muted-foreground">Sin WhatsApp: el bot no la atiende</span>
           {puedeVincular && (
             <Button variant="secondary" size="sm" onClick={() => setConfirmando('conectar')}>
               Conectar WhatsApp
@@ -100,7 +100,7 @@ export function PasoWhatsApp({ empresa: o }: { empresa: Empresa }) {
         open={confirmando === 'desconectar'}
         onOpenChange={(a) => !a && setConfirmando(null)}
         title="¿Desconectar este número?"
-        description="Sale de «Dispositivos vinculados» del teléfono de la empresa y, desde ese momento, a la empresa se la atiende por el número principal."
+        description="Sale de «Dispositivos vinculados» del teléfono de la empresa y, desde ese momento, el bot deja de atenderla hasta volver a conectarlo."
         confirmLabel="Desconectar"
         variant="danger"
         loading={accion.isPending}

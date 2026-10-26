@@ -47,4 +47,11 @@ export const config = {
     `${(process.env.WA_SESSION_PATH ?? './data/baileys').replace(/[\\/][^\\/]+[\\/]?$/, '')}/lineas`,
 
   coreWebhookUrl: normalizeBaseUrl(required('CORE_WEBHOOK_URL')),
+
+  /**
+   * El número principal (una sesión que no es de ninguna empresa). Apagado
+   * por omisión: cada empresa o persona tiene su propia línea y no hay una
+   * sesión que mande sobre las demás. WA_PRINCIPAL=on lo vuelve a prender.
+   */
+  principal: process.env.WA_PRINCIPAL === 'on',
 } as const;

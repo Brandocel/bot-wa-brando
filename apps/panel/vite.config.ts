@@ -15,7 +15,7 @@ export default defineConfig(({ mode }) => {
   const core = `http://localhost:${env.CORE_PORT ?? 3000}`;
 
   return {
-    base: '/panel/v2/',
+    base: '/panel/',
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },

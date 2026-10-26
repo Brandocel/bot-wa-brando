@@ -3,6 +3,8 @@ import type { DocCategory, SupportAgent } from '@prisma/client';
 import { PrismaService } from '../../infrastructure/persistence/prisma.service';
 import type { EscalationReason } from './ticket.service';
 import { esChatDePrueba } from '../../domain/message/prueba';
+import { config } from '../../config';
+import { chatDeLinea } from '../../domain/message/linea';
 
 /**
  * Reparto de tickets escalados entre los agentes de soporte, y el aviso.
@@ -209,7 +211,7 @@ export class TicketAssignmentService {
       where: { id: ticketId },
       include: {
         contact: { select: { waId: true, displayName: true } },
-        organization: { select: { name: true } },
+        organization: { select: { name: true, waLineId: true } },
         conversation: {
           select: {
             chatId: true,
@@ -263,8 +265,16 @@ export class TicketAssignmentService {
       `Cuando quede resuelto: /cerrar ${ticket.number}`,
     ].join('\n');
 
+    // Sin número principal, el aviso sale por la línea de la empresa del
+    // ticket. Si la empresa no tiene línea, el ticket queda en el panel.
+    const chatId = config.waPrincipal
+      ? agente.waId
+      : ticket.organization?.waLineId
+        ? chatDeLinea(ticket.organization.waLineId, agente.waId)
+        : null;
+    if (!chatId) return;
     await this.prisma.outboxMessage.create({
-      data: { chatId: agente.waId, payload: { kind: 'text', text: texto } },
+      data: { chatId, payload: { kind: 'text', text: texto } },
     });
   }
 }
