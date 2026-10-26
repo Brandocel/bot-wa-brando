@@ -9,6 +9,7 @@ import { MARCA_PRUEBA, chatDePrueba } from '../../../domain/message/prueba';
 import { OutboxDispatcher } from '../../persistence/outbox.dispatcher';
 import { PrismaService } from '../../persistence/prisma.service';
 import { VozService } from '../../voz/voz.service';
+import { MESSAGING_PORT, type MessagingPort } from '../../../application/ports/messaging.port';
 import { PanelGuard, type PanelRequest } from './panel.guard';
 
 interface Destino {
@@ -39,6 +40,7 @@ export class PanelPruebaController {
     private readonly outbox: OutboxDispatcher,
     @Inject(DOCUMENT_SOURCE_PORT) private readonly source: DocumentSourcePort,
     private readonly voz: VozService,
+    @Inject(MESSAGING_PORT) private readonly messaging: MessagingPort,
   ) {}
 
   @Get()
@@ -151,11 +153,14 @@ export class PanelPruebaController {
   async escuchar(@Query('id') id: string | undefined, @Res() res: Response): Promise<void> {
     const m = id ? await this.prisma.message.findUnique({ where: { id }, select: { body: true, conversation: { select: { chatId: true } } } }) : null;
     if (!m || !m.conversation.chatId.includes(MARCA_PRUEBA)) throw new NotFoundException('no existe ese mensaje');
-    const mp3 = await this.voz.hablar(m.body.replace(/^\[voz\]\s*/, ''));
-    if (!mp3) throw new NotFoundException('no se pudo generar la voz');
-    res.setHeader('Content-Type', 'audio/mpeg');
+    const texto = m.body.replace(/^\[voz\]\s*/, '');
+    // La misma voz que oiría el cliente (gateway); si no está, la de Google.
+    const ogg = (await this.messaging.sintetizar?.(texto)) ?? null;
+    const audio = ogg ?? (await this.voz.hablar(texto));
+    if (!audio) throw new NotFoundException('no se pudo generar la voz');
+    res.setHeader('Content-Type', ogg ? 'audio/ogg' : 'audio/mpeg');
     res.setHeader('Cache-Control', 'private, max-age=3600');
-    res.send(mp3);
+    res.send(audio);
   }
 
   /** Borra el chat de prueba: el bot vuelve a atenderlo desde cero. */

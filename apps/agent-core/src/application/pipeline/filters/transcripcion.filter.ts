@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
+import { MESSAGING_PORT, type MessagingPort } from '../../ports/messaging.port';
 import { VozService } from '../../../infrastructure/voz/voz.service';
 import { type MessageFilter, type Next, type PipelineContext } from '../pipeline';
 
@@ -14,13 +15,23 @@ import { type MessageFilter, type Next, type PipelineContext } from '../pipeline
 export class TranscripcionFilter implements MessageFilter {
   readonly name = 'TranscripcionFilter';
 
-  constructor(private readonly voz: VozService) {}
+  constructor(
+    private readonly voz: VozService,
+    @Optional() @Inject(MESSAGING_PORT) private readonly messaging?: MessagingPort,
+  ) {}
 
   async handle(ctx: PipelineContext, next: Next): Promise<void> {
     const { message } = ctx;
     const audio = message.attachment;
-    if (message.kind === 'AUDIO' && audio?.mimetype.startsWith('audio/')) {
-      const texto = await this.voz.transcribir(audio);
+    if (message.kind === 'AUDIO') {
+      // Primero lo que transcribió el gateway al recibirlo (local, gratis);
+      // si vino el audio (chat de prueba, o el gateway no pudo), se le pide
+      // al gateway y, al último, a Groq si hay llave.
+      const esAudio = audio?.mimetype.startsWith('audio/') ? audio : null;
+      const texto =
+        message.transcripcion ??
+        (esAudio && this.messaging?.transcribir ? await this.messaging.transcribir(esAudio) : null) ??
+        (esAudio ? await this.voz.transcribir(esAudio) : null);
       if (texto) {
         ctx.message = { ...message, kind: 'TEXT', body: texto, esVoz: true, attachment: null };
       }

@@ -278,7 +278,7 @@ export class SupportStrategy {
     // en el flujo de documentos y provocaban un "¿qué documento necesitas?"
     // que no venía a cuento.
     if (message.kind !== 'TEXT' && message.body.trim() === '') {
-      return { text: voz.archivoNoLeible(), awaiting: 'CLIENTE' };
+      return { text: message.kind === 'AUDIO' ? voz.audioNoLeible() : voz.archivoNoLeible(), awaiting: 'CLIENTE' };
     }
 
     /**

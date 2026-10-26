@@ -11,6 +11,7 @@ import makeWASocket, {
 import type { Boom } from '@hapi/boom';
 import pino from 'pino';
 import { toBuffer as qrToBuffer } from 'qrcode';
+import { transcribir } from './voz';
 
 /**
  * Una línea de WhatsApp: un número vinculado, con su propia sesión.
@@ -52,6 +53,8 @@ export interface PayloadParaCore {
    * manda un cliente para facturar. Lo demás no se baja.
    */
   media?: { mimetype: string; filename: string; base64: string };
+  /** Lo que dijo en una nota de voz, transcrito aquí (whisper.cpp). */
+  transcripcion?: string;
   isGroupMsg: boolean;
   fromMe: boolean;
   isBroadcast: boolean;
@@ -373,7 +376,14 @@ export class Linea {
     const { body, caption } = textoDe(m);
     // Los audios también: el core los transcribe. Los del chat propio
     // (fromMe) cuentan, porque ahí habla la persona que usa el bot.
-    const media = fromMe ? await audioDe(m) : (await pdfDe(m)) ?? (await audioDe(m));
+    let media = fromMe ? await audioDe(m) : (await pdfDe(m)) ?? (await audioDe(m));
+    // La nota de voz se transcribe aquí, que hay memoria de sobra. Si sale,
+    // el audio ya no viaja al core; si no, viaja y el core lo intenta.
+    let transcripcion: string | undefined;
+    if (media?.mimetype.startsWith('audio/')) {
+      transcripcion = (await transcribir(Buffer.from(media.base64, 'base64'))) ?? undefined;
+      if (transcripcion) media = undefined;
+    }
 
     const esChatPropio = this.esChatPropio(remoteJid);
 
@@ -400,6 +410,7 @@ export class Linea {
       caption,
       ...ubicacionDe(m),
       ...(media ? { media } : {}),
+      ...(transcripcion ? { transcripcion } : {}),
       isGroupMsg: esGrupo,
       fromMe,
       isBroadcast: remoteJid === 'status@broadcast',
@@ -686,7 +697,9 @@ export class Linea {
     const contenido = mimetype.startsWith('image/')
       ? { image: bytes, caption, mimetype }
       : mimetype.startsWith('audio/')
-        ? { audio: bytes, mimetype, ptt: mimetype.includes('ogg') }
+        ? mimetype.includes('ogg')
+          ? { audio: bytes, mimetype: 'audio/ogg; codecs=opus', ptt: true }
+          : { audio: bytes, mimetype, ptt: false }
         : { document: bytes, fileName: filename, mimetype, caption };
 
     const resultado = await this.requireSock().sendMessage(destino, contenido);

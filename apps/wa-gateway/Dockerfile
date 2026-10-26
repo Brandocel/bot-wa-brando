@@ -31,14 +31,51 @@ RUN npm run build --workspace=wa-gateway
 # Fuera lo que solo servía para compilar.
 RUN npm prune --omit=dev --include-workspace-root --workspace=wa-gateway
 
+# ─── Etapa 1b: voz (gratis, local) ────────────────────────────────────────
+# whisper.cpp transcribe las notas de voz y Piper habla con voz de México.
+# Todo corre aquí, sin llaves ni servicios externos. Compilado portátil
+# (sin -march=native): el CPU de Render no es el de la máquina que construye.
+FROM debian:bookworm-slim AS voz
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential cmake git curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+ARG WHISPER_VERSION=v1.7.6
+ARG WHISPER_MODEL=ggml-base-q5_1.bin
+ARG PIPER_VERSION=2023.11.14-2
+ARG PIPER_VOZ=es/es_MX/claude/high/es_MX-claude-high
+
+WORKDIR /src
+RUN git clone --depth 1 --branch ${WHISPER_VERSION} https://github.com/ggml-org/whisper.cpp.git \
+ && cmake -S whisper.cpp -B whisper.cpp/build -DGGML_NATIVE=OFF -DBUILD_SHARED_LIBS=OFF \
+      -DWHISPER_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release \
+ && cmake --build whisper.cpp/build --config Release -j --target whisper-cli \
+ && mkdir -p /opt/voz \
+ && cp whisper.cpp/build/bin/whisper-cli /opt/voz/whisper-cli \
+ && curl -fsSL -o /opt/voz/whisper.bin \
+      https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${WHISPER_MODEL}
+
+# El tar de Piper trae su binario, sus librerías y espeak-ng-data en piper/.
+RUN curl -fsSL https://github.com/rhasspy/piper/releases/download/${PIPER_VERSION}/piper_linux_x86_64.tar.gz \
+      | tar -xz -C /opt/voz \
+ && curl -fsSL -o /opt/voz/voz.onnx \
+      https://huggingface.co/rhasspy/piper-voices/resolve/main/${PIPER_VOZ}.onnx \
+ && curl -fsSL -o /opt/voz/voz.onnx.json \
+      https://huggingface.co/rhasspy/piper-voices/resolve/main/${PIPER_VOZ}.onnx.json
+
 # ─── Etapa 2: runtime ─────────────────────────────────────────────────────
 FROM node:20-bookworm-slim
 
-# dumb-init como PID 1 y los certificados para hablar con WhatsApp y con el
-# core. Nada más: Baileys no necesita navegador.
+# dumb-init como PID 1, los certificados para hablar con WhatsApp y con el
+# core, ffmpeg para convertir audios (nota de voz <-> wav) y libgomp, que
+# whisper.cpp usa para repartir el trabajo entre hilos.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates dumb-init \
+      ca-certificates dumb-init ffmpeg libgomp1 \
  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=voz /opt/voz /opt/voz
+ENV VOZ_DIR=/opt/voz
 
 ENV NODE_ENV=production \
     GATEWAY_PORT=10000 \

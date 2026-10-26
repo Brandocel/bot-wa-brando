@@ -116,6 +116,11 @@ export function deNada(): string {
   ]);
 }
 
+/** Una nota de voz que no se pudo transcribir. */
+export function audioNoLeible(): string {
+  return 'No alcancé a escuchar tu audio 🙏 ¿Me lo escribes? Dime qué documento necesitas y te lo busco.';
+}
+
 export function archivoNoLeible(): string {
   return una([
     'Recibí tu archivo, pero por ahora solo entiendo texto.\nEscríbeme qué documento necesitas y de qué mes, y te lo busco.',

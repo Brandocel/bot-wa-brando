@@ -241,7 +241,7 @@ function Burbuja({ m, n }: { m: Mensaje; n: number | null }) {
             {cliente && m.esVoz && (
               <span className="mb-0.5 flex items-center gap-1 text-[11px] opacity-75">
                 <Mic className="size-3" aria-hidden />
-                transcrito de su audio
+                {m.body ? 'transcrito de su audio' : 'audio sin transcribir'}
               </span>
             )}
             <ConFormato texto={m.body} />

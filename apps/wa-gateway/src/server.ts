@@ -1,6 +1,7 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { timingSafeEqual } from 'node:crypto';
 import { config } from './config';
+import { hablar, transcribir } from './voz';
 import {
   borrarLinea,
   checkNumber,
@@ -242,6 +243,60 @@ export function buildServer() {
 
       const messageId = await sendFile({ to, url, base64, filename, caption, quotedMsgId }, id);
       res.json({ messageId });
+    }),
+  );
+
+  /**
+   * Una respuesta leída en voz, como nota de voz de WhatsApp. La voz se
+   * genera aquí (Piper); 204 = no hay voz o el texto es largo: el core se
+   * queda con el texto.
+   */
+  app.post(
+    '/messages/voice',
+    requireApiKey,
+    wrap(async (req, res) => {
+      const { to, text, linea: id } = req.body as { to?: string; text?: string; linea?: string };
+      if (!to || !text) {
+        res.status(400).json({ error: 'faltan "to" o "text"' });
+        return;
+      }
+      const ogg = await hablar(text);
+      if (!ogg) {
+        res.status(204).end();
+        return;
+      }
+      const messageId = await sendFile(
+        { to, base64: `data:audio/ogg;base64,${ogg.toString('base64')}`, filename: 'respuesta.ogg' },
+        id,
+      );
+      res.json({ messageId });
+    }),
+  );
+
+  /** Transcribe un audio que no llegó por WhatsApp (el chat de prueba del panel). */
+  app.post(
+    '/voz/transcribir',
+    requireApiKey,
+    wrap(async (req, res) => {
+      const { base64 } = req.body as { base64?: string };
+      const texto = base64 ? await transcribir(Buffer.from(base64.replace(/^data:[^;]+;base64,/, ''), 'base64')) : null;
+      res.json({ texto });
+    }),
+  );
+
+  /** Solo la voz, sin mandarla: el panel la reproduce en el chat de prueba. */
+  app.post(
+    '/voz/sintetizar',
+    requireApiKey,
+    wrap(async (req, res) => {
+      const { text } = req.body as { text?: string };
+      const ogg = text ? await hablar(text) : null;
+      if (!ogg) {
+        res.status(204).end();
+        return;
+      }
+      res.setHeader('Content-Type', 'audio/ogg');
+      res.send(ogg);
     }),
   );
 

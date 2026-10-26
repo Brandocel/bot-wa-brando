@@ -75,6 +75,48 @@ export class GatewayMessagingAdapter implements MessagingPort {
     return messageId;
   }
 
+  async sendVoice(to: string, text: string): Promise<string | null> {
+    if (esChatDePrueba(to)) return idDePrueba();
+    const res = await this.crudo('/messages/voice', { ...this.destino(to), text }, 90_000);
+    if (res.status === 204) return null;
+    return ((await res.json()) as { messageId: string }).messageId;
+  }
+
+  async transcribir(audio: { base64: string; mimetype: string }): Promise<string | null> {
+    try {
+      const res = await this.crudo('/voz/transcribir', { base64: audio.base64 }, 120_000);
+      return ((await res.json()) as { texto: string | null }).texto;
+    } catch (err) {
+      this.logger.warn(`no se pudo transcribir en el gateway: ${String(err)}`);
+      return null;
+    }
+  }
+
+  async sintetizar(text: string): Promise<Buffer | null> {
+    try {
+      const res = await this.crudo('/voz/sintetizar', { text }, 90_000);
+      return res.status === 204 ? null : Buffer.from(await res.arrayBuffer());
+    } catch (err) {
+      this.logger.warn(`no se pudo sintetizar en el gateway: ${String(err)}`);
+      return null;
+    }
+  }
+
+  /** POST que devuelve la respuesta tal cual (204 incluido). */
+  private async crudo(path: string, body: unknown, timeoutMs: number): Promise<Response> {
+    const res = await fetch(`${config.gatewayUrl}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-gateway-key': config.gatewayApiKey },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new Error(`gateway ${path} respondió ${res.status}: ${detail}`);
+    }
+    return res;
+  }
+
   async checkNumber(candidate: string): Promise<NumberCheck> {
     const res = await fetch(
       `${config.gatewayUrl}/contacts/check?number=${encodeURIComponent(candidate)}`,

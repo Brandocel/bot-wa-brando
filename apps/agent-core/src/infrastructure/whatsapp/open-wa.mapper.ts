@@ -173,6 +173,8 @@ export class OpenWaMessageMapper {
       mentionsMe: !deLineaDeEmpresa && mentions.includes(config.ownerWaId),
       timestamp: seconds ? new Date(seconds * 1000) : new Date(),
       attachment: adjuntoDe(raw),
+      // El gateway ya transcribió la nota de voz (whisper.cpp).
+      transcripcion: str(raw['transcripcion']),
       // El raw se guarda en la tabla de mensajes: sin los bytes del archivo,
       // que ya viajan en `attachment` y no hacen falta para depurar.
       raw: raw['media'] ? { ...raw, media: { ...(raw['media'] as object), base64: '[omitido]' } } : raw,

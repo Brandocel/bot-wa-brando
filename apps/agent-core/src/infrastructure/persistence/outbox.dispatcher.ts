@@ -314,13 +314,17 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
     if (esChatDePrueba(chatId)) {
       return { id: await this.messaging.sendText(chatId, body), body, kind: 'AUDIO' };
     }
+    // La voz de México del gateway, como nota de voz; si no está, la de
+    // Google como audio.
+    const id = this.messaging.sendVoice ? await this.messaging.sendVoice(chatId, payload.text) : null;
+    if (id) return { id, body, kind: 'AUDIO' };
     const mp3 = await this.voz?.hablar(payload.text);
     if (!mp3) return null;
-    const id = await this.messaging.sendFile(chatId, {
+    const idMp3 = await this.messaging.sendFile(chatId, {
       base64: `data:audio/mpeg;base64,${mp3.toString('base64')}`,
       filename: 'respuesta.mp3',
     });
-    return { id, body, kind: 'AUDIO' };
+    return { id: idMp3, body, kind: 'AUDIO' };
   }
 
   private async sendTextPayload(

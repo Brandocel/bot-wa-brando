@@ -58,6 +58,8 @@ export interface IncomingMessage {
    * solo PDFs chicos (la Constancia de Situación Fiscal para facturar).
    */
   readonly attachment?: Attachment | null;
+  /** Lo que dijo en la nota de voz, si el gateway ya lo transcribió. */
+  readonly transcripcion?: string | null;
   /** Llegó como nota de voz y `body` es su transcripción. */
   readonly esVoz?: boolean;
   /** Payload original, solo para depurar el mapper. Nunca para lógica. */

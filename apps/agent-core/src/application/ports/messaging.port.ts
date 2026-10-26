@@ -41,6 +41,15 @@ export interface MessagingPort {
   sendFile(to: string, file: OutgoingFile): Promise<string>;
   setTyping(to: string, on: boolean): Promise<void>;
   markSeen(to: string): Promise<void>;
+  /**
+   * Manda el texto leído en voz, como nota de voz (la voz la genera el
+   * gateway). null = no hay voz disponible o el texto es largo.
+   */
+  sendVoice?(to: string, text: string): Promise<string | null>;
+  /** Transcribe un audio en el gateway (whisper.cpp). null = no se pudo. */
+  transcribir?(audio: { base64: string; mimetype: string }): Promise<string | null>;
+  /** Solo la voz (OGG/Opus), sin mandarla. null = no disponible. */
+  sintetizar?(text: string): Promise<Buffer | null>;
 }
 
 /** Token de inyección: las clases del dominio no se referencian directo. */
