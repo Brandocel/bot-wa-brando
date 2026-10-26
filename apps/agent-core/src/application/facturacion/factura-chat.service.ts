@@ -117,8 +117,12 @@ export class FacturaChatService {
   // ── Inicio ──────────────────────────────────────────────────────────
 
   private async empezar(ctx: StrategyContext, negocio: Negocio, textoConstancia: string | null): Promise<StrategyReply> {
-    const s = await this.prisma.invoicingSettings.findUnique({ where: { organizationId: negocio.organizationId } });
-    if (!s?.enabled) {
+    const [s, org] = await Promise.all([
+      this.prisma.invoicingSettings.findUnique({ where: { organizationId: negocio.organizationId } }),
+      this.prisma.organization.findUnique({ where: { id: negocio.organizationId }, select: { herramientas: true } }),
+    ]);
+    // Sin la herramienta Facturación contratada, igual que apagada.
+    if (!s?.enabled || !org?.herramientas.includes('FACTURACION')) {
       return {
         text: `Por ahora no puedo hacer facturas por aquí 🙏 Le aviso a ${negocio.nombre} para que te ayude con ella.`,
         awaiting: 'AGENTE',

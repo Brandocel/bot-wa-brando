@@ -147,7 +147,8 @@ export class AccessScopeService {
       where: {
         fullName: { not: null },
         revokedAt: null,
-        organization: { active: true },
+        // Sin la herramienta Documentos, el bot no entrega nada de esa empresa.
+        organization: { active: true, herramientas: { has: 'DOCUMENTOS' } },
         ...(empresa ? { organizationId: empresa.id } : {}),
       },
       select: {
@@ -214,7 +215,8 @@ export class AccessScopeService {
         revokedAt: null,
         validFrom: { lte: now },
         OR: [{ validUntil: null }, { validUntil: { gte: now } }],
-        organization: { active: true },
+        // Sin la herramienta Documentos, el bot no entrega nada de esa empresa.
+        organization: { active: true, herramientas: { has: 'DOCUMENTOS' } },
       },
       include: {
         organization: { select: { id: true, name: true } },
@@ -345,6 +347,7 @@ export class AccessScopeService {
       where: {
         kind: 'PERSONA',
         active: true,
+        herramientas: { has: 'DOCUMENTOS' },
         waNumber: { not: null },
         ...(soloEmpresa ? { id: soloEmpresa } : {}),
       },

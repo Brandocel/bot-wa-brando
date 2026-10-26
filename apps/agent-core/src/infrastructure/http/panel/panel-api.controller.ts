@@ -44,6 +44,7 @@ import { randomBytes } from 'node:crypto';
 import { prefijoDeLinea, separarChat } from '../../../domain/message/linea';
 import { claveTitular } from '../../../domain/contact/nombre';
 import { SIN_PRUEBA, TICKET_SIN_PRUEBA } from './sin-prueba';
+import { HERRAMIENTAS, combinacionValida } from '../../../domain/plan/herramientas';
 
 /** Las conversaciones de esa persona en el mismo número de WhatsApp. */
 function mismaLinea(contactId: string, chatId: string): Prisma.ConversationWhereInput {
@@ -528,6 +529,7 @@ export class PanelApiController {
         id: true,
         name: true,
         kind: true,
+        herramientas: true,
         taxId: true,
         driveFolderId: true,
         sourceType: true,
@@ -1242,6 +1244,31 @@ export class PanelApiController {
       driveFolderId: sourceType === 'DRIVE' ? body.driveFolderId : undefined,
       taxId: body.taxId,
     });
+  }
+
+  /** Las herramientas que se venden, con su escalera de precio. */
+  @UseGuards(PanelGuard)
+  @ParaEmpresa()
+  @Get('herramientas')
+  catalogoHerramientas() {
+    return HERRAMIENTAS;
+  }
+
+  /**
+   * Qué herramientas tiene una empresa. Solo ADMIN: es lo que se le cobra,
+   * y lo que el bot le ofrece a sus clientes.
+   */
+  @UseGuards(PanelGuard)
+  @Post('empresas/herramientas')
+  async setHerramientas(@Req() req: PanelRequest, @Body() body: { id?: string; herramientas?: string[] }) {
+    this.requireAdmin(req);
+    if (!body.id) throw new BadRequestException('falta el id');
+    const claves = HERRAMIENTAS.map((h) => h.clave).filter((c) => body.herramientas?.includes(c));
+    if (!combinacionValida(claves)) {
+      throw new BadRequestException('Facturación y Voz son extras: necesitan Documentos o Ventas');
+    }
+    await this.prisma.organization.update({ where: { id: body.id }, data: { herramientas: claves } });
+    return { herramientas: claves };
   }
 
   /**

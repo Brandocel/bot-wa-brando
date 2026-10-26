@@ -120,12 +120,14 @@ export class FacturaEquipoService {
       select: {
         canInvoice: true,
         verifiedAt: true,
-        organization: { select: { id: true, name: true, invoicing: { select: { enabled: true, pricesIncludeTax: true } } } },
+        organization: { select: { id: true, name: true, herramientas: true, invoicing: { select: { enabled: true, pricesIncludeTax: true } } } },
       },
     });
     if (membresias.length === 0) return null;
 
-    const pueden = membresias.filter((m) => m.canInvoice && m.verifiedAt && m.organization.invoicing?.enabled);
+    const pueden = membresias.filter(
+      (m) => m.canInvoice && m.verifiedAt && m.organization.invoicing?.enabled && m.organization.herramientas.includes('FACTURACION'),
+    );
     if (pueden.length === 0) {
       const sinPermiso = membresias.every((m) => !m.canInvoice);
       return {

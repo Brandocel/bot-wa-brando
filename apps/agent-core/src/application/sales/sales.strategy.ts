@@ -110,6 +110,7 @@ export class SalesStrategy {
         id: true,
         name: true,
         active: true,
+        herramientas: true,
         sales: true,
         products: {
           where: { active: true },
@@ -119,7 +120,8 @@ export class SalesStrategy {
         },
       },
     });
-    if (!org?.active || !org.sales?.enabled || org.products.length === 0) return null;
+    // Solo con la herramienta Ventas contratada (además de encendida).
+    if (!org?.active || !org.herramientas.includes('VENTAS') || !org.sales?.enabled || org.products.length === 0) return null;
 
     const s = org.sales;
     return {

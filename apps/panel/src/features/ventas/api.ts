@@ -8,6 +8,8 @@ export interface Empresa {
   name: string;
   /** PERSONA: usa el bot para sí misma; su número recibe todo lo suyo. */
   kind: 'EMPRESA' | 'PERSONA';
+  /** Lo que tiene contratado: el bot y el menú solo ofrecen esto. */
+  herramientas: Array<'DOCUMENTOS' | 'VENTAS' | 'FACTURACION' | 'VOZ'>;
   taxId: string | null;
   active: boolean;
   /** De dónde salen sus documentos: una carpeta de Drive o su computadora. */

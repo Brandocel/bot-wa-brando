@@ -28,6 +28,9 @@ const PESTANAS: ReadonlyArray<{ value: Pestana; label: string }> = [
 
 const RECORDADA = 'vt-empresa';
 
+/** Pestañas de la herramienta Facturación; el resto son de Ventas. */
+const DE_FACTURACION: Pestana[] = ['facturas', 'facturacion'];
+
 /**
  * La empresa que se ve en Ventas: la de la URL, la última que elegiste o,
  * si no hay, una que de verdad vende. Abrir en la primera por orden
@@ -54,11 +57,15 @@ export function VentasPage() {
   const usuario = useUsuario();
   const empresas = useEmpresas();
   const [params, setParams] = useSearchParams();
-  const pestana = (PESTANAS.find((p) => p.value === params.get('tab'))?.value ?? 'pedidos') as Pestana;
 
   const poner = (cambios: Record<string, string>) => setParams({ ...Object.fromEntries(params), ...cambios }, { replace: true });
 
   const actual = empresas.data && elegirEmpresa(empresas.data, params.get('empresa'));
+  // Solo las pestañas de lo que tiene contratado: Ventas o Facturación.
+  const visibles = PESTANAS.filter((p) =>
+    !actual ? true : DE_FACTURACION.includes(p.value) ? actual.herramientas.includes('FACTURACION') : actual.herramientas.includes('VENTAS'),
+  );
+  const pestana = (visibles.find((p) => p.value === params.get('tab'))?.value ?? visibles[0]?.value ?? 'pedidos') as Pestana;
   // Las que venden primero: son las que el equipo viene a revisar.
   const ordenadas = [...(empresas.data ?? [])].sort(
     (a, b) =>
@@ -123,7 +130,7 @@ export function VentasPage() {
             label="Sección de ventas"
             value={pestana}
             onChange={(tab) => poner({ tab })}
-            options={PESTANAS}
+            options={visibles}
             className="mb-5"
           />
 

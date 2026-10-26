@@ -19,6 +19,14 @@ export class PistasVozService {
 
   constructor(private readonly prisma: PrismaService) {}
 
+  /** ¿La cuenta de esta línea tiene la herramienta Voz? Sin línea, no. */
+  async vozPermitida(chatId: string): Promise<boolean> {
+    const linea = separarChat(chatId).linea;
+    if (!linea) return false;
+    const org = await this.prisma.organization.findUnique({ where: { waLineId: linea }, select: { herramientas: true } });
+    return org?.herramientas.includes('VOZ') ?? false;
+  }
+
   async para(chatId: string): Promise<string> {
     const linea = separarChat(chatId).linea;
     if (!linea) return '';

@@ -19,6 +19,7 @@ import { AltaEmpresa } from './AltaEmpresa';
 import { pasosDe, useRefrescarEmpresas, type Empresa } from './api';
 import { EliminarEmpresa } from './EliminarEmpresa';
 import { DialogoConector } from './PasoDocumentos';
+import { HerramientasEmpresa } from './Herramientas';
 import { PasosEmpresa } from './PasosEmpresa';
 
 type Pestana = 'config' | 'personas';
@@ -135,7 +136,10 @@ export function EmpresasPage() {
             {pestana === 'personas' ? (
               <Clientes key={actual.id} empresaId={actual.id} />
             ) : (
-              <PasosEmpresa key={actual.id} empresa={actual} onVerPersonas={() => poner({ empresa: actual.id, tab: 'personas' })} />
+              <>
+                <HerramientasEmpresa empresa={actual} />
+                <PasosEmpresa key={actual.id} empresa={actual} onVerPersonas={() => poner({ empresa: actual.id, tab: 'personas' })} />
+              </>
             )}
           </div>
         </div>

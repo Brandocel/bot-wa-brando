@@ -184,6 +184,7 @@ function baseFalsa(opts: { ordenes?: Array<{ id: string; number: number; totalCe
       deleteMany: async ({ where }: { where: { conversationId: string } }) => { reqs.delete(where.conversationId); },
     },
     invoicingSettings: { findUnique: async () => ({ enabled: opts.enabled ?? true, maxDaysAfterSale: 30 }) },
+    organization: { findUnique: async () => ({ herramientas: ['VENTAS', 'FACTURACION'] }) },
     order: { findMany: async () => opts.ordenes ?? [{ id: 'o1', number: 1042, totalCents: 24500, status: 'ENTREGADO' }] },
     fiscalProfile: { findFirst: async () => opts.perfil ?? null },
   };

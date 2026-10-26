@@ -312,6 +312,14 @@ model SystemFlag {
 /// De dónde saca el bot los documentos de una empresa.
 /// Quién es el cliente. Una PERSONA usa el bot para sí misma: su propio
 /// número (waNumber) recibe todos sus documentos, sin membresía ni titular.
+/// Las herramientas de Jarvis: cada una se vende por separado.
+enum Herramienta {
+  DOCUMENTOS // el bot busca y entrega documentos
+  VENTAS // pedidos por WhatsApp + clientes (trazabilidad, posventa)
+  FACTURACION // timbra CFDI desde WhatsApp y el panel
+  VOZ // entiende notas de voz y contesta con voz
+}
+
 enum OrgKind {
   EMPRESA
   PERSONA
@@ -323,13 +331,15 @@ enum SourceType {
 }
 
 model Organization {
-  id            String     @id @default(cuid())
+  id            String        @id @default(cuid())
   name          String
-  kind          OrgKind    @default(EMPRESA)
-  taxId         String?    @unique // RFC: la llave real del negocio
-  sourceType    SourceType @default(DRIVE)
-  driveFolderId String?    @unique // carpeta raíz en Drive; null si el origen es PC
-  active        Boolean    @default(true)
+  kind          OrgKind       @default(EMPRESA)
+  /// Lo que tiene contratado. El bot y el panel solo ofrecen esto.
+  herramientas  Herramienta[] @default([DOCUMENTOS])
+  taxId         String?       @unique // RFC: la llave real del negocio
+  sourceType    SourceType    @default(DRIVE)
+  driveFolderId String?       @unique // carpeta raíz en Drive; null si el origen es PC
+  active        Boolean       @default(true)
 
   /// Línea de WhatsApp propia (id de sesión en el gateway). null = la
   /// empresa se atiende por el número principal. Un mensaje que llega por

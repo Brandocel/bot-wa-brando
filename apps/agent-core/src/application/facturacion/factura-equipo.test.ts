@@ -30,7 +30,7 @@ test('conceptos con monto al final', () => {
   assert.equal(leerConceptos('$500'), null, 'sin descripción no');
 });
 
-interface Membresia { canInvoice: boolean; verifiedAt: Date | null; organization: { id: string; name: string; invoicing: { enabled: boolean; pricesIncludeTax: boolean } | null } }
+interface Membresia { canInvoice: boolean; verifiedAt: Date | null; organization: { id: string; name: string; herramientas?: string[]; invoicing: { enabled: boolean; pricesIncludeTax: boolean } | null } }
 
 function base(opts: { membresias: Membresia[]; perfil?: object | null; resultado?: object }) {
   const reqs = new Map<string, Record<string, unknown>>();
@@ -72,7 +72,7 @@ function base(opts: { membresias: Membresia[]; perfil?: object | null; resultado
 
 const pollos = (extra: Partial<Membresia> = {}): Membresia => ({
   canInvoice: true, verifiedAt: new Date(),
-  organization: { id: 'org1', name: 'Pollos Pirata', invoicing: { enabled: true, pricesIncludeTax: true } },
+  organization: { id: 'org1', name: 'Pollos Pirata', herramientas: ['FACTURACION'], invoicing: { enabled: true, pricesIncludeTax: true } },
   ...extra,
 });
 
@@ -146,7 +146,7 @@ test('quien no es de ninguna empresa sigue su camino', async () => {
 
 test('varias empresas: pregunta de cuál', async () => {
   const { decir } = base({
-    membresias: [pollos(), { ...pollos(), organization: { id: 'org2', name: 'Flores de Paula', invoicing: { enabled: true, pricesIncludeTax: true } } }],
+    membresias: [pollos(), { ...pollos(), organization: { id: 'org2', name: 'Flores de Paula', herramientas: ['FACTURACION'], invoicing: { enabled: true, pricesIncludeTax: true } } }],
   });
   let r = await decir('factura para un cliente');
   assert.match(r!.text, /De qué empresa/);

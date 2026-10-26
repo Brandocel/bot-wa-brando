@@ -55,7 +55,7 @@ test('la transcripción usa las pistas de la cuenta', async () => {
   const filtro = new TranscripcionFilter(
     { transcribir: async (_a: unknown, p: string) => { recibidas = p; return 'hola'; } } as never,
     undefined,
-    { para: async () => 'Abner Neftali' } as never,
+    { para: async () => 'Abner Neftali', vozPermitida: async () => true } as never,
   );
   const ctx = { message: { kind: 'AUDIO', body: '', chatId: 'c', attachment: { mimetype: 'audio/ogg', filename: 'n', base64: 'AA' } } } as unknown as PipelineContext;
   await filtro.handle(ctx, async () => undefined);

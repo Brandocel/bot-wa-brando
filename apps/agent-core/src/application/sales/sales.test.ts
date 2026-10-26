@@ -123,7 +123,7 @@ function arnes() {
   const prisma = {
     organization: {
       findUnique: async () => ({
-        id: 'pollos', name: 'Pollos Pirata', active: true, products: carta,
+        id: 'pollos', name: 'Pollos Pirata', active: true, herramientas: ['VENTAS', 'FACTURACION'], products: carta,
         sales: { enabled: true, businessType: 'pollos asados', pitch: '', hours: {
           lun: [['11:00', '21:00']], mar: [['11:00', '21:00']], mie: [['11:00', '21:00']], jue: [['11:00', '21:00']],
           vie: [['11:00', '21:00']], sab: [['11:00', '21:00']] }, timezone: TZ,

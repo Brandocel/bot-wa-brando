@@ -25,7 +25,8 @@ export class TranscripcionFilter implements MessageFilter {
   async handle(ctx: PipelineContext, next: Next): Promise<void> {
     const { message } = ctx;
     const audio = message.attachment;
-    if (message.kind === 'AUDIO') {
+    // Sin la herramienta Voz, el audio sigue como audio y se pide por escrito.
+    if (message.kind === 'AUDIO' && (!this.pistas || (await this.pistas.vozPermitida(message.chatId)))) {
       // Con los nombres de la cuenta como pistas. Primero Groq si hay llave
       // (modelo grande, el más acertado); si no, whisper local en el
       // gateway, que es gratis.
